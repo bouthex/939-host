@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><title>939 Host — licencias de terceros</title>
+<style>body{font:14px/1.5 system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#111}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem;font-size:12px}h2{border-top:1px solid #ccc;padding-top:1rem}</style></head>
+<body>
+<h1>939 Host — licencias de terceros</h1>
+<p>939 Host se distribuye bajo la licencia MIT e incluye los siguientes componentes de terceros.</p>
+<h2>Resumen</h2>
+<ul>{{#each overview}}<li><a href="#{{id}}">{{name}}</a> ({{count}})</li>{{/each}}</ul>
+{{#each licenses}}
+<h2 id="{{id}}">{{name}}</h2>
+<p>Usada por:</p>
+<ul>{{#each used_by}}<li>{{crate.name}} {{crate.version}}</li>{{/each}}</ul>
+<pre>{{text}}</pre>
+{{/each}}
+</body></html>

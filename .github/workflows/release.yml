@@ -1,0 +1,86 @@
+name: Release
+
+# Se publica una versión al subir una etiqueta vX.Y.Z que coincida con src-tauri/tauri.conf.json.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    name: Pruebas
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - name: Pruebas del núcleo, la red P2P y el grupo
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster
+
+  compilar:
+    name: Compilar Windows x64
+    runs-on: ubuntu-24.04
+    needs: pruebas
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verificar etiqueta y versión
+        id: version
+        run: |
+          v="$(scripts/version.sh)"
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::La etiqueta $GITHUB_REF_NAME no coincide con la versión $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Herramientas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
+          rustup toolchain install
+      # Sin caché en las versiones publicadas: compilación limpia y reproducible.
+      - name: Compilar
+        run: scripts/compilar-windows.sh
+      - name: Instalador, portable y SHA-256
+        run: scripts/empaquetar.sh "${{ steps.version.outputs.version }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: entrega
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+      # Binarios sueltos para la versión firmada (mismo commit, misma compilación).
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binarios
+          path: |
+            dist/payload/939Host.exe
+            dist/payload/WebView2Loader.dll
+
+  publicar:
+    name: Publicar release
+    runs-on: ubuntu-24.04
+    needs: compilar
+    permissions:
+      contents: write        # crear la release y subir archivos
+      id-token: write        # atestación de procedencia
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: entrega
+          path: dist
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*.exe
+            dist/*.zip
+      - name: Crear release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.compilar.outputs.version }}
+        run: |
+          scripts/notas-release.sh "$VERSION" > notas.md
+          gh release create "$GITHUB_REF_NAME" --title "939 Host $VERSION" --notes-file notas.md --verify-tag \
+            dist/939Host-$VERSION-instalador.exe dist/939Host-$VERSION-portable.zip dist/SHA256SUMS.txt

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    name: Pruebas
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Pruebas del núcleo, la red P2P y el grupo
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster
+
+  windows:
+    name: Compilar Windows x64
+    runs-on: ubuntu-24.04
+    needs: pruebas
+    steps:
+      - uses: actions/checkout@v5
+      - name: Herramientas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
+          rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-gnu
+      - name: Compilar
+        run: scripts/compilar-windows.sh
+      - name: Instalador, portable y SHA-256
+        run: scripts/empaquetar.sh "$(scripts/version.sh)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: 939Host-windows-${{ github.sha }}
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30

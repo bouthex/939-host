@@ -1,0 +1,115 @@
+//! Datos persistentes de la red del grupo: con quién se comparte cada servidor y a qué
+//! servidores de amigos se unió esta PC. (El transporte P2P vive en `host939-p2p`.)
+
+use crate::error::AppResult;
+use crate::paths;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Member {
+    pub node_id: String,
+    pub name: String,
+    pub joined_at: String,
+    /// "coanfitrion" (guarda una copia y puede hostear) o "jugador" (solo juega).
+    #[serde(default = "default_role")]
+    pub role: String,
+}
+
+fn default_role() -> String { "jugador".into() }
+fn yes() -> bool { true }
+
+impl Member {
+    pub fn can_host(&self) -> bool { self.role == "coanfitrion" || self.role == "propietario" }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Invite {
+    pub secret: String,
+    pub label: String,
+    pub created_at: String,
+    #[serde(default = "default_role")]
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareConfig {
+    pub enabled: bool,
+    /// Todos los integrantes del grupo de este servidor, incluida la PC que lo creó (propietario).
+    pub members: Vec<Member>,
+    pub invites: Vec<Invite>,
+    /// Si el anfitrión se cae, las demás PCs eligen otra por mayoría y la levantan solas.
+    #[serde(default = "yes")]
+    pub auto_failover: bool,
+    /// Al salir de la app, pasar el servidor a otra PC encendida en lugar de apagarlo.
+    #[serde(default = "yes")]
+    pub handover_on_quit: bool,
+    /// Datos públicos del servidor (para PCs que solo juegan y no tienen copia).
+    #[serde(default)]
+    pub card: Option<serde_json::Value>,
+}
+
+impl Default for ShareConfig {
+    fn default() -> Self {
+        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None }
+    }
+}
+
+impl ShareConfig {
+    pub fn member(&self, node: &str) -> Option<&Member> { self.members.iter().find(|m| m.node_id == node) }
+}
+
+/// Servidores en los que participa esta PC (propios compartidos, como coanfitrión o como jugador).
+pub fn shared_servers() -> Vec<String> {
+    std::fs::read_dir(paths::servers())
+        .map(|rd| rd.flatten().filter_map(|e| {
+            let id = e.file_name().to_string_lossy().to_string();
+            let s = load_share(&id);
+            (s.enabled && !s.members.is_empty()).then_some(id)
+        }).collect())
+        .unwrap_or_default()
+}
+
+/// Direcciones conocidas de otras PCs (para volver a encontrarlas aunque cambie su IP).
+pub fn load_peers() -> std::collections::HashMap<String, serde_json::Value> {
+    paths::read_json(&paths::root().join("peers.json")).unwrap_or_default()
+}
+pub fn save_peers(p: &std::collections::HashMap<String, serde_json::Value>) -> AppResult<()> {
+    paths::write_json(&paths::root().join("peers.json"), p)
+}
+
+fn share_path(id: &str) -> std::path::PathBuf { paths::server_dir(id).join("share.json") }
+pub fn load_share(id: &str) -> ShareConfig { paths::read_json(&share_path(id)).unwrap_or_default() }
+pub fn save_share(id: &str, s: &ShareConfig) -> AppResult<()> { paths::write_json(&share_path(id), s) }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteServer {
+    pub key: String,
+    pub host_node: String,
+    /// Dirección del anfitrión serializada (clave pública + caminos conocidos).
+    pub addr_json: String,
+    pub server_id: String,
+    pub name: String,
+    pub mc_version: String,
+    pub loader: String,
+    pub local_port: u16,
+    pub joined_at: String,
+}
+
+fn remotes_path() -> std::path::PathBuf { paths::root().join("remotes.json") }
+pub fn load_remotes() -> Vec<RemoteServer> { paths::read_json(&remotes_path()).unwrap_or_default() }
+pub fn save_remotes(r: &[RemoteServer]) -> AppResult<()> { paths::write_json(&remotes_path(), &r.to_vec()) }
+
+/// Puerto local fijo para un servidor de amigo: 41939, 41940, … sin repetir.
+pub fn next_local_port(existing: &[RemoteServer]) -> u16 {
+    (41939..42939).find(|p| !existing.iter().any(|r| r.local_port == *p)).unwrap_or(41939)
+}
+
+pub fn random_secret() -> String {
+    let mut b = [0u8; 16];
+    let _ = getrandom::getrandom(&mut b);
+    hex::encode(b)
+}

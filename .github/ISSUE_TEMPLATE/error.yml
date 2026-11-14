@@ -1,0 +1,31 @@
+name: Reportar un error
+description: Algo no funciona como debería
+labels: [error]
+body:
+  - type: markdown
+    attributes:
+      value: "**Vulnerabilidades de seguridad: no las reportes acá.** Usá Security → Report a vulnerability."
+  - type: input
+    id: version
+    attributes: { label: Versión de 939 Host, placeholder: "0.9.0" }
+    validations: { required: true }
+  - type: input
+    id: windows
+    attributes: { label: Versión de Windows, placeholder: "Windows 11 24H2" }
+    validations: { required: true }
+  - type: dropdown
+    id: instalacion
+    attributes: { label: Tipo de instalación, options: [Instalador, Portable, Compilado desde el código] }
+  - type: textarea
+    id: pasos
+    attributes: { label: Pasos para reproducirlo, placeholder: "1. ...\n2. ...\n3. ..." }
+    validations: { required: true }
+  - type: textarea
+    id: esperado
+    attributes: { label: Qué esperabas y qué pasó }
+    validations: { required: true }
+  - type: textarea
+    id: diagnostico
+    attributes:
+      label: Informe de diagnóstico
+      description: "Ajustes → Informe de diagnóstico genera un .zip sin el mundo, sin claves y sin invitaciones. Arrastralo acá."

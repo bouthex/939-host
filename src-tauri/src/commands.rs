@@ -1,0 +1,546 @@
+//! Comandos que invoca la interfaz. Todo lo pesado corre fuera del hilo principal.
+
+use host939_core::backup::{self, BackupInfo};
+use host939_core::error::{AppError, AppResult};
+use host939_core::hardware::{self, HardwareSnapshot, LiveMetrics, Probe};
+use host939_core::identity::NodeIdentity;
+use host939_core::instance;
+use host939_core::java::{self, RuntimeInfo};
+use host939_core::meta::{self, FabricSupport, VersionOption};
+use host939_core::model::*;
+use host939_core::paths;
+use host939_core::process::{self, Manager};
+use host939_core::settings::{self, AppSettings};
+use serde::Serialize;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager as _, State};
+
+fn total_ram(probe: &Probe) -> u64 { hardware::live(probe, 0).ram_total_mb }
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send + 'static) -> AppResult<T> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| AppError::new("internal", "Error interno").with_detail(e))?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    pub version: String,
+    pub data_dir: String,
+    pub node: NodeIdentity,
+    pub settings: AppSettings,
+}
+
+#[tauri::command]
+pub fn app_info(node: State<'_, NodeIdentity>) -> AppInfo {
+    let mut s = settings::load();
+    if s.node_name.is_empty() { s.node_name = sysinfo::System::host_name().unwrap_or_else(|| "Esta PC".into()); }
+    AppInfo { version: env!("CARGO_PKG_VERSION").into(), data_dir: paths::root().display().to_string(), node: node.inner().clone(), settings: s }
+}
+
+#[tauri::command]
+pub fn save_settings(settings: AppSettings) -> AppResult<AppSettings> {
+    let mut s = settings;
+    s.node_name = s.node_name.trim().chars().take(40).collect();
+    s.contribute_cpu_percent = s.contribute_cpu_percent.clamp(10, 100);
+    // Los perfiles de reconexión se manejan con sus propios comandos.
+    s.reconnect_profiles = settings::load().reconnect_profiles;
+    if s.start_with_windows != settings::load().start_with_windows {
+        settings::apply_autostart(s.start_with_windows)?;
+    }
+    settings::save(&s)?;
+    Ok(s)
+}
+
+#[tauri::command]
+pub async fn list_servers(app: AppHandle) -> AppResult<Vec<ServerView>> {
+    blocking(move || {
+        let mgr = app.state::<Manager>();
+        let probe = app.state::<Probe>();
+        Ok(instance::list_configs().into_iter().map(|c| instance::view(&mgr, &probe, c, false)).collect())
+    }).await
+}
+
+#[tauri::command]
+pub async fn get_server(app: AppHandle, id: String) -> AppResult<ServerView> {
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        Ok(instance::view(&app.state::<Manager>(), &app.state::<Probe>(), cfg, true))
+    }).await
+}
+
+#[tauri::command]
+pub async fn list_versions(include_snapshots: bool) -> AppResult<Vec<VersionOption>> {
+    meta::list_versions(include_snapshots).await
+}
+
+#[tauri::command]
+pub async fn fabric_support(mc_version: String) -> AppResult<FabricSupport> {
+    meta::fabric_support(&mc_version).await
+}
+
+#[tauri::command]
+pub async fn loader_support(loader: host939_core::model::Loader, mc_version: String) -> AppResult<meta::LoaderSupport> {
+    meta::loader_support(loader, &mc_version).await
+}
+
+#[tauri::command]
+pub async fn suggest_port() -> u16 {
+    let used: Vec<u16> = instance::list_configs().iter().map(|c| c.port).collect();
+    (25565..26000).find(|p| !used.contains(p) && std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok()).unwrap_or(25565)
+}
+
+#[tauri::command]
+pub async fn create_server(app: AppHandle, input: CreateServerInput, probe: State<'_, Probe>) -> AppResult<ServerConfig> {
+    let total = total_ram(&probe);
+    let cfg = instance::create(input, total).await?;
+    spawn_install(app, cfg.id.clone());
+    Ok(cfg)
+}
+
+fn spawn_install(app: AppHandle, id: String) {
+    tauri::async_runtime::spawn(async move {
+        let mgr = app.state::<Manager>();
+        instance::install(&mgr, id).await;
+    });
+}
+
+#[tauri::command]
+pub async fn reinstall_server(app: AppHandle, id: String) -> AppResult<()> {
+    if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() {
+        return Err(AppError::busy("Detené el servidor antes de reinstalarlo."));
+    }
+    let mut cfg = instance::load(&id)?;
+    cfg.installed = false;
+    cfg.install_error = None;
+    instance::save(&cfg)?;
+    spawn_install(app, id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_server(app: AppHandle, config: ServerConfig) -> AppResult<ServerConfig> {
+    blocking(move || {
+        let total = total_ram(&app.state::<Probe>());
+        let mgr = app.state::<Manager>();
+        let cfg = instance::update(&mgr, config, total)?;
+        mgr.changed(&cfg.id);
+        Ok(cfg)
+    }).await
+}
+
+#[tauri::command]
+pub async fn server_properties_extra(id: String) -> AppResult<std::collections::BTreeMap<String, String>> {
+    let cfg = instance::load(&id)?;
+    Ok(host939_core::properties::extra_from_disk(&cfg))
+}
+
+#[tauri::command]
+pub async fn delete_server(app: AppHandle, id: String, confirm_name: String) -> AppResult<()> {
+    blocking(move || instance::delete(&app.state::<Manager>(), &id, &confirm_name)).await
+}
+
+#[tauri::command]
+pub async fn start_server(app: AppHandle, id: String) -> AppResult<()> {
+    crate::network::before_start(&app, &id).await?;
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        app.state::<Manager>().start(&app.state::<Probe>(), &cfg)
+    }).await
+}
+
+#[tauri::command]
+pub async fn stop_server(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || app.state::<Manager>().stop(&id)).await
+}
+
+#[tauri::command]
+pub async fn kill_server(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || app.state::<Manager>().kill(&id)).await
+}
+
+#[tauri::command]
+pub async fn restart_server(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || {
+        let mgr = app.state::<Manager>();
+        mgr.stop(&id)?;
+        if !mgr.wait_inactive(&id, Duration::from_secs(100)) {
+            return Err(AppError::new("timeout", "El servidor tardó demasiado en detenerse."));
+        }
+        let cfg = instance::load(&id)?;
+        mgr.start(&app.state::<Probe>(), &cfg)
+    }).await
+}
+
+#[tauri::command]
+pub fn send_command(id: String, command: String, mgr: State<'_, Manager>) -> AppResult<()> {
+    mgr.send_command(&id, &command)
+}
+
+#[tauri::command]
+pub fn console_history(id: String, mgr: State<'_, Manager>) -> Vec<String> {
+    mgr.console(&id)
+}
+
+#[tauri::command]
+pub async fn list_backups(id: String) -> AppResult<Vec<BackupInfo>> {
+    Ok(backup::list(&id))
+}
+
+#[tauri::command]
+pub async fn create_backup(app: AppHandle, id: String, label: String) -> AppResult<BackupInfo> {
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        let mgr = app.state::<Manager>();
+        let r = backup::create(&mgr, &id, &label, "manual", &cfg.mc_version);
+        mgr.changed(&id);
+        r
+    }).await
+}
+
+#[tauri::command]
+pub async fn restore_backup(app: AppHandle, id: String, file: String) -> AppResult<()> {
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        backup::restore(&app.state::<Manager>(), &id, &file, &cfg.mc_version)?;
+        // La configuración de la app manda sobre la que traía el backup.
+        host939_core::properties::write_for(&cfg)
+    }).await
+}
+
+#[tauri::command]
+pub async fn delete_backup(id: String, file: String) -> AppResult<()> {
+    blocking(move || backup::delete(&id, &file)).await
+}
+
+#[tauri::command]
+pub async fn import_world(app: AppHandle, id: String, path: String) -> AppResult<f64> {
+    blocking(move || {
+        let bytes = instance::import_world(&app.state::<Manager>(), &id, std::path::Path::new(&path))?;
+        Ok(bytes as f64 / 1_048_576.0)
+    }).await
+}
+
+#[tauri::command]
+pub fn validate_world(path: String) -> AppResult<String> {
+    instance::validate_world_source(std::path::Path::new(&path)).map(|p| p.display().to_string())
+}
+
+#[tauri::command]
+pub fn open_folder(id: Option<String>, which: String) -> AppResult<()> {
+    let path = match (id.as_deref(), which.as_str()) {
+        (Some(id), "server") => paths::server_run_dir(id),
+        (Some(id), "backups") => paths::server_backups_dir(id),
+        (Some(id), "logs") => paths::server_run_dir(id).join("logs"),
+        (Some(id), "mods") => paths::server_run_dir(id).join("mods"),
+        (None, "data") => paths::root().to_path_buf(),
+        (None, "trash") => paths::trash(),
+        (None, "applogs") => paths::root().join("logs"),
+        _ => return Err(AppError::invalid("Carpeta desconocida")),
+    };
+    if let Some(id) = id.as_deref() { instance::load(id)?; }
+    std::fs::create_dir_all(&path).ok();
+    open_path(&path.display().to_string())
+}
+
+#[tauri::command]
+pub fn open_link(url: String) -> AppResult<()> {
+    const ALLOWED: &[&str] = &["https://aka.ms/MinecraftEULA", "https://modrinth.com", "https://fabricmc.net"];
+    if !ALLOWED.iter().any(|a| url.starts_with(a)) { return Err(AppError::invalid("Enlace no permitido")); }
+    open_path(&url)
+}
+
+fn open_path(target: &str) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer").arg(target).spawn().map_err(|e| AppError::io("No se pudo abrir", e))?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("xdg-open").arg(target).spawn().map_err(|e| AppError::io("No se pudo abrir", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn hardware_snapshot(app: AppHandle) -> AppResult<HardwareSnapshot> {
+    blocking(move || Ok(hardware::snapshot(&app.state::<Probe>()))).await
+}
+
+#[tauri::command]
+pub fn hardware_live(need_mb: Option<u64>, probe: State<'_, Probe>) -> LiveMetrics {
+    hardware::live(&probe, need_mb.unwrap_or(0))
+}
+
+#[tauri::command]
+pub async fn run_benchmark() -> AppResult<hardware::BenchmarkResult> {
+    blocking(hardware::run_benchmark).await
+}
+
+#[tauri::command]
+pub fn list_runtimes() -> Vec<RuntimeInfo> { java::list_installed() }
+
+#[tauri::command]
+pub fn jvm_preview(config: ServerConfig) -> String { process::jvm_args(&config).join(" ") }
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) { crate::begin_quit(&app); }
+
+#[tauri::command]
+pub fn notify_ui_ready(app: AppHandle) { let _ = app.emit("ui-ready", ()); }
+
+/* ───────── Mods (Modrinth) ───────── */
+
+use host939_core::modrinth::{Modrinth, SearchResult, Version};
+use host939_core::mods::{self, InstallPlan, ModFileStatus};
+
+fn mark_restart(app: &AppHandle, id: &str) {
+    let mgr = app.state::<Manager>();
+    let rt = mgr.runtime(id);
+    let mut r = rt.lock().unwrap();
+    if r.is_active() { r.needs_restart = true; }
+    drop(r);
+    mgr.changed(id);
+}
+
+#[tauri::command]
+pub async fn mods_search(id: String, query: String, offset: u32) -> AppResult<SearchResult> {
+    let cfg = instance::load(&id)?;
+    let loader = mods::loader_id(cfg.loader)?;
+    Modrinth.search(query.trim(), &cfg.mc_version, loader, true, offset).await
+}
+
+#[tauri::command]
+pub async fn mods_versions(id: String, project_id: String) -> AppResult<Vec<Version>> {
+    use host939_core::modrinth::Source;
+    let cfg = instance::load(&id)?;
+    let loader = mods::loader_id(cfg.loader)?;
+    let mut list = Modrinth.project_versions(&project_id, &cfg.mc_version, loader).await?;
+    list.retain(|v| v.supports(&cfg.mc_version, loader));
+    list.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+    Ok(list)
+}
+
+#[tauri::command]
+pub async fn mods_plan(id: String, project_id: String, version_id: Option<String>) -> AppResult<InstallPlan> {
+    let cfg = instance::load(&id)?;
+    mods::plan_install(&Modrinth, &cfg, &project_id, version_id.as_deref()).await
+}
+
+/// Instala: el plan se recalcula acá (nunca se confía en URLs que mande la interfaz).
+#[tauri::command]
+pub async fn mods_install(app: AppHandle, id: String, project_id: String, version_id: Option<String>) -> AppResult<Vec<mods::InstalledMod>> {
+    let cfg = instance::load(&id)?;
+    let plan = mods::plan_install(&Modrinth, &cfg, &project_id, version_id.as_deref()).await?;
+    let ev = app.state::<Manager>().events.clone();
+    let res = mods::apply_plan(&cfg, &plan, |msg, f| ev.mods_progress(&id, msg, f)).await?;
+    mark_restart(&app, &id);
+    Ok(res)
+}
+
+#[tauri::command]
+pub async fn mods_list(id: String, online: bool) -> AppResult<Vec<ModFileStatus>> {
+    let cfg = instance::load(&id)?;
+    mods::scan(&Modrinth, &cfg, online).await
+}
+
+#[tauri::command]
+pub async fn mods_remove(app: AppHandle, id: String, project_id: String) -> AppResult<Vec<String>> {
+    let cfg = instance::load(&id)?;
+    let r = mods::remove(&cfg, &project_id)?;
+    mark_restart(&app, &id);
+    Ok(r)
+}
+
+#[tauri::command]
+pub async fn mods_set_aside(app: AppHandle, id: String, file_name: String) -> AppResult<()> {
+    let cfg = instance::load(&id)?;
+    mods::set_aside_file(&cfg, &file_name)?;
+    mark_restart(&app, &id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mods_updates(id: String) -> AppResult<std::collections::HashMap<String, String>> {
+    let cfg = instance::load(&id)?;
+    Ok(mods::check_updates(&Modrinth, &cfg).await?.into_iter().map(|(k, v)| (k, v.version_number)).collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PerfMod { pub slug: String, pub title: String, pub description: String, pub recommended: bool }
+
+#[tauri::command]
+pub fn mods_performance_list() -> Vec<PerfMod> {
+    mods::PERFORMANCE_FABRIC.iter().map(|(slug, title, desc, rec)| PerfMod { slug: slug.to_string(), title: title.to_string(), description: desc.to_string(), recommended: *rec }).collect()
+}
+
+/* ───────── Puntos de restauración incrementales ───────── */
+
+use host939_core::snapshots::{self, SnapshotInfo, StoreStats};
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotsView { pub items: Vec<SnapshotInfo>, pub stats: StoreStats }
+
+#[tauri::command]
+pub async fn snapshots_list(id: String) -> AppResult<SnapshotsView> {
+    blocking(move || { instance::load(&id)?; Ok(SnapshotsView { items: snapshots::list(&id), stats: snapshots::stats(&id) }) }).await
+}
+
+#[tauri::command]
+pub async fn snapshot_take(app: AppHandle, id: String, label: String) -> AppResult<SnapshotInfo> {
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        let mgr = app.state::<Manager>();
+        let info = snapshots::take(&mgr, &id, &label, "manual", &cfg.mc_version)?;
+        mgr.note(&id, &format!("punto de restauración creado ({} nuevos, pausa {} ms)", human_bytes(info.new_bytes), info.pause_ms));
+        Ok(info)
+    }).await
+}
+
+#[tauri::command]
+pub async fn snapshot_restore(app: AppHandle, id: String, snap_id: String) -> AppResult<()> {
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        snapshots::restore(&app.state::<Manager>(), &id, &snap_id, &cfg.mc_version)?;
+        host939_core::properties::write_for(&cfg)
+    }).await
+}
+
+#[tauri::command]
+pub async fn snapshot_delete(id: String, snap_id: String) -> AppResult<()> {
+    blocking(move || snapshots::delete(&id, &snap_id)).await
+}
+
+pub fn human_bytes(b: u64) -> String {
+    if b >= 1 << 20 { format!("{:.1} MB", b as f64 / 1_048_576.0) } else { format!("{:.1} KB", b as f64 / 1024.0) }
+}
+
+/// Programador: cada minuto revisa los servidores encendidos y toma un punto automático
+/// cuando corresponde según su intervalo. Liviano: si no hay nada que hacer, no lee nada.
+pub fn start_snapshot_scheduler(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(60));
+        let mgr = app.state::<Manager>();
+        for id in mgr.active_ids() {
+            let running = mgr.runtime(&id).lock().unwrap().status() == RunStatus::Running;
+            if !running { continue; }
+            let Ok(cfg) = instance::load(&id) else { continue };
+            // Compartido con otras PCs: los puntos también son la sincronización, así que se
+            // toman al intervalo más corto de los dos.
+            let shared = { let s = host939_core::network::load_share(&id); s.enabled && s.members.len() > 1 };
+            let interval = if shared { cfg.restore_interval_min.min(cfg.sync_interval_min) } else { cfg.restore_interval_min };
+            if !snapshots::auto_due(&id, interval.max(1)) { continue; }
+            match snapshots::take(&mgr, &id, "", "auto", &cfg.mc_version) {
+                Ok(info) => {
+                    let pruned = snapshots::prune(&id);
+                    mgr.note(&id, &format!("punto automático ({} nuevos, pausa {} ms{})", human_bytes(info.new_bytes), info.pause_ms,
+                        if pruned > 0 { format!(", {pruned} viejos depurados") } else { String::new() }));
+                }
+                Err(e) if e.code == "busy" => {}
+                Err(e) => mgr.note(&id, &format!("no se pudo crear el punto automático: {}", e.message)),
+            }
+            mgr.changed(&id);
+        }
+    });
+}
+
+
+/* ───────── Reconexión automática en el Minecraft de esta PC ───────── */
+
+fn minecraft_dir() -> std::path::PathBuf {
+    std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_default().join(".minecraft")
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientProfileView {
+    #[serde(flatten)]
+    pub profile: host939_core::client::ClientProfile,
+    pub enabled: bool,
+}
+
+/// Perfiles Fabric/NeoForge del launcher oficial (solo lectura) y los ya activados.
+#[tauri::command]
+pub fn client_profiles() -> AppResult<Vec<ClientProfileView>> {
+    let enabled = settings::load().reconnect_profiles;
+    let mut out: Vec<ClientProfileView> = host939_core::client::detect_profiles(&minecraft_dir())
+        .into_iter().map(|p| { let on = enabled.contains(&p); ClientProfileView { profile: p, enabled: on } }).collect();
+    for p in enabled { if !out.iter().any(|v| v.profile == p) { out.push(ClientProfileView { profile: p, enabled: true }); } }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn client_reconnect_enable(profile: host939_core::client::ClientProfile) -> AppResult<host939_core::client::EnsureReport> {
+    let r = host939_core::client::ensure_reconnect(&host939_core::modrinth::Modrinth, &profile).await?;
+    let mut s = settings::load();
+    if !s.reconnect_profiles.contains(&profile) { s.reconnect_profiles.push(profile); settings::save(&s)?; }
+    Ok(r)
+}
+
+#[tauri::command]
+pub fn client_reconnect_disable(profile: host939_core::client::ClientProfile) -> AppResult<Vec<String>> {
+    let removed = host939_core::client::remove_reconnect(&profile)?;
+    let mut s = settings::load();
+    s.reconnect_profiles.retain(|p| p != &profile);
+    settings::save(&s)?;
+    Ok(removed)
+}
+
+/// Al abrir la app: si alguien borró el mod de reconexión por error, se vuelve a poner.
+pub fn recheck_client_reconnect() {
+    tauri::async_runtime::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        for p in settings::load().reconnect_profiles {
+            let _ = host939_core::client::ensure_reconnect(&host939_core::modrinth::Modrinth, &p).await;
+        }
+    });
+}
+
+/* ───────── Jugadores, mundo y diagnóstico ───────── */
+
+#[tauri::command]
+pub fn players_list(id: String, mgr: State<'_, Manager>) -> AppResult<Vec<host939_core::players::PlayerView>> {
+    let cfg = instance::load(&id)?;
+    Ok(host939_core::players::list(&mgr, &cfg))
+}
+
+#[tauri::command]
+pub async fn player_action(app: AppHandle, id: String, name: String, action: host939_core::players::PlayerAction, reason: Option<String>) -> AppResult<String> {
+    let cfg = instance::load(&id)?;
+    let mgr = app.state::<Manager>();
+    host939_core::players::apply(&mgr, &cfg, &name, action, reason.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn world_info(id: String) -> AppResult<host939_core::diagnostics::WorldInfo> {
+    let cfg = instance::load(&id)?;
+    blocking(move || Ok(host939_core::diagnostics::world_info(&cfg))).await
+}
+
+#[tauri::command]
+pub async fn world_new(app: AppHandle, id: String, seed: Option<String>, confirm_name: String) -> AppResult<()> {
+    let mut cfg = instance::load(&id)?;
+    if confirm_name.trim() != cfg.name { return Err(AppError::invalid("El nombre no coincide.")); }
+    if host939_core::network::load_share(&id).enabled {
+        return Err(AppError::invalid("Este servidor está compartido con el grupo: dejá de compartirlo antes de cambiar de mundo, para que ninguna PC siga con el anterior."));
+    }
+    blocking(move || host939_core::diagnostics::new_world(&app.state::<Manager>(), &mut cfg, seed)).await
+}
+
+#[tauri::command]
+pub async fn diagnostics_report(app: AppHandle, id: String) -> AppResult<String> {
+    let cfg = instance::load(&id)?;
+    blocking(move || {
+        let hw = serde_json::to_string_pretty(&hardware::snapshot(&app.state::<Probe>())).unwrap_or_default();
+        let p = host939_core::diagnostics::report(&app.state::<Manager>(), &cfg, &hw)?;
+        Ok(p.to_string_lossy().to_string())
+    }).await
+}
+
+#[tauri::command]
+pub async fn mods_import_folder(app: AppHandle, id: String, path: String) -> AppResult<host939_core::mods::ImportReport> {
+    let cfg = instance::load(&id)?;
+    if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de importar mods.")); }
+    blocking(move || host939_core::mods::import_folder(&cfg, std::path::Path::new(&path))).await
+}

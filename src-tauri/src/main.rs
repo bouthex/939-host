@@ -1,0 +1,210 @@
+// 939 Host — plataforma propia para crear, administrar y hostear servidores de Minecraft Java.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod commands;
+mod network;
+
+use host939_core::events::{Events, InstallProgress};
+use host939_core::{hardware, identity, paths, process, settings};
+use std::sync::Arc;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Reenvía los eventos del núcleo a la interfaz.
+struct TauriEvents(AppHandle);
+
+#[derive(Clone, serde::Serialize)]
+struct IdPayload<'a> { id: &'a str }
+#[derive(Clone, serde::Serialize)]
+struct LinePayload<'a> { id: &'a str, line: &'a str }
+#[derive(Clone, serde::Serialize)]
+struct ModsPayload<'a> { id: &'a str, message: &'a str, fraction: f64 }
+
+impl Events for TauriEvents {
+    fn server_changed(&self, id: &str) { let _ = self.0.emit("server-changed", IdPayload { id }); }
+    fn console_line(&self, id: &str, line: &str) { let _ = self.0.emit("console-line", LinePayload { id, line }); }
+    fn install_progress(&self, p: &InstallProgress) { let _ = self.0.emit("install-progress", p); }
+    fn mods_progress(&self, id: &str, message: &str, fraction: f64) { let _ = self.0.emit("mods-progress", ModsPayload { id, message, fraction }); }
+}
+
+/// Muestra la ventana principal; si se había destruido para ahorrar memoria, la vuelve a crear.
+pub fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("939 Host")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(1024.0, 680.0)
+        .center()
+        .build();
+}
+
+/// Salida completa: detiene todos los servidores de forma ordenada y libera todo.
+pub fn begin_quit(app: &AppHandle) {
+    if QUITTING.swap(true, Ordering::SeqCst) { return; }
+    let _ = app.emit("app-quitting", ());
+    let app = app.clone();
+    std::thread::spawn(move || {
+        // Primero el grupo: cada servidor que hostea esta PC pasa a otra PC encendida o se
+        // suelta con el último estado copiado. Después se detiene lo que quede.
+        for line in network::quit_blocking(&app) {
+            let _ = app.emit("group-note", serde_json::json!({ "id": "", "message": line }));
+        }
+        app.state::<process::Manager>().stop_all();
+        app.exit(0);
+    });
+}
+
+fn data_root() -> std::path::PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("939Host")
+}
+
+fn main() {
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            paths::init(data_root()).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            let node = identity::load_or_create_node().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            app.manage(node);
+            app.manage(process::Manager::new(Arc::new(TauriEvents(app.handle().clone()))));
+            app.manage(hardware::Probe::new());
+            app.manage(network::Cluster::default());
+
+            let open = MenuItem::with_id(app, "open", "Abrir 939 Host", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Salir (detiene los servidores)", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let mut tray = TrayIconBuilder::with_id("main-tray")
+                .tooltip("939 Host")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => show_main(app),
+                    "quit" => begin_quit(app),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        show_main(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
+            tray.build(app)?;
+            commands::start_snapshot_scheduler(app.handle().clone());
+            // Con --minimized (inicio con Windows) arranca solo en la bandeja.
+            if !std::env::args().any(|a| a == "--minimized") {
+                if let Some(w) = app.get_webview_window("main") { let _ = w.show(); let _ = w.set_focus(); }
+            } else if let Some(w) = app.get_webview_window("main") {
+                let _ = w.destroy();
+            }
+            network::start(app.handle().clone());
+            commands::recheck_client_reconnect();
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if QUITTING.load(Ordering::SeqCst) { return; }
+                if !settings::load().close_to_tray {
+                    api.prevent_close();
+                    begin_quit(window.app_handle());
+                }
+                // Con "cerrar a la bandeja", la ventana se destruye (libera la memoria de la
+                // interfaz) y la app sigue en la bandeja con los servidores andando.
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::app_info,
+            commands::save_settings,
+            commands::list_servers,
+            commands::get_server,
+            commands::list_versions,
+            commands::fabric_support,
+            commands::loader_support,
+            commands::client_profiles,
+            commands::players_list,
+            commands::mods_import_folder,
+            commands::player_action,
+            commands::world_info,
+            commands::world_new,
+            commands::diagnostics_report,
+            commands::client_reconnect_enable,
+            commands::client_reconnect_disable,
+            commands::suggest_port,
+            commands::create_server,
+            commands::reinstall_server,
+            commands::update_server,
+            commands::server_properties_extra,
+            commands::delete_server,
+            commands::start_server,
+            commands::stop_server,
+            commands::kill_server,
+            commands::restart_server,
+            commands::send_command,
+            commands::console_history,
+            commands::list_backups,
+            commands::create_backup,
+            commands::restore_backup,
+            commands::delete_backup,
+            commands::import_world,
+            commands::validate_world,
+            commands::open_folder,
+            commands::open_link,
+            commands::hardware_snapshot,
+            commands::hardware_live,
+            commands::run_benchmark,
+            commands::list_runtimes,
+            commands::jvm_preview,
+            commands::quit_app,
+            commands::notify_ui_ready,
+            commands::mods_search,
+            commands::mods_versions,
+            commands::mods_plan,
+            commands::mods_install,
+            commands::mods_list,
+            commands::mods_remove,
+            commands::mods_set_aside,
+            commands::mods_updates,
+            commands::mods_performance_list,
+            commands::snapshots_list,
+            commands::snapshot_take,
+            commands::snapshot_restore,
+            commands::snapshot_delete,
+            network::share_status,
+            network::share_set,
+            network::invite_create,
+            network::invite_revoke,
+            network::member_remove,
+            network::group_options,
+            network::group_handover,
+            network::group_release,
+            network::group_take_here,
+            network::group_sync,
+            network::remote_list,
+            network::remote_join,
+            network::remote_remove,
+        ])
+        .build(tauri::generate_context!())
+        .expect("no se pudo iniciar 939 Host");
+
+    app.run(|_app, event| {
+        if let RunEvent::ExitRequested { api, code, .. } = event {
+            // Cerrar la última ventana no termina la app: queda en la bandeja.
+            if code.is_none() && !QUITTING.load(Ordering::SeqCst) {
+                api.prevent_exit();
+            }
+        }
+    });
+}

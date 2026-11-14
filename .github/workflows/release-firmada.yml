@@ -1,0 +1,180 @@
+name: Release firmada (SignPath)
+
+# Firma con SignPath Foundation una versión ya publicada y reemplaza sus archivos en la release.
+# Solo funciona después de que SignPath Foundation apruebe el proyecto y se carguen:
+#   secreto  SIGNPATH_API_TOKEN        (usuario "submitter" de SignPath)
+#   variable SIGNPATH_ORGANIZATION_ID
+# Cada firma necesita además la aprobación manual de un aprobador en SignPath.
+# Todos los trabajos corren en runners alojados por GitHub, como exige SignPath para open source.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Etiqueta de la versión a firmar (por ejemplo v0.9.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  compilar:
+    name: Compilar Windows x64
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Verificar etiqueta y versión
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          v="$(scripts/version.sh)"
+          [ "v$v" = "$TAG" ] || { echo "::error::La etiqueta $TAG no coincide con la versión $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Herramientas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
+          rustup toolchain install
+      - name: Pruebas
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster
+      - name: Compilar
+        run: scripts/compilar-windows.sh
+      - name: Preparar archivos de la app
+        run: scripts/empaquetar.sh "${{ steps.version.outputs.version }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: payload
+          path: dist/payload/
+
+  firmar:
+    name: Firmar y empaquetar
+    runs-on: windows-2025
+    needs: compilar
+    environment: firma        # se puede exigir aprobación también en GitHub (Settings → Environments)
+    permissions:
+      contents: read
+      actions: read           # SignPath descarga el artefacto y verifica su origen
+    env:
+      VERSION: ${{ needs.compilar.outputs.version }}
+      NSIS: C:\Program Files (x86)\NSIS\makensis.exe
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: payload
+          path: payload
+      - name: Instalar NSIS
+        run: choco install nsis -y --no-progress
+      - name: Generar el desinstalador para firmarlo
+        shell: pwsh
+        run: |
+          & $env:NSIS /DINNER /DVERSION=$env:VERSION /DSRCDIR=$PWD\payload installer\939host.nsi
+          if ($LASTEXITCODE) { throw "makensis falló" }
+          Start-Process installer\939Host-uninst-generador.exe -Wait
+          New-Item -ItemType Directory -Force para-firmar | Out-Null
+          Copy-Item payload\939Host.exe para-firmar\
+          Copy-Item "$env:TEMP\939host-uninst\Desinstalar.exe" para-firmar\
+      - id: subir-binarios
+        uses: actions/upload-artifact@v7
+        with:
+          name: binarios-sin-firmar
+          path: para-firmar/
+      - name: Firmar 939Host.exe y Desinstalar.exe
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: 939-host
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: binarios
+          github-artifact-id: ${{ steps.subir-binarios.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 86400
+          output-artifact-directory: firmados
+          parameters: |
+            version: ${{ toJSON(env.VERSION) }}
+      - name: Armar instalador con los binarios firmados
+        shell: pwsh
+        run: |
+          Copy-Item firmados\939Host.exe payload\939Host.exe -Force
+          & $env:NSIS /DVERSION=$env:VERSION /DSRCDIR=$PWD\payload /DSIGNED_UNINST=$PWD\firmados\Desinstalar.exe installer\939host.nsi
+          if ($LASTEXITCODE) { throw "makensis falló" }
+          New-Item -ItemType Directory -Force instalador | Out-Null
+          Move-Item installer\939Host-$env:VERSION-instalador.exe instalador\
+      - id: subir-instalador
+        uses: actions/upload-artifact@v7
+        with:
+          name: instalador-sin-firmar
+          path: instalador/
+      - name: Firmar el instalador
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: 939-host
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: instalador
+          github-artifact-id: ${{ steps.subir-instalador.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 86400
+          output-artifact-directory: final
+          parameters: |
+            version: ${{ toJSON(env.VERSION) }}
+      - name: Verificar firmas y armar la entrega
+        shell: pwsh
+        run: |
+          $ok = $true
+          foreach ($f in @("final\939Host-$env:VERSION-instalador.exe", "payload\939Host.exe", "firmados\Desinstalar.exe", "payload\WebView2Loader.dll")) {
+            $s = Get-AuthenticodeSignature $f
+            "{0}: {1} — {2}" -f $f, $s.Status, $s.SignerCertificate.Subject
+            if ($s.Status -ne "Valid") { $ok = $false }
+          }
+          if (-not $ok) { throw "Hay archivos sin firma válida: no se publica nada." }
+          New-Item -ItemType Directory -Force entrega | Out-Null
+          Copy-Item final\939Host-$env:VERSION-instalador.exe entrega\
+          Compress-Archive payload\* entrega\939Host-$env:VERSION-portable.zip -Force
+          Push-Location entrega
+          Get-ChildItem -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } | Set-Content SHA256SUMS.txt
+          Pop-Location
+          Get-Content entrega\SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: entrega-firmada
+          path: entrega/
+
+  publicar:
+    name: Reemplazar archivos de la release
+    runs-on: ubuntu-24.04
+    needs: [compilar, firmar]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: entrega-firmada
+          path: dist
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*.exe
+            dist/*.zip
+      - name: Subir versiones firmadas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.compilar.outputs.version }}
+        run: |
+          gh release upload "$TAG" dist/939Host-$VERSION-instalador.exe dist/939Host-$VERSION-portable.zip dist/SHA256SUMS.txt --clobber
+          FIRMADA=1 scripts/notas-release.sh "$VERSION" > notas.md
+          gh release edit "$TAG" --notes-file notas.md

@@ -1,0 +1,321 @@
+//! Red del grupo en la app: un nodo por PC que mantiene vivo cada servidor compartido entre las
+//! PCs del grupo (permiso de anfitrión, sincronización, traspasos y recuperación) y la dirección
+//! fija para jugar (`127.0.0.1:<puerto>`), que siempre lleva a la PC anfitriona del momento.
+
+use host939_cluster::{GroupNode, GroupStatus, LocalHost, Timing};
+use host939_core::error::{AppError, AppResult};
+use host939_core::hardware::Probe;
+use host939_core::model::RunStatus;
+use host939_core::network::{self, Invite};
+use host939_core::process::Manager;
+use host939_core::snapshots::{self, SnapshotInfo};
+use host939_core::{identity, instance, paths, settings};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager as _, State};
+use tokio::sync::OnceCell;
+
+/// El nodo se abre en segundo plano al iniciar; los comandos esperan a que esté listo.
+#[derive(Default)]
+pub struct Cluster { node: OnceCell<GroupNode>, error: std::sync::Mutex<Option<String>> }
+
+impl Cluster {
+    pub async fn node(&self) -> AppResult<&GroupNode> {
+        for _ in 0..100 {
+            if let Some(n) = self.node.get() { return Ok(n); }
+            if let Some(e) = self.error.lock().unwrap().clone() { return Err(AppError::new("p2p", format!("La red del grupo no pudo iniciar: {e}"))); }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err(AppError::new("p2p", "La red del grupo todavía está iniciando. Probá de nuevo en unos segundos."))
+    }
+    pub fn try_node(&self) -> Option<&GroupNode> { self.node.get() }
+}
+
+/// Lo que el nodo necesita de esta app.
+struct AppLocal(AppHandle);
+
+impl LocalHost for AppLocal {
+    fn is_running(&self, server: &str) -> bool {
+        matches!(self.0.state::<Manager>().runtime(server).lock().unwrap().status(), RunStatus::Running | RunStatus::Starting)
+    }
+    fn mc_port(&self, server: &str) -> u16 { instance::load(server).map(|c| c.port).unwrap_or(25565) }
+    fn prepare(&self, server: &str) -> Result<(), String> {
+        let cfg = instance::load(server).map_err(|e| e.message)?;
+        if cfg.installed { return Ok(()); }
+        let mgr = self.0.state::<Manager>();
+        tauri::async_runtime::block_on(instance::install(&mgr, server.to_string()));
+        let cfg = instance::load(server).map_err(|e| e.message)?;
+        if cfg.installed { Ok(()) } else { Err(cfg.install_error.unwrap_or_else(|| "La instalación falló.".into())) }
+    }
+    fn start(&self, server: &str) -> Result<(), String> {
+        let cfg = instance::load(server).map_err(|e| e.message)?;
+        let mgr = self.0.state::<Manager>();
+        mgr.start(&self.0.state::<Probe>(), &cfg).map_err(|e| e.message)?;
+        let rt = mgr.runtime(server);
+        let end = Instant::now() + Duration::from_secs(600);
+        while Instant::now() < end {
+            match rt.lock().unwrap().status() {
+                RunStatus::Running => return Ok(()),
+                RunStatus::Crashed | RunStatus::Stopped => return Err("El servidor se detuvo mientras iniciaba (mirá la consola).".into()),
+                _ => {}
+            }
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        Err("El servidor tardó demasiado en iniciar.".into())
+    }
+    fn stop(&self, server: &str) -> Result<(), String> {
+        let mgr = self.0.state::<Manager>();
+        if !mgr.runtime(server).lock().unwrap().is_active() { return Ok(()); }
+        mgr.stop(server).map_err(|e| e.message)?;
+        if mgr.wait_inactive(server, Duration::from_secs(150)) { Ok(()) } else { Err("El servidor no se detuvo a tiempo.".into()) }
+    }
+    fn snapshot(&self, server: &str, label: &str, kind: &str) -> Result<SnapshotInfo, String> {
+        let mc = instance::load(server).map(|c| c.mc_version).unwrap_or_default();
+        snapshots::take(&self.0.state::<Manager>(), server, label, kind, &mc).map_err(|e| e.message)
+    }
+    fn score(&self) -> u32 { host939_core::hardware::host_score(&self.0.state::<Probe>()) }
+    fn allow_hosting(&self, _: &str) -> bool { settings::load().allow_hosting }
+    fn allow_bridge(&self) -> bool { settings::load().allow_relay }
+    fn note(&self, server: &str, message: &str) {
+        if instance::load(server).is_ok() { self.0.state::<Manager>().note(server, message); }
+        let _ = self.0.emit("group-note", serde_json::json!({ "id": server, "message": message }));
+    }
+    fn changed(&self, server: &str) {
+        let _ = self.0.emit("share-changed", serde_json::json!({ "id": server }));
+        let _ = self.0.emit("server-changed", serde_json::json!({ "id": server }));
+    }
+}
+
+fn node_name() -> String {
+    let s = settings::load();
+    if s.node_name.trim().is_empty() { sysinfo::System::host_name().unwrap_or_else(|| "Mi PC".into()) } else { s.node_name }
+}
+
+fn p2p_err(context: &str, e: anyhow::Error) -> AppError {
+    AppError::new("p2p", format!("{context}: {e}")).with_detail(format!("{e:#}"))
+}
+
+/* ── Puerto fijo para jugar ── */
+
+fn routes_path() -> std::path::PathBuf { paths::root().join("routes.json") }
+fn load_routes() -> HashMap<String, u16> { paths::read_json(&routes_path()).unwrap_or_default() }
+
+/// Puerto local estable para un servidor: se deriva de su id (así suele ser el mismo en todas
+/// las PCs del grupo) y se guarda para que nunca cambie en esta PC.
+fn route_port(server: &str) -> u16 {
+    let mut r = load_routes();
+    if let Some(p) = r.get(server) { return *p; }
+    let h = server.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
+    let mut p = 41000 + (h % 900) as u16;
+    while r.values().any(|x| *x == p) { p += 1; }
+    r.insert(server.to_string(), p);
+    let _ = paths::write_json(&routes_path(), &r);
+    p
+}
+
+/// Abre el nodo y las direcciones fijas de los servidores en los que participa esta PC.
+pub fn start(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let cluster = app.state::<Cluster>();
+        let r = async {
+            let secret = identity::node_secret().map_err(|e| anyhow::anyhow!(e.message))?;
+            let relays = if settings::load().allow_public_relays { host939_p2p::Relays::PublicFallback } else { host939_p2p::Relays::Disabled };
+            GroupNode::start(secret, &node_name(), relays, Arc::new(AppLocal(app.clone())), Timing::default()).await
+        }.await;
+        match r {
+            Ok(node) => {
+                for sid in network::shared_servers() {
+                    let port = route_port(&sid);
+                    if let Err(e) = node.open_route(&sid, port).await {
+                        let _ = app.emit("group-note", serde_json::json!({ "id": sid, "message": format!("No se pudo abrir la dirección para jugar: {e}") }));
+                    }
+                }
+                let _ = cluster.node.set(node);
+            }
+            Err(e) => { *cluster.error.lock().unwrap() = Some(format!("{e:#}")); }
+        }
+    });
+}
+
+/// Al salir: pasa o suelta los servidores que hostea esta PC (con aviso en la interfaz).
+pub fn quit_blocking(app: &AppHandle) -> Vec<String> {
+    let app = app.clone();
+    tauri::async_runtime::block_on(async move {
+        let cluster = app.state::<Cluster>();
+        match cluster.try_node() { Some(n) => n.quit().await, None => vec![] }
+    })
+}
+
+/// Antes de encender en esta PC: toma el permiso de anfitrión si corresponde.
+pub async fn before_start(app: &AppHandle, id: &str) -> AppResult<()> {
+    if !network::load_share(id).enabled { return Ok(()); }
+    let node = app.state::<Cluster>().inner().node().await?.clone();
+    node.prepare_start(id).await.map_err(|e| AppError::new("lease", e.to_string()))
+}
+
+/* ── Comandos ── */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareView {
+    pub enabled: bool,
+    pub group: Option<GroupStatus>,
+    pub invites: Vec<Invite>,
+    pub route_port: Option<u16>,
+    pub relays: bool,
+    pub node_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn share_status(id: String, cluster: State<'_, Cluster>) -> AppResult<ShareView> {
+    let share = network::load_share(&id);
+    let node = cluster.try_node();
+    let group = match (share.enabled, node) { (true, Some(n)) => Some(n.status(&id).await), _ => None };
+    Ok(ShareView {
+        enabled: share.enabled, group, invites: share.invites,
+        route_port: share.enabled.then(|| route_port(&id)), relays: settings::load().allow_public_relays,
+        node_id: node.map(|n| n.id()),
+    })
+}
+
+#[tauri::command]
+pub async fn share_set(id: String, enabled: bool, cluster: State<'_, Cluster>) -> AppResult<()> {
+    let node = cluster.node().await?;
+    if enabled {
+        node.share(&id).map_err(|e| p2p_err("No se pudo compartir", e))?;
+        node.open_route(&id, route_port(&id)).await.map_err(|e| p2p_err("No se pudo abrir la dirección para jugar", e))?;
+    } else {
+        let st = node.status(&id).await;
+        if st.lease.as_ref().map(|l| !l.held_by(&st.me) && l.state == host939_core::lease::LeaseState::Hosting).unwrap_or(false) {
+            return Err(AppError::invalid("Otra PC lo está hosteando ahora: primero pedile que te lo pase."));
+        }
+        let mut s = network::load_share(&id);
+        s.enabled = false;
+        network::save_share(&id, &s)?;
+        node.close_route(&id).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn invite_create(id: String, role: String, label: String, cluster: State<'_, Cluster>) -> AppResult<String> {
+    let node = cluster.node().await?;
+    if !network::load_share(&id).enabled {
+        node.share(&id).map_err(|e| p2p_err("No se pudo compartir", e))?;
+        let _ = node.open_route(&id, route_port(&id)).await;
+    }
+    node.invite(&id, &role, if label.trim().is_empty() { "Invitación" } else { label.trim() }).map_err(|e| p2p_err("No se pudo crear la invitación", e))
+}
+
+#[tauri::command]
+pub async fn invite_revoke(id: String, secret: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.revoke_invite(&id, &secret).map_err(|e| p2p_err("No se pudo revocar", e))
+}
+
+#[tauri::command]
+pub async fn member_remove(id: String, node_id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.remove_member(&id, &node_id).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn group_options(id: String, auto_failover: bool, handover_on_quit: bool, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.set_options(&id, auto_failover, handover_on_quit).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn group_handover(id: String, target: Option<String>, cluster: State<'_, Cluster>) -> AppResult<String> {
+    let node = cluster.node().await?.clone();
+    node.handover(&id, target.as_deref()).await.map_err(|e| AppError::new("handover", e.to_string()))
+}
+
+#[tauri::command]
+pub async fn group_release(id: String, cluster: State<'_, Cluster>) -> AppResult<usize> {
+    let node = cluster.node().await?.clone();
+    node.release(&id).await.map_err(|e| AppError::new("release", e.to_string()))
+}
+
+#[tauri::command]
+pub async fn group_take_here(id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    let node = cluster.node().await?.clone();
+    node.take_here(&id).await.map_err(|e| AppError::new("take", e.to_string()))
+}
+
+#[tauri::command]
+pub async fn group_sync(id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    let node = cluster.node().await?.clone();
+    node.sync_now(&id).await;
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinedView {
+    pub id: String,
+    pub name: String,
+    pub mc_version: String,
+    pub loader: String,
+    pub has_copy: bool,
+    pub route_port: u16,
+    pub host_name: String,
+    pub host_online: bool,
+    pub i_am_host: bool,
+}
+
+/// Servidores de otras PCs a los que se unió esta PC (como jugador o coanfitriona).
+#[tauri::command]
+pub async fn remote_list(cluster: State<'_, Cluster>) -> AppResult<Vec<JoinedView>> {
+    let me = cluster.try_node().map(|n| n.id()).unwrap_or_default();
+    let mut out = vec![];
+    for sid in network::shared_servers() {
+        let share = network::load_share(&sid);
+        let owner = share.members.iter().find(|m| m.role == "propietario").map(|m| m.node_id.clone()).unwrap_or_default();
+        if owner == me { continue; }
+        let card = share.card.clone().unwrap_or_default();
+        let get = |k: &str| card.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let (host_name, host_online, i_am_host) = match cluster.try_node() {
+            Some(n) => { let st = n.status(&sid).await; (st.lease.as_ref().map(|l| l.host_name.clone()).unwrap_or_default(), st.host_online, st.i_am_host) }
+            None => (String::new(), false, false),
+        };
+        out.push(JoinedView {
+            id: sid.clone(), name: get("name"), mc_version: get("mcVersion"), loader: get("loader"), has_copy: instance::load(&sid).is_ok(),
+            route_port: route_port(&sid), host_name, host_online, i_am_host,
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn remote_join(app: AppHandle, ticket: String, cluster: State<'_, Cluster>) -> AppResult<JoinedView> {
+    let node = cluster.node().await?.clone();
+    let sid = node.join(ticket.trim()).await.map_err(|e| p2p_err("No se pudo unir", e))?;
+    node.open_route(&sid, route_port(&sid)).await.map_err(|e| p2p_err("No se pudo abrir la dirección para jugar", e))?;
+    // Coanfitriona: dejar el servidor instalado en segundo plano para poder recibirlo.
+    if let Ok(cfg) = instance::load(&sid) {
+        if !cfg.installed {
+            let app2 = app.clone();
+            let id2 = sid.clone();
+            tauri::async_runtime::spawn(async move { instance::install(&app2.state::<Manager>(), id2).await; });
+        }
+    }
+    let list = remote_list(cluster).await?;
+    list.into_iter().find(|j| j.id == sid).ok_or_else(|| AppError::new("p2p", "Unido, pero no se encontró el servidor."))
+}
+
+#[tauri::command]
+pub async fn remote_remove(id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    let node = cluster.node().await?;
+    let st = node.status(&id).await;
+    if st.i_am_host { return Err(AppError::invalid("Esta PC es la anfitriona: primero pasá o soltá el servidor.")); }
+    node.close_route(&id).await;
+    if instance::load(&id).is_ok() {
+        // Coanfitriona: se deja de participar pero la copia queda (se puede borrar como cualquier servidor).
+        let mut s = network::load_share(&id);
+        s.enabled = false;
+        network::save_share(&id, &s)?;
+    } else {
+        std::fs::rename(paths::server_dir(&id), paths::trash_slot(&format!("{id}-grupo"))).map_err(|e| AppError::io("No se pudo quitar", e))?;
+    }
+    Ok(())
+}

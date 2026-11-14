@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Configuración de artefacto para SignPath (se carga en el proyecto de SignPath; se versiona acá).
+     Paso 1: ZIP con el ejecutable y el desinstalador. Restringe nombre de producto y versión,
+     como exigen las condiciones de SignPath Foundation. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="939Host.exe" product-name="939 Host" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="Desinstalar.exe" product-name="939 Host" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

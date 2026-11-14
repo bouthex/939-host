@@ -1,0 +1,11 @@
+name: Proponer una función
+description: Una idea para mejorar 939 Host
+labels: [mejora]
+body:
+  - type: textarea
+    id: problema
+    attributes: { label: ¿Qué problema resolvería? }
+    validations: { required: true }
+  - type: textarea
+    id: propuesta
+    attributes: { label: ¿Cómo te imaginás que funcione? }

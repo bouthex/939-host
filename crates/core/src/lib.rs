@@ -1,0 +1,24 @@
+//! Núcleo de 939 Host: todo lo que no es interfaz. Se prueba de forma aislada.
+
+pub mod backup;
+pub mod client;
+pub mod diagnostics;
+pub mod error;
+pub mod events;
+pub mod hardware;
+pub mod identity;
+pub mod instance;
+pub mod java;
+pub mod lease;
+pub mod meta;
+pub mod model;
+pub mod modrinth;
+pub mod mods;
+pub mod net;
+pub mod network;
+pub mod paths;
+pub mod players;
+pub mod process;
+pub mod properties;
+pub mod settings;
+pub mod snapshots;

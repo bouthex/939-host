@@ -1,0 +1,37 @@
+939 Host 0.9.0
+Servidores de Minecraft Java compartidos entre las PCs de tus amigos.
+Código abierto (licencia MIT): https://github.com/bouthex/939-host
+
+QUÉ HACE LA INSTALACIÓN
+- Instala 939 Host solo para tu usuario en %LOCALAPPDATA%\Programs\939 Host
+  (no pide permisos de administrador).
+- Crea accesos en el menú Inicio y en el escritorio.
+- No modifica tu instalación de Minecraft. Solo si activás la "reconexión
+  automática" en Configuración, agrega un mod al perfil que elijas (y se
+  puede quitar desde el mismo lugar).
+
+TUS DATOS
+- Servidores, mundos, copias y configuración viven en %LOCALAPPDATA%\939Host.
+- Desinstalar o actualizar no los borra.
+
+ANTES DE EMPEZAR
+- Cuando el Firewall de Windows pregunte por 939 Host o por Java, permitilos
+  en redes privadas.
+- Necesita Microsoft Edge WebView2 (Windows 11 y Windows 10 actualizado ya lo
+  traen).
+- Si Windows bloquea el programa porque no está firmado, mirá
+  docs/INSTALACION.md en el repositorio. No hace falta desactivar ninguna
+  protección de Windows para usar una versión firmada.
+
+PRIVACIDAD (resumen; texto completo en PRIVACIDAD.md, en la carpeta de instalación)
+- Sin telemetría, sin analíticas, sin cuentas. No hay servidores del proyecto.
+- Se conecta a Internet solo para:
+  * Descargar Minecraft (Mojang), Java (Adoptium), loaders (Fabric, Forge,
+    NeoForge) y mods (Modrinth) cuando creás un servidor o instalás algo.
+  * Buscar el UUID de un jugador en Mojang al agregarlo a un servidor en
+    modo online.
+  * Conectar con las PCs de tu grupo cuando compartís un servidor (cifrado
+    de extremo a extremo).
+  * Usar los relays públicos gratuitos de iroh para encontrar a tu grupo y,
+    si no hay conexión directa, retransmitir paquetes cifrados.
+    Se desactiva en Configuración > "Permitir relays públicos gratuitos".

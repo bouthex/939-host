@@ -1,0 +1,31 @@
+[package]
+name = "host939"
+version.workspace = true
+description = "939 Host — crear, administrar y hostear servidores de Minecraft Java"
+authors = ["bouthex and 939 Host contributors"]
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.77"
+
+[[bin]]
+name = "939Host"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+host939-core = { path = "../crates/core" }
+host939-p2p = { path = "../crates/p2p" }
+host939-cluster = { path = "../crates/cluster" }
+iroh = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.33"

@@ -1,0 +1,5 @@
+# Versión fija de Rust para que las compilaciones de la CI sean reproducibles.
+[toolchain]
+channel = "1.97.0"
+targets = ["x86_64-pc-windows-gnu"]
+profile = "minimal"

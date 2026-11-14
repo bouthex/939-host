@@ -1,0 +1,43 @@
+# Compilación
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+/dist/
+/installer/*.exe
+
+# Herramientas y sistema
+*.log
+*.tmp
+*.bundle
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Secretos: nunca en el repositorio
+.env
+.env.*
+*.pfx
+*.p12
+*.pem
+*.key
+*.snk
+*.cer
+*.crt
+
+# Datos de Minecraft: nunca en el repositorio
+*.jar
+*.mca
+*.mcr
+*.dat
+*.dat_old
+level.dat*
+/saves/
+/world*/
+/mods/
+/.minecraft/
+usercache.json
+whitelist.json
+ops.json
+banned-*.json

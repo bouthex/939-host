@@ -1,0 +1,84 @@
+//! Ajustes de la aplicación y del nodo (lo que esta PC aporta al grupo).
+
+use crate::error::AppResult;
+use crate::paths;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AppSettings {
+    /// Cerrar la ventana deja 939 Host en la bandeja (los servidores siguen andando).
+    pub close_to_tray: bool,
+    pub node_name: String,
+    /// Participar en la red del grupo (etapa 3 en adelante).
+    pub participation: bool,
+    pub contribute_ram_mb: u32,
+    pub contribute_cpu_percent: u32,
+    pub allow_hosting: bool,
+    pub allow_relay: bool,
+    /// Relays públicos gratuitos de iroh: solo como último recurso.
+    pub allow_public_relays: bool,
+    pub onboarding_done: bool,
+    /// Iniciar con Windows (minimizado en la bandeja).
+    pub start_with_windows: bool,
+    /// Perfiles de Minecraft de esta PC con la reconexión automática activada.
+    #[serde(default)]
+    pub reconnect_profiles: Vec<crate::client::ClientProfile>,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            close_to_tray: true,
+            node_name: String::new(),
+            participation: true,
+            contribute_ram_mb: 0,
+            contribute_cpu_percent: 80,
+            allow_hosting: true,
+            allow_relay: true,
+            allow_public_relays: true,
+            onboarding_done: false,
+            start_with_windows: false,
+            reconnect_profiles: vec![],
+        }
+    }
+}
+
+fn path() -> std::path::PathBuf { paths::root().join("settings.json") }
+
+pub fn load() -> AppSettings { paths::read_json(&path()).unwrap_or_default() }
+
+pub fn save(s: &AppSettings) -> AppResult<()> { paths::write_json(&path(), s) }
+
+/// Registra o quita 939 Host del inicio de Windows (clave Run del usuario actual).
+pub fn apply_autostart(enabled: bool) -> AppResult<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        let exe = std::env::current_exe().map_err(|e| crate::error::AppError::io("No se encontró el ejecutable", e))?;
+        if is_store_package(&exe) {
+            // En el paquete de Microsoft Store el registro está virtualizado: el inicio con Windows
+            // se maneja con la tarea de inicio del paquete, que el usuario activa en Windows.
+            return Err(crate::error::AppError::invalid("En la versión de Microsoft Store, activalo en Configuración de Windows → Aplicaciones → Inicio → 939 Host."));
+        }
+        let mut cmd = std::process::Command::new("reg");
+        if enabled {
+            cmd.args(["add", KEY, "/v", "939 Host", "/t", "REG_SZ", "/d", &format!("\"{}\" --minimized", exe.display()), "/f"]);
+        } else {
+            cmd.args(["delete", KEY, "/v", "939 Host", "/f"]);
+        }
+        let status = cmd.creation_flags(0x0800_0000).status().map_err(|e| crate::error::AppError::io("No se pudo cambiar el inicio con Windows", e))?;
+        if !status.success() && enabled {
+            return Err(crate::error::AppError::new("autostart", "Windows no permitió registrar el inicio automático."));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = enabled;
+    Ok(())
+}
+
+/// ¿Corre instalado desde un paquete MSIX (Microsoft Store)?
+pub fn is_store_package(exe: &std::path::Path) -> bool {
+    exe.to_string_lossy().to_ascii_lowercase().contains("\\windowsapps\\")
+}
