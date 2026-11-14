@@ -22,7 +22,7 @@ hex = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sysinfo = "0.33"
 ed25519-dalek = "2"
-getrandom = "0.2"
+getrandom = "0.4"
 data-encoding = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 regex = "1"
