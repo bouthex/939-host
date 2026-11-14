@@ -1,9 +1,12 @@
 name: Release
 
-# Se publica una versión al subir una etiqueta vX.Y.Z que coincida con src-tauri/tauri.conf.json.
+# Publica una versión. Dos formas:
+#  - subir una etiqueta vX.Y.Z que coincida con src-tauri/tauri.conf.json, o
+#  - Actions → Release → Run workflow (desde main): crea la etiqueta vX.Y.Z sobre ese commit.
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,7 +33,14 @@ jobs:
         id: version
         run: |
           v="$(scripts/version.sh)"
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::La etiqueta $GITHUB_REF_NAME no coincide con la versión $v"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::La etiqueta $GITHUB_REF_NAME no coincide con la versión $v"; exit 1; }
+          else
+            [ "$GITHUB_REF_NAME" = main ] || { echo "::error::Solo se publica desde main"; exit 1; }
+            if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then
+              echo "::error::La etiqueta v$v ya existe: subí la versión en tauri.conf.json"; exit 1
+            fi
+          fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Herramientas
         run: |
@@ -82,5 +92,6 @@ jobs:
           VERSION: ${{ needs.compilar.outputs.version }}
         run: |
           scripts/notas-release.sh "$VERSION" > notas.md
-          gh release create "$GITHUB_REF_NAME" --title "939 Host $VERSION" --notes-file notas.md --verify-tag \
+          if [ "$GITHUB_REF_TYPE" = tag ]; then destino=(--verify-tag); else destino=(--target "$GITHUB_SHA"); fi
+          gh release create "v$VERSION" --title "939 Host $VERSION" --notes-file notas.md "${destino[@]}" \
             dist/939Host-$VERSION-instalador.exe dist/939Host-$VERSION-portable.zip dist/SHA256SUMS.txt

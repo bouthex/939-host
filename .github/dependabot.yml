@@ -9,3 +9,7 @@ updates:
     directory: /
     schedule: { interval: monthly }
     open-pull-requests-limit: 5
+    # Los saltos de versión mayor se revisan a mano (pueden romper la compatibilidad).
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

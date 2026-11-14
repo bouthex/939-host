@@ -52,7 +52,9 @@ hash del instalador puede no coincidir byte a byte con una compilación local.
 1. Actualizar la versión en `src-tauri/tauri.conf.json` y `Cargo.toml` (`[workspace.package]`), y
    correr `cargo update --workspace`.
 2. Agregar la sección `## <versión> — <fecha>` en `CHANGELOG.md`.
-3. Commit en `main`, luego etiqueta: `git tag -a v<versión> -m "939 Host <versión>" && git push origin v<versión>`.
+3. Commit en `main`, y después una de dos:
+   - subir la etiqueta: `git tag -a v<versión> -m "939 Host <versión>" && git push origin v<versión>`, o
+   - *Actions → Release → Run workflow* sobre `main` (crea la etiqueta `v<versión>` sobre ese commit).
 4. El workflow **Release** prueba, compila, publica la release con instalador, portable y SHA-256, y
    genera la atestación de procedencia.
 5. Si SignPath ya aprobó el proyecto: *Actions → Release firmada (SignPath) → Run workflow* con la
