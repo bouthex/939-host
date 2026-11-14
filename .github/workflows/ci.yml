@@ -18,7 +18,7 @@ jobs:
     name: Pruebas
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Pruebas del núcleo, la red P2P y el grupo
@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: pruebas
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Herramientas
         run: |
           sudo apt-get update

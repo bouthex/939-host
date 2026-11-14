@@ -16,7 +16,7 @@ jobs:
     name: Pruebas
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: rustup toolchain install
       - name: Pruebas del núcleo, la red P2P y el grupo
         run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster
@@ -28,7 +28,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Verificar etiqueta y versión
         id: version
         run: |
@@ -76,12 +76,12 @@ jobs:
       id-token: write        # atestación de procedencia
       attestations: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: entrega
           path: dist
-      - uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.exe
