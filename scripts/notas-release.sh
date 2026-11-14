@@ -28,6 +28,8 @@ else
   echo "> Ver [docs/INSTALACION.md]($REPO/blob/main/docs/INSTALACION.md)."
 fi
 echo
+echo "**[Code signing policy]($REPO/blob/main/CODE_SIGNING_POLICY.md)** · [Privacidad]($REPO/blob/main/PRIVACY.md) · Licencia MIT"
+echo
 echo "Cada archivo tiene una atestación de procedencia de GitHub (\`gh attestation verify <archivo> -R bouthex/939-host\`)."
 echo
 awk -v v="$V" '

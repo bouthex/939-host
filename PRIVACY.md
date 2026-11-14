@@ -24,7 +24,17 @@ de publicar la versión.
 | Relays y descubrimiento públicos de iroh (number 0) | Solo si **Permitir relays públicos gratuitos** está activado (viene activado) | La clave pública del nodo y sus direcciones de red, para que el grupo se encuentre; si no hay conexión directa, paquetes **cifrados** que el relay no puede leer |
 
 Las descargas de Mojang, Adoptium, loaders y Modrinth también exponen tu dirección IP a esos servicios,
-como cualquier descarga. Cada servicio tiene su propia política de privacidad.
+como cualquier descarga.
+
+### Políticas de privacidad de terceros
+
+| Servicio | Política |
+|---|---|
+| Mojang / Microsoft | https://privacy.microsoft.com/privacystatement |
+| Adoptium (Eclipse Foundation) | https://www.eclipse.org/legal/privacy/ |
+| Modrinth (Rinth, Inc.) | https://modrinth.com/legal/privacy |
+| iroh relays y descubrimiento (n0) | https://iroh.computer/legal |
+| Fabric, Forge, NeoForge | Repositorios Maven públicos; solo reciben pedidos de descarga |
 
 ## Cómo desactivar lo que no quieras
 

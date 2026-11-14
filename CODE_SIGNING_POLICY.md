@@ -1,12 +1,11 @@
-# Política de firma de código
+# Code signing policy (política de firma de código)
 
 > **Estado actual (14/11/2026): ninguna versión de 939 Host está firmada.**
 > Se solicitó la firma gratuita para proyectos open source de SignPath Foundation. Esta política entra
 > en vigor cuando la solicitud se apruebe; hasta entonces describe cómo se va a firmar.
 
-<!-- Atribución obligatoria: descomentar SOLO cuando SignPath Foundation apruebe el proyecto.
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
--->
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/)
+*(solicitado; vale para las versiones firmadas una vez que SignPath Foundation apruebe el proyecto).*
 
 ## Qué se firma
 

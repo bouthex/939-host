@@ -11,7 +11,9 @@ Sin hosting pago, sin VPS y sin una PC que tenga que estar siempre encendida.
 <a href="https://github.com/bouthex/939-host/releases/latest"><b>Descargar para Windows</b></a> ·
 <a href="docs/MANUAL.md">Manual</a> ·
 <a href="docs/PROBLEMAS.md">Solución de problemas</a> ·
-<a href="CHANGELOG.md">Cambios</a>
+<a href="CHANGELOG.md">Cambios</a> ·
+<a href="CODE_SIGNING_POLICY.md">Code signing policy</a> ·
+<a href="PRIVACY.md">Privacidad</a>
 </p>
 
 <p align="center">
@@ -66,7 +68,7 @@ Windows 10 actualizado). Más detalles, verificación de descargas y firma digit
 | [Arquitectura](docs/ARQUITECTURA.md) | Cómo funciona por dentro |
 | [Pruebas](docs/PRUEBAS.md) | Qué se probó y con qué resultados |
 | [Privacidad](PRIVACY.md) | Qué conexiones hace la app y cómo desactivarlas |
-| [Política de firma de código](CODE_SIGNING_POLICY.md) | Cómo se firman las versiones |
+| [Code signing policy](CODE_SIGNING_POLICY.md) | Cómo se firman las versiones, equipo y roles |
 
 ## Privacidad
 
