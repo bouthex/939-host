@@ -159,4 +159,16 @@ pub struct ServerView {
     pub needs_restart: bool,
     pub installing: bool,
     pub world_size_mb: f64,
+    /// Mundo congelado con /tick freeze.
+    pub paused: bool,
+    /// Minecraft está guardando.
+    pub saving: bool,
+    /// Reinicio en curso.
+    pub restarting: bool,
+    /// Etapa del arranque en palabras.
+    pub phase: Option<String>,
+    /// Cuenta regresiva antes de detener o reiniciar.
+    pub countdown: Option<crate::process::Countdown>,
+    /// La versión permite pausar (/tick freeze, 1.20.3+).
+    pub pause_supported: bool,
 }

@@ -49,6 +49,12 @@ pub fn view(mgr: &Manager, probe: &Probe, cfg: ServerConfig, with_size: bool) ->
         needs_restart: r.needs_restart,
         installing: r.installing,
         world_size_mb,
+        paused: r.paused,
+        saving: r.saving || r.busy.is_some(),
+        restarting: r.restarting,
+        phase: r.phase.clone(),
+        countdown: r.countdown.clone(),
+        pause_supported: crate::process::supports_tick(&cfg.mc_version),
         config: cfg,
     }
 }

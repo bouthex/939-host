@@ -40,11 +40,51 @@ pub struct Runtime {
     pub save_counter: u64,
     pub installing: bool,
     pub busy: Option<String>,
+    /// Mundo congelado con `/tick freeze` (los jugadores siguen conectados).
+    pub paused: bool,
+    /// Minecraft está guardando el mundo (entre "Saving the game" y "Saved the game").
+    pub saving: bool,
+    /// Reinicio en curso (detener + iniciar).
+    pub restarting: bool,
+    /// Etapa del arranque, en palabras ("Cargando el mundo · 64 %").
+    pub phase: Option<String>,
+    /// Cuenta regresiva activa antes de detener o reiniciar.
+    pub countdown: Option<Countdown>,
+    countdown_gen: u64,
+    queries: Vec<Query>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Countdown {
+    /// "stop" | "restart"
+    pub kind: String,
+    pub ends_at: String,
+    pub seconds: u32,
+}
+
+/// Consulta interna: un comando cuya respuesta no se muestra en la consola.
+struct Query {
+    needles: Vec<String>,
+    tx: std::sync::mpsc::Sender<String>,
+    until: Instant,
 }
 
 impl Runtime {
     pub fn status(&self) -> RunStatus { self.status.unwrap_or(RunStatus::Stopped) }
     pub fn is_active(&self) -> bool { matches!(self.status(), RunStatus::Starting | RunStatus::Running | RunStatus::Stopping) }
+    fn write_stdin(&mut self, cmd: &str) -> AppResult<()> {
+        let stdin = self.stdin.as_mut().ok_or_else(|| AppError::invalid("La consola del servidor no está disponible."))?;
+        writeln!(stdin, "{cmd}").and_then(|_| stdin.flush()).map_err(|e| AppError::io("No se pudo enviar el comando", e))
+    }
+    fn reset_live(&mut self) {
+        self.paused = false;
+        self.saving = false;
+        self.phase = None;
+        self.countdown = None;
+        self.countdown_gen += 1;
+        self.queries.clear();
+    }
     fn push_log(&mut self, line: String) {
         if self.log.len() >= LOG_LINES { self.log.pop_front(); }
         self.log.push_back(line);
@@ -98,10 +138,105 @@ impl Manager {
         }
         let cmd = cmd.trim().trim_start_matches('/');
         if cmd.is_empty() { return Ok(()); }
-        let stdin = rt.stdin.as_mut().ok_or_else(|| AppError::invalid("La consola del servidor no está disponible."))?;
-        writeln!(stdin, "{cmd}").and_then(|_| stdin.flush()).map_err(|e| AppError::io("No se pudo enviar el comando", e))?;
+        rt.write_stdin(cmd)?;
         rt.push_log(format!("> {cmd}"));
         Ok(())
+    }
+
+    /// Envía un comando interno y espera la primera línea de respuesta que contenga alguna de
+    /// `needles`. Ni el comando ni la respuesta aparecen en la consola de 939 Host.
+    pub fn query(&self, id: &str, cmd: &str, needles: &[&str], timeout: Duration) -> AppResult<String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let rt = self.runtime(id);
+            let mut rt = rt.lock().unwrap();
+            if rt.status() != RunStatus::Running {
+                return Err(AppError::invalid("El servidor no está funcionando."));
+            }
+            rt.queries.retain(|q| q.until > Instant::now());
+            rt.queries.push(Query { needles: needles.iter().map(|n| n.to_string()).collect(), tx, until: Instant::now() + timeout });
+            rt.write_stdin(cmd)?;
+        }
+        rx.recv_timeout(timeout).map_err(|_| AppError::new("timeout", "El servidor no respondió a tiempo."))
+    }
+
+    /// Pausa el mundo con el comando oficial `/tick freeze` (Minecraft 1.20.3 o posterior).
+    pub fn pause(&self, cfg: &ServerConfig) -> AppResult<()> {
+        if !supports_tick(&cfg.mc_version) {
+            return Err(AppError::invalid("Pausar necesita Minecraft 1.20.3 o posterior."));
+        }
+        let line = self.query(&cfg.id, "tick freeze", &["The game is frozen", "Unknown or incomplete command"], Duration::from_secs(5))?;
+        if line.contains("Unknown") { return Err(AppError::invalid("Esta versión del servidor no permite pausar.")); }
+        self.runtime(&cfg.id).lock().unwrap().paused = true;
+        self.note(&cfg.id, "mundo en pausa (/tick freeze)");
+        self.changed(&cfg.id);
+        Ok(())
+    }
+
+    /// Reanuda el mundo pausado.
+    pub fn resume(&self, id: &str) -> AppResult<()> {
+        self.query(id, "tick unfreeze", &["The game is running normally", "The game is not frozen", "Unknown or incomplete command"], Duration::from_secs(5))?;
+        self.runtime(id).lock().unwrap().paused = false;
+        self.note(id, "mundo reanudado");
+        self.changed(id);
+        Ok(())
+    }
+
+    /// Cuenta regresiva con aviso en el chat. Devuelve true si llegó a cero (false si se canceló
+    /// o el servidor dejó de estar encendido). Bloquea: llamarla desde un hilo propio.
+    pub fn countdown(&self, id: &str, seconds: u32, kind: &str) -> bool {
+        let rt_arc = self.runtime(id);
+        let gen = {
+            let mut rt = rt_arc.lock().unwrap();
+            if rt.status() != RunStatus::Running { return false; }
+            rt.countdown_gen += 1;
+            rt.countdown = Some(Countdown {
+                kind: kind.into(),
+                ends_at: (chrono::Local::now() + chrono::Duration::seconds(seconds as i64)).to_rfc3339(),
+                seconds,
+            });
+            rt.countdown_gen
+        };
+        self.changed(id);
+        let verb = if kind == "restart" { "se reinicia" } else { "se detiene" };
+        let marks: Vec<u32> = [60, 30, 10, 5, 3, 2, 1].into_iter().filter(|m| *m <= seconds).collect();
+        let start = Instant::now();
+        let mut last_said: Option<u32> = None;
+        loop {
+            let left = seconds.saturating_sub(start.elapsed().as_secs() as u32);
+            {
+                let mut rt = rt_arc.lock().unwrap();
+                if rt.countdown_gen != gen || rt.status() != RunStatus::Running { return false; }
+                if left == 0 { rt.countdown = None; break; }
+                let say = match last_said {
+                    None => Some(format!("say El servidor {verb} en {left} segundos. Tu progreso está guardado.")),
+                    Some(prev) if prev != left && marks.contains(&left) => Some(format!("say El servidor {verb} en {left}…")),
+                    _ => None,
+                };
+                if let Some(msg) = say { let _ = rt.write_stdin(&msg); last_said = Some(left); }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        self.changed(id);
+        true
+    }
+
+    /// Cancela una cuenta regresiva en curso.
+    pub fn cancel_countdown(&self, id: &str) -> bool {
+        let rt_arc = self.runtime(id);
+        let mut rt = rt_arc.lock().unwrap();
+        if rt.countdown.is_none() { return false; }
+        rt.countdown = None;
+        rt.countdown_gen += 1;
+        let _ = rt.write_stdin("say Cancelado: el servidor sigue encendido.");
+        drop(rt);
+        self.changed(id);
+        true
+    }
+
+    pub fn set_restarting(&self, id: &str, on: bool) {
+        self.runtime(id).lock().unwrap().restarting = on;
+        self.changed(id);
     }
 
     pub fn start(&self, probe: &Probe, cfg: &ServerConfig) -> AppResult<()> {
@@ -162,6 +297,8 @@ impl Manager {
             rt.mspt = None;
             rt.mspt_p95 = None;
             rt.metrics_supported = true;
+            rt.reset_live();
+            rt.phase = Some("Abriendo Java".into());
             rt.push_log(format!("── 939 Host: iniciando {} ({} {}) con Java {} ──", cfg.name, loader_name(cfg.loader), cfg.mc_version, cfg.java_major));
         }
         self.changed(&cfg.id);
@@ -195,6 +332,7 @@ impl Manager {
                 r.stdin = None;
                 r.pid = None;
                 r.players.clear();
+                r.reset_live();
                 let code = status.ok().and_then(|s| s.code());
                 if r.stop_requested || code == Some(0) {
                     r.status = Some(RunStatus::Stopped);
@@ -248,6 +386,8 @@ impl Manager {
                 _ => return Err(AppError::invalid("El servidor no está encendido.")),
             }
             rt.stop_requested = true;
+            rt.countdown = None;
+            rt.countdown_gen += 1;
             rt.status = Some(RunStatus::Stopping);
             rt.push_log("── 939 Host: guardando y deteniendo… ──".into());
             if let Some(stdin) = rt.stdin.as_mut() {
@@ -330,6 +470,25 @@ fn handle_line(ev: &dyn Events, rt: &Arc<Mutex<Runtime>>, id: &str, line: String
     let mut hide = false;
     {
         let mut r = rt.lock().unwrap();
+        // Respuestas de consultas internas: se entregan y no se muestran.
+        let now = Instant::now();
+        r.queries.retain(|q| q.until > now);
+        if let Some(i) = r.queries.iter().position(|q| q.needles.iter().any(|n| line.contains(n.as_str()))) {
+            let q = r.queries.remove(i);
+            let _ = q.tx.send(line.clone());
+            hide = true;
+        }
+        if line.contains("The game is frozen") { if !r.paused { r.paused = true; changed = true; } }
+        if line.contains("The game is running normally") || line.contains("The game is not frozen") { if r.paused { r.paused = false; changed = true; } }
+        if line.contains("Saving the game") || line.contains("Saving chunks for level") || line.contains("Saving worlds") {
+            if !r.saving { r.saving = true; changed = true; }
+        }
+        if line.contains("Saved the game") || line.contains("All dimensions are saved") || line.contains("All chunks are saved") {
+            if r.saving { r.saving = false; changed = true; }
+        }
+        if r.status() == RunStatus::Starting {
+            if let Some(p) = startup_phase(&line) { r.phase = Some(p); changed = true; }
+        }
         if let Some(until) = r.suppress_until {
             if Instant::now() < until && TICK_PATTERNS.iter().any(|p| line.contains(p)) {
                 hide = true;
@@ -340,11 +499,16 @@ fn handle_line(ev: &dyn Events, rt: &Arc<Mutex<Runtime>>, id: &str, line: String
         if let Some(c) = RE_P95.captures(&line) { r.mspt_p95 = c[1].parse().ok(); }
         if r.status() == RunStatus::Starting && RE_DONE.is_match(&line) {
             r.status = Some(RunStatus::Running);
+            r.phase = None;
+            r.restarting = false;
             changed = true;
         }
         if let Some(c) = RE_JOIN.captures(&line) { r.players.insert(c[1].to_string()); changed = true; }
         if let Some(c) = RE_LEAVE.captures(&line) { r.players.remove(&c[1]); changed = true; }
         if line.contains("Saved the game") { r.save_counter += 1; }
+        if line.contains("OutOfMemoryError") {
+            r.last_error = Some("Al servidor le faltó memoria (OutOfMemoryError).".into());
+        }
         if RE_BIND.is_match(&line) {
             r.last_error = Some(format!("El puerto {port} ya está en uso por otro programa. Cambiá el puerto en Ajustes → Red."));
         }
@@ -363,6 +527,38 @@ fn handle_line(ev: &dyn Events, rt: &Arc<Mutex<Runtime>>, id: &str, line: String
 }
 
 fn loader_name(l: Loader) -> &'static str { l.name() }
+
+static RE_PCT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\d{1,3})\s?%").unwrap());
+
+/// Traduce las líneas del arranque a una etapa entendible.
+fn startup_phase(line: &str) -> Option<String> {
+    let l = line.to_lowercase();
+    if l.contains("loading libraries") || l.contains("unbundling") || l.contains("loading minecraft") { return Some("Cargando Minecraft".into()); }
+    if l.contains("loading") && l.contains("mods") { return Some("Cargando mods".into()); }
+    if l.contains("loading properties") || l.contains("default game type") { return Some("Leyendo la configuración".into()); }
+    if l.contains("preparing level") { return Some("Abriendo el mundo".into()); }
+    if l.contains("preparing spawn area") || l.contains("preparing start region") {
+        return Some(match RE_PCT.captures(line) { Some(c) => format!("Preparando el mundo · {} %", &c[1]), None => "Preparando el mundo".into() });
+    }
+    None
+}
+
+/// `/tick` existe desde Minecraft 1.20.3 (snapshot 23w43a). Las versiones con numeración nueva
+/// (26.1, 26.2…) también lo tienen.
+pub fn supports_tick(mc: &str) -> bool {
+    let mc = mc.trim();
+    if let Some(rest) = mc.strip_prefix("1.") {
+        let nums: Vec<u32> = rest.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).take(2).map(|p| p.parse().unwrap_or(0)).collect();
+        let (minor, patch) = (nums.first().copied().unwrap_or(0), nums.get(1).copied().unwrap_or(0));
+        return minor > 20 || (minor == 20 && patch >= 3);
+    }
+    if mc.len() >= 5 && mc.as_bytes()[2] == b'w' {
+        let yy: u32 = mc[0..2].parse().unwrap_or(0);
+        let ww: u32 = mc[3..5].parse().unwrap_or(0);
+        return (yy, ww) >= (23, 43);
+    }
+    mc.split('.').next().and_then(|n| n.parse::<u32>().ok()).map(|n| n >= 2).unwrap_or(false)
+}
 
 /// Cómo se arranca el servidor según el loader.
 #[derive(Debug, Clone, PartialEq)]
@@ -536,6 +732,24 @@ mod launch_tests {
         c.loader = loader;
         c.loader_version = version.map(String::from);
         c
+    }
+
+    #[test]
+    fn tick_support_by_version() {
+        assert!(!supports_tick("1.20.2"));
+        assert!(supports_tick("1.20.3"));
+        assert!(supports_tick("1.21.4"));
+        assert!(!supports_tick("1.19.4"));
+        assert!(supports_tick("26.2"));
+        assert!(supports_tick("24w14a"));
+        assert!(!supports_tick("23w40a"));
+    }
+
+    #[test]
+    fn startup_phases_in_words() {
+        assert_eq!(startup_phase("[Worker-Main-1/INFO]: Preparing spawn area: 64%").as_deref(), Some("Preparando el mundo · 64 %"));
+        assert_eq!(startup_phase("[Server thread/INFO]: Preparing level \"world\"").as_deref(), Some("Abriendo el mundo"));
+        assert_eq!(startup_phase("random line"), None);
     }
 
     #[test]
