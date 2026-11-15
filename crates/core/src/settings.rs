@@ -24,6 +24,17 @@ pub struct AppSettings {
     /// Perfiles de Minecraft de esta PC con la reconexión automática activada.
     #[serde(default)]
     pub reconnect_profiles: Vec<crate::client::ClientProfile>,
+    /// Apariencia: "system" (según Windows), "light" o "dark".
+    pub theme: String,
+    pub reduce_motion: bool,
+    /// Tamaño de letra de la consola en px (11–18).
+    pub console_font_size: u32,
+    /// Mostrar skins reales de los jugadores (consulta a Mojang; si no, iniciales).
+    pub skins_enabled: bool,
+    /// Descargar de Mojang las imágenes originales del juego (ítems, corazones, efectos) a esta PC.
+    pub game_assets_enabled: bool,
+    /// Mostrar los íconos e imágenes de los mods de Modrinth.
+    pub mod_images_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -40,6 +51,12 @@ impl Default for AppSettings {
             onboarding_done: false,
             start_with_windows: false,
             reconnect_profiles: vec![],
+            theme: "system".into(),
+            reduce_motion: false,
+            console_font_size: 13,
+            skins_enabled: true,
+            game_assets_enabled: true,
+            mod_images_enabled: true,
         }
     }
 }

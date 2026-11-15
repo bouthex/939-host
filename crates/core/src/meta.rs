@@ -68,10 +68,15 @@ pub struct ServerDownload {
     pub java_major: u32,
 }
 
-pub async fn server_download(mc_version: &str) -> AppResult<ServerDownload> {
+/// Datos oficiales de una versión (descargas, índice de recursos, Java).
+pub async fn version_json(mc_version: &str) -> AppResult<serde_json::Value> {
     let m = manifest().await?;
     let entry = m.versions.iter().find(|v| v.id == mc_version).ok_or_else(|| AppError::not_found(&format!("la versión {mc_version} en el listado de Mojang")))?;
-    let v: serde_json::Value = net::get_json(&entry.url, "los datos de la versión").await?;
+    net::get_json(&entry.url, "los datos de la versión").await
+}
+
+pub async fn server_download(mc_version: &str) -> AppResult<ServerDownload> {
+    let v = version_json(mc_version).await?;
     let server = v.pointer("/downloads/server").ok_or_else(|| AppError::invalid(format!("Mojang no publica servidor dedicado para la versión {mc_version}.")))?;
     let url = server.get("url").and_then(|x| x.as_str()).ok_or_else(|| AppError::invalid("Datos de versión incompletos"))?;
     let sha1 = server.get("sha1").and_then(|x| x.as_str()).ok_or_else(|| AppError::invalid("Datos de versión incompletos"))?;

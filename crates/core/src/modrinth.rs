@@ -57,6 +57,57 @@ pub struct Project {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct GalleryImage {
+    pub url: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub featured: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct License { #[serde(default)] pub id: String, #[serde(default)] pub name: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct ProjectDetail {
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// Descripción larga en Markdown (la interfaz la muestra como texto, sin HTML).
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default = "unknown")]
+    pub client_side: String,
+    #[serde(default = "unknown")]
+    pub server_side: String,
+    #[serde(default)]
+    pub downloads: u64,
+    #[serde(default)]
+    pub followers: u64,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub updated: String,
+    #[serde(default)]
+    pub license: Option<License>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub issues_url: Option<String>,
+    #[serde(default)]
+    pub wiki_url: Option<String>,
+    #[serde(default)]
+    pub gallery: Vec<GalleryImage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hashes {
     pub sha1: String,
     #[serde(default)]
@@ -160,6 +211,33 @@ impl Modrinth {
         let facets = serde_json::to_string(&facets)?;
         let url = format!("{API}/search?query={}&facets={}&limit=20&offset={offset}&index=relevance", enc(query), enc(&facets));
         net::get_json(&url, "Modrinth").await
+    }
+
+    /// Búsqueda para la tienda: categorías opcionales y filtro de lado ("server" | "client" | "both" | "").
+    pub async fn search_filtered(&self, query: &str, mc: &str, loader: &str, categories: &[String], side: &str, sort: &str, offset: u32) -> AppResult<SearchResult> {
+        let mut facets = vec![
+            vec!["project_type:mod".to_string()],
+            vec![format!("categories:{loader}")],
+            vec![format!("versions:{mc}")],
+        ];
+        for c in categories.iter().filter(|c| c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') && !c.is_empty()).take(6) {
+            facets.push(vec![format!("categories:{c}")]);
+        }
+        match side {
+            "server" => { facets.push(vec!["server_side:required".into()]); facets.push(vec!["client_side:unsupported".into(), "client_side:optional".into()]); }
+            "client" => { facets.push(vec!["client_side:required".into()]); facets.push(vec!["server_side:unsupported".into(), "server_side:optional".into()]); }
+            "both" => { facets.push(vec!["server_side:required".into()]); facets.push(vec!["client_side:required".into()]); }
+            _ => facets.push(vec!["server_side:required".into(), "server_side:optional".into()]),
+        }
+        let index = match sort { "downloads" | "follows" | "newest" | "updated" => sort, _ => "relevance" };
+        let facets = serde_json::to_string(&facets)?;
+        let url = format!("{API}/search?query={}&facets={}&limit=20&offset={offset}&index={index}", enc(query), enc(&facets));
+        net::get_json(&url, "Modrinth").await
+    }
+
+    /// Ficha completa de un proyecto para la página de detalle.
+    pub async fn project_detail(&self, id_or_slug: &str) -> AppResult<ProjectDetail> {
+        net::get_json(&format!("{API}/project/{}", enc(id_or_slug)), "Modrinth").await
     }
 
     pub async fn project(&self, id_or_slug: &str) -> AppResult<Project> {

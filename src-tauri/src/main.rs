@@ -3,6 +3,7 @@
 
 mod commands;
 mod network;
+mod v3;
 
 use host939_core::events::{Events, InstallProgress};
 use host939_core::{hardware, identity, paths, process, settings};
@@ -195,6 +196,26 @@ fn main() {
             network::remote_list,
             network::remote_join,
             network::remote_remove,
+            v3::pause_server,
+            v3::resume_server,
+            v3::stop_server_warned,
+            v3::restart_server_warned,
+            v3::cancel_countdown,
+            v3::players_online_count,
+            v3::player_detail,
+            v3::player_skin,
+            v3::game_assets_status,
+            v3::game_assets_prepare,
+            v3::game_sprites,
+            v3::game_names,
+            v3::game_assets_clear,
+            v3::repair_analyze,
+            v3::repair_apply,
+            v3::repair_undo,
+            v3::repair_last,
+            v3::mods_explore,
+            v3::mods_project,
+            v3::mods_import_files,
         ])
         .build(tauri::generate_context!())
         .expect("no se pudo iniciar 939 Host");

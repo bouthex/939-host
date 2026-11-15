@@ -209,7 +209,7 @@ impl Manager {
                 if rt.countdown_gen != gen || rt.status() != RunStatus::Running { return false; }
                 if left == 0 { rt.countdown = None; break; }
                 let say = match last_said {
-                    None => Some(format!("say El servidor {verb} en {left} segundos. Tu progreso está guardado.")),
+                    None => { let _ = rt.write_stdin("save-all"); Some(format!("say El servidor {verb} en {left} segundos. Se guarda el progreso de todos.")) }
                     Some(prev) if prev != left && marks.contains(&left) => Some(format!("say El servidor {verb} en {left}…")),
                     _ => None,
                 };

@@ -563,6 +563,12 @@ pub struct ImportReport {
 /// el archivo más nuevo de cada mod) y nunca pisa archivos que el servidor ya tenga.
 pub fn import_folder(cfg: &ServerConfig, src: &Path) -> AppResult<ImportReport> {
     if !src.is_dir() { return Err(AppError::invalid("La carpeta no existe.")); }
+    let files: Vec<PathBuf> = std::fs::read_dir(src).map_err(|e| AppError::io("No se pudo leer la carpeta", e))?.flatten().map(|e| e.path()).collect();
+    import_files(cfg, &files)
+}
+
+/// Importa archivos sueltos (arrastrados o elegidos): mismas reglas que una carpeta.
+pub fn import_files(cfg: &ServerConfig, files: &[PathBuf]) -> AppResult<ImportReport> {
     let dest = mods_dir(&cfg.id);
     std::fs::create_dir_all(&dest).map_err(|e| AppError::io("No se pudo crear la carpeta de mods", e))?;
     let mut present: HashSet<String> = HashSet::new();
@@ -572,19 +578,19 @@ pub fn import_folder(cfg: &ServerConfig, src: &Path) -> AppResult<ImportReport> 
     let mut best: HashMap<String, (std::time::SystemTime, PathBuf, String)> = HashMap::new();
     let mut r = ImportReport { copied: vec![], skipped_client: vec![], skipped_duplicate: vec![], skipped_existing: vec![], not_mods: vec![] };
     let mut metas = vec![];
-    for e in std::fs::read_dir(src).map_err(|e| AppError::io("No se pudo leer la carpeta", e))?.flatten() {
-        let p = e.path();
-        let name = e.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jar") { continue; }
-        match jar_meta(&p) { Some(m) => metas.push((e, p, name, m)), None => r.not_mods.push(name) }
+    for p in files {
+        if !p.is_file() { continue; }
+        let name = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+        if !name.to_lowercase().ends_with(".jar") { if !name.is_empty() { r.not_mods.push(name); } continue; }
+        let mtime = std::fs::metadata(p).and_then(|x| x.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        match jar_meta(p) { Some(m) => metas.push((mtime, p.clone(), name, m)), None => r.not_mods.push(name) }
     }
     // Un mod "solo de cliente" se copia igual si otro mod del servidor lo declara como dependencia:
     // Fabric no lo carga en el servidor, pero exige que esté presente.
     let needed: HashSet<String> = metas.iter().filter(|(_, _, _, m)| m.environment != "client").flat_map(|(_, _, _, m)| m.depends.clone()).collect();
-    for (e, p, name, m) in metas {
+    for (mtime, p, name, m) in metas {
         if m.environment == "client" && !needed.contains(&m.id) { r.skipped_client.push(format!("{} ({name})", if m.name.is_empty() { &m.id } else { &m.name })); continue; }
         if present.contains(&m.id) { r.skipped_existing.push(name); continue; }
-        let mtime = e.metadata().and_then(|x| x.modified()).unwrap_or(std::time::UNIX_EPOCH);
         match best.get(&m.id) {
             Some((t, _, _)) if *t >= mtime => r.skipped_duplicate.push(name),
             Some((_, _, old)) => { r.skipped_duplicate.push(old.clone()); best.insert(m.id.clone(), (mtime, p, name)); }
