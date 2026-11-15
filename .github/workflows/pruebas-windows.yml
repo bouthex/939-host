@@ -1,0 +1,141 @@
+name: Pruebas en Windows
+
+# Pruebas reales en Windows Server 2025 (misma base que Windows 11) para la rama de desarrollo.
+# No publica nada: solo compila, prueba y guarda los archivos como artefactos de la ejecución.
+on:
+  push:
+    branches: [rediseno-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pruebas-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compilar:
+    name: Compilar instalador y portable
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Herramientas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
+          rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-gnu
+      - run: scripts/compilar-windows.sh
+      - run: scripts/empaquetar.sh "$(scripts/version.sh)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: 939Host-windows-prueba
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          retention-days: 14
+
+  nucleo-windows:
+    name: Núcleo, P2P y grupo en Windows (servidores reales)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-msvc
+      - name: Pruebas automáticas (incluye PCs congeladas y recuperación)
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster -- --test-threads 1
+      - name: Loaders reales (Vanilla, Fabric, Forge, NeoForge)
+        run: cargo test --locked -p host939-core --test e2e_real e2e_loaders -- --ignored --nocapture
+      - name: Modrinth real
+        run: cargo test --locked -p host939-core --test e2e_real e2e_modrinth -- --ignored --nocapture
+      - name: Ciclo completo, copias y restauración
+        run: cargo test --locked -p host939-core --test server_lifecycle full_server_lifecycle -- --ignored --nocapture
+      - name: Jugadores y permisos
+        run: cargo test --locked -p host939-core --test server_lifecycle players_and_permissions_real_server -- --ignored --nocapture
+      - name: Funciones del diseño v3
+        run: cargo test --locked -p host939-core --test v3_features -- --ignored --nocapture
+      - name: Traspaso de anfitrión con servidores reales (dos PCs por P2P)
+        run: cargo test --locked -p host939-cluster --test multi_node real_minecraft_handover -- --ignored --nocapture
+
+  app-windows:
+    name: App instalada en Windows (interfaz real)
+    runs-on: windows-2025
+    needs: compilar
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: 939Host-windows-prueba
+          path: dist
+      - name: Verificar SHA-256
+        shell: bash
+        run: cd dist && sha256sum -c <(grep -v payload/ SHA256SUMS.txt)
+      - name: Instalar sin administrador (silencioso)
+        shell: pwsh
+        run: |
+          $inst = Get-ChildItem dist\*-instalador.exe | Select-Object -First 1
+          Start-Process $inst.FullName -ArgumentList '/S' -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          if (!(Test-Path $exe)) { throw "No se instaló en $exe" }
+          Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install playwright==1.48.0
+      - name: Abrir la app y usarla como una persona
+        shell: pwsh
+        env:
+          WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: --remote-debugging-port=9222
+          OUT: capturas
+        run: |
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 8
+          if ($p.HasExited) { throw "La app se cerró al abrir (código $($p.ExitCode))" }
+          python ci/windows/ui_e2e.py
+          $code = $LASTEXITCODE
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("capturas\escritorio-windows.png")
+          Get-Process java -ErrorAction SilentlyContinue | Format-Table Id, CPU, WS
+          if ($code -ne 0) { exit $code }
+      - name: Registro de la app
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem "$env:LOCALAPPDATA\939Host" -Recurse -Include *.log | ForEach-Object { "== $($_.FullName)"; Get-Content $_ -Tail 60 }
+      - name: Portable abre sin instalar
+        shell: pwsh
+        run: |
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process java -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          Expand-Archive (Get-ChildItem dist\*-portable.zip | Select-Object -First 1).FullName portable
+          $p = Start-Process portable\939Host.exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "La portable se cerró (código $($p.ExitCode))" }
+          Stop-Process $p -Force
+      - name: Desinstalar
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          $u = "$env:LOCALAPPDATA\Programs\939 Host\Desinstalar 939 Host.exe"
+          if (!(Test-Path $u)) { $u = Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host\*.exe" | Where-Object Name -match 'esinst|uninst' | Select-Object -First 1 -ExpandProperty FullName }
+          if ($u) { Start-Process $u -ArgumentList '/S' -Wait; Start-Sleep 5 }
+          if (Test-Path "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe") { throw "No se desinstaló" }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: capturas-windows
+          path: capturas
+          retention-days: 14

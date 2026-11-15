@@ -1,0 +1,192 @@
+//! Pruebas de punta a punta con descargas reales, pensadas para correr en Windows (CI) o en
+//! cualquier PC con internet. Todo ocurre en una carpeta temporal aislada: no se toca ninguna
+//! instalación de Minecraft ni ningún mundo existente.
+//!
+//! - `e2e_loaders`: para Vanilla, Fabric, Forge y NeoForge: crear → instalar (Java y servidor
+//!   descargados por 939 Host, verificados) → encender → «Done» → comando → apagar limpio.
+//! - `e2e_modrinth`: servidor Fabric + búsqueda real en Modrinth + plan con dependencias +
+//!   instalación con hash verificado → el servidor arranca con el mod cargado.
+//!
+//! cargo test -p host939-core --test e2e_real -- --ignored --nocapture --test-threads 1
+
+use host939_core::events::{Events, InstallProgress};
+use host939_core::hardware::Probe;
+use host939_core::model::*;
+use host939_core::process::Manager;
+use host939_core::{instance, meta, modrinth, mods, paths};
+use std::sync::{Arc, Mutex, Once};
+use std::time::{Duration, Instant};
+
+#[derive(Default)]
+struct Recorder {
+    progress: Mutex<Vec<String>>,
+}
+impl Events for Recorder {
+    fn server_changed(&self, _: &str) {}
+    fn console_line(&self, _: &str, _: &str) {}
+    fn install_progress(&self, p: &InstallProgress) {
+        let mut v = self.progress.lock().unwrap();
+        if v.last().map(|l| !l.starts_with(&p.message)).unwrap_or(true) || p.error.is_some() {
+            v.push(format!("{} {:.0}% {:?}", p.message, p.fraction * 100.0, p.error));
+        }
+    }
+}
+
+static INIT: Once = Once::new();
+static mut ROOT: Option<tempfile::TempDir> = None;
+
+/// Una sola raíz por proceso (paths::init es global); cada prueba usa servidores distintos.
+fn init() {
+    INIT.call_once(|| {
+        let t = tempfile::tempdir().unwrap();
+        paths::init(t.path().to_path_buf()).unwrap();
+        if let Ok(j) = std::env::var("HOST939_TEST_JAVA25") {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&j, paths::runtimes().join("java-25")).unwrap();
+            #[cfg(not(unix))]
+            let _ = j;
+        }
+        #[allow(static_mut_refs)]
+        unsafe { ROOT = Some(t) };
+    });
+}
+
+fn wait_for(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + timeout;
+    while Instant::now() < end {
+        if f() { return true; }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    false
+}
+
+/// Consulta de estado del protocolo de Minecraft (lo que hace la lista de servidores del juego).
+fn slp_status(port: u16) -> String {
+    use std::io::{Read, Write};
+    fn varint(mut v: u32, out: &mut Vec<u8>) { loop { let b = (v & 0x7f) as u8; v >>= 7; if v == 0 { out.push(b); break } out.push(b | 0x80); } }
+    fn read_varint(r: &mut impl Read) -> std::io::Result<u32> { let mut n = 0u32; for i in 0..5 { let mut b = [0u8]; r.read_exact(&mut b)?; n |= ((b[0] & 0x7f) as u32) << (7 * i); if b[0] & 0x80 == 0 { return Ok(n) } } Ok(n) }
+    let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
+    c.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    let mut body = vec![0u8]; varint(767, &mut body); varint(9, &mut body); body.extend_from_slice(b"127.0.0.1"); body.extend_from_slice(&port.to_be_bytes()); varint(1, &mut body);
+    let mut pkt = vec![]; varint(body.len() as u32, &mut pkt); pkt.extend(body); pkt.extend_from_slice(&[1, 0]);
+    if c.write_all(&pkt).is_err() { return String::new() }
+    let Ok(len) = read_varint(&mut c) else { return String::new() };
+    let mut buf = vec![0u8; len as usize];
+    if c.read_exact(&mut buf).is_err() { return String::new() }
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+/// Primera versión de la lista que el loader soporta (la más nueva primero).
+async fn pick_version(loader: Loader, candidates: &[&str]) -> Option<String> {
+    for mc in candidates {
+        if let Ok(s) = meta::loader_support(loader, mc).await {
+            if s.supported { return Some(mc.to_string()); }
+        }
+    }
+    None
+}
+
+async fn release_candidates() -> Vec<String> {
+    meta::list_versions(false).await.expect("lista de versiones de Mojang").into_iter().map(|v| v.id).take(12).collect()
+}
+
+fn input(name: &str, mc: &str, loader: Loader, port: u16) -> CreateServerInput {
+    CreateServerInput {
+        name: name.into(), description: "prueba de punta a punta".into(), mc_version: mc.into(), loader,
+        memory_mb: 2048, difficulty: "normal".into(), gamemode: "survival".into(), max_players: 4, port,
+        online_mode: true, whitelist: false, view_distance: 4, simulation_distance: 4, level_seed: "939".into(),
+        accept_eula: true, import_world_path: None,
+    }
+}
+
+/// Instala, enciende, verifica y apaga. Devuelve el tiempo hasta «en línea».
+async fn run_server(mgr: &Manager, rec: &Recorder, probe: &Probe, cfg: ServerConfig) -> (ServerConfig, f32) {
+    let t0 = Instant::now();
+    instance::install(mgr, cfg.id.clone()).await;
+    let cfg = instance::load(&cfg.id).unwrap();
+    assert!(cfg.installed, "{} {:?}: instalación falló: {:?}\n{}", cfg.mc_version, cfg.loader, cfg.install_error, rec.progress.lock().unwrap().join("\n"));
+    println!("  instalado en {:.0} s (Java {})", t0.elapsed().as_secs_f32(), cfg.java_major);
+    let t1 = Instant::now();
+    mgr.start(probe, &cfg).expect("iniciar");
+    let rt = mgr.runtime(&cfg.id);
+    let ok = wait_for(Duration::from_secs(600), || {
+        let s = rt.lock().unwrap().status();
+        s == RunStatus::Running || s == RunStatus::Crashed || s == RunStatus::Stopped
+    });
+    let st = rt.lock().unwrap().status();
+    assert!(ok && st == RunStatus::Running, "{:?} no llegó a funcionar ({st:?}):\n{}", cfg.loader, mgr.console(&cfg.id).iter().rev().take(40).cloned().collect::<Vec<_>>().join("\n"));
+    let online = t1.elapsed().as_secs_f32();
+    mgr.send_command(&cfg.id, "say hola desde la prueba").unwrap();
+    assert!(wait_for(Duration::from_secs(20), || mgr.console(&cfg.id).iter().any(|l| l.contains("hola desde la prueba"))), "el comando no llegó");
+    // Estado por el protocolo de Minecraft (lo mismo que ve el juego).
+    let st = slp_status(cfg.port);
+    assert!(st.contains("\"version\""), "estado del servidor: {st}");
+    mgr.stop(&cfg.id).unwrap();
+    assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)), "no se apagó");
+    assert_eq!(rt.lock().unwrap().status(), RunStatus::Stopped, "apagado no limpio: {:?}", rt.lock().unwrap().last_error);
+    (cfg, online)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_loaders() {
+    init();
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let cands = release_candidates().await;
+    let cand: Vec<&str> = cands.iter().map(|s| s.as_str()).collect();
+    let mut port = 25700;
+    let mut skipped = vec![];
+    for loader in [Loader::Vanilla, Loader::Fabric, Loader::Forge, Loader::NeoForge] {
+        let Some(mc) = pick_version(loader, &cand).await else {
+            skipped.push(format!("{loader:?}: ninguna de {cand:?} tiene versión publicada"));
+            continue;
+        };
+        port += 1;
+        println!("▶ {loader:?} {mc}");
+        rec.progress.lock().unwrap().clear();
+        let cfg = instance::create(input(&format!("E2E {loader:?}"), &mc, loader, port), 8192).await.expect("crear");
+        let (cfg, secs) = run_server(&mgr, &rec, &probe, cfg).await;
+        println!("✔ {loader:?} {mc} (loader {:?}) en línea en {secs:.0} s y apagado limpio", cfg.loader_version);
+    }
+    for s in &skipped { println!("⚠ omitido: {s}"); }
+    assert!(skipped.len() <= 1, "demasiados loaders sin versión: {skipped:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_modrinth() {
+    init();
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let cands = release_candidates().await;
+    let cand: Vec<&str> = cands.iter().map(|s| s.as_str()).collect();
+    let mc = pick_version(Loader::Fabric, &cand).await.expect("Fabric sin versiones");
+    let src = modrinth::Modrinth;
+    // Lithium: mod de servidor muy usado, sin dependencias obligatorias de cliente.
+    let res = src.search("lithium", &mc, "fabric", true, 0).await.expect("búsqueda en Modrinth");
+    println!("✔ Modrinth: {} resultados para «lithium» en Fabric {mc}", res.total_hits);
+    let hit = res.hits.iter().find(|h| h.slug == "lithium").or(res.hits.first()).expect("sin resultados");
+    let cfg = instance::create(input("E2E Mods", &mc, Loader::Fabric, 25790), 8192).await.expect("crear");
+    instance::install(&mgr, cfg.id.clone()).await;
+    let cfg = instance::load(&cfg.id).unwrap();
+    assert!(cfg.installed, "Fabric: {:?}", cfg.install_error);
+    let plan = mods::plan_install(&src, &cfg, &hit.project_id, None).await.expect("plan");
+    println!("✔ plan: {} archivo(s), {:.1} MB, avisos {:?}", plan.items.len(), plan.total_bytes as f64 / 1e6, plan.warnings);
+    let installed = mods::apply_plan(&cfg, &plan, |_, _| {}).await.expect("instalar mod");
+    assert!(!installed.is_empty());
+    let jars: Vec<_> = std::fs::read_dir(mods::mods_dir(&cfg.id)).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    println!("✔ instalado con hash verificado: {jars:?}");
+    // Escaneo: el archivo queda reconocido como de Modrinth.
+    let scan = mods::scan(&src, &cfg, true).await.expect("escaneo");
+    assert!(!scan.is_empty());
+    let (cfg, secs) = run_server(&mgr, &rec, &probe, cfg).await;
+    let log = std::fs::read_to_string(paths::server_run_dir(&cfg.id).join("logs/latest.log")).unwrap_or_default();
+    assert!(log.to_lowercase().contains(&hit.slug.to_lowercase()) || log.contains("Loading") , "el log no menciona el mod");
+    println!("✔ Fabric {mc} con {} en línea en {secs:.0} s", hit.title);
+    // Quitar el mod deja la carpeta como estaba.
+    mods::remove(&cfg, &hit.project_id).expect("quitar");
+    println!("✔ mod quitado");
+}

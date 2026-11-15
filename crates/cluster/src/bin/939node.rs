@@ -118,7 +118,10 @@ async fn main() {
     paths::init(root.clone().into()).expect("init");
     if let Some(j) = arg("--java25") {
         let link = paths::runtimes().join("java-25");
+        #[cfg(unix)]
         if !link.exists() { let _ = std::os::unix::fs::symlink(j, link); }
+        #[cfg(not(unix))]
+        let _ = (j, link);
     }
     let node_id = identity::load_or_create_node().expect("identidad");
     let secret = identity::node_secret().unwrap();

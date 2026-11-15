@@ -13,6 +13,18 @@ use host939_core::{backup, instance, paths, snapshots};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Java de prueba: si HOST939_TEST_JAVA25 apunta a un JDK local se usa ese (entornos sin
+/// internet); si no, 939 Host descarga Java como lo haría en la PC de un usuario.
+#[allow(dead_code)]
+fn java_override() {
+    if let Ok(j) = std::env::var("HOST939_TEST_JAVA25") {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&j, host939_core::paths::runtimes().join("java-25")).unwrap();
+        #[cfg(not(unix))]
+        let _ = j;
+    }
+}
+
 #[derive(Default)]
 struct Recorder {
     lines: Mutex<Vec<String>>,
@@ -38,10 +50,9 @@ fn wait_for(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn full_server_lifecycle() {
-    let java25 = std::env::var("HOST939_TEST_JAVA25").expect("definí HOST939_TEST_JAVA25");
     let tmp = tempfile::tempdir().unwrap();
     paths::init(tmp.path().to_path_buf()).unwrap();
-    std::os::unix::fs::symlink(&java25, paths::runtimes().join("java-25")).unwrap();
+    java_override();
 
     let rec = Arc::new(Recorder::default());
     let mgr = Manager::new(rec.clone());
@@ -166,10 +177,9 @@ fn mods_metadata_from_real_copies() {
 #[ignore]
 async fn players_and_permissions_real_server() {
     use host939_core::players::{self, PlayerAction};
-    let java25 = std::env::var("HOST939_TEST_JAVA25").expect("definí HOST939_TEST_JAVA25");
     let tmp = tempfile::tempdir().unwrap();
     paths::init(tmp.path().to_path_buf()).unwrap();
-    std::os::unix::fs::symlink(&java25, paths::runtimes().join("java-25")).unwrap();
+    java_override();
     if let Ok(jar) = std::env::var("HOST939_TEST_SERVER_JAR") {
         let sha = String::from_utf8(std::process::Command::new("sha1sum").arg(&jar).output().unwrap().stdout).unwrap().split_whitespace().next().unwrap().to_string();
         std::fs::create_dir_all(paths::cache().join("jars")).unwrap();
@@ -300,12 +310,11 @@ fn import_mods_from_real_copy() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn migration_rehearsal_with_copies() {
-    let java25 = std::env::var("HOST939_TEST_JAVA25").expect("HOST939_TEST_JAVA25");
     let world = std::env::var("HOST939_TEST_WORLD").expect("HOST939_TEST_WORLD");
     let mods = std::env::var("HOST939_TEST_MODS").expect("HOST939_TEST_MODS");
     let tmp = tempfile::tempdir().unwrap();
     paths::init(tmp.path().to_path_buf()).unwrap();
-    std::os::unix::fs::symlink(&java25, paths::runtimes().join("java-25")).unwrap();
+    java_override();
     if let Ok(jar) = std::env::var("HOST939_TEST_SERVER_JAR") {
         let sha = String::from_utf8(std::process::Command::new("sha1sum").arg(&jar).output().unwrap().stdout).unwrap().split_whitespace().next().unwrap().to_string();
         std::fs::create_dir_all(paths::cache().join("jars")).unwrap();

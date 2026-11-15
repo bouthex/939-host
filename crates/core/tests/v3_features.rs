@@ -19,6 +19,18 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Java de prueba: si HOST939_TEST_JAVA25 apunta a un JDK local se usa ese (entornos sin
+/// internet); si no, 939 Host descarga Java como lo haría en la PC de un usuario.
+#[allow(dead_code)]
+fn java_override() {
+    if let Ok(j) = std::env::var("HOST939_TEST_JAVA25") {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&j, host939_core::paths::runtimes().join("java-25")).unwrap();
+        #[cfg(not(unix))]
+        let _ = j;
+    }
+}
+
 #[derive(Default)]
 struct Recorder { lines: Mutex<Vec<String>> }
 impl Events for Recorder {
@@ -45,10 +57,9 @@ fn wait_for(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn design_v3_features() {
-    let java25 = std::env::var("HOST939_TEST_JAVA25").expect("definí HOST939_TEST_JAVA25");
     let tmp = tempfile::tempdir().unwrap();
     paths::init(tmp.path().to_path_buf()).unwrap();
-    std::os::unix::fs::symlink(&java25, paths::runtimes().join("java-25")).unwrap();
+    java_override();
     let rec = Arc::new(Recorder::default());
     let mgr = Arc::new(Manager::new(rec.clone()));
     let probe = Probe::new();

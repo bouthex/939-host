@@ -62,6 +62,12 @@ impl Drop for Node {
         let _ = Command::new("pkill").arg("-CONT").arg("-P").arg(self.child.id().to_string()).status();
         let _ = Command::new("kill").arg("-CONT").arg(self.child.id().to_string()).status();
         let _ = Command::new("pkill").arg("-KILL").arg("-P").arg(self.child.id().to_string()).status();
+        #[cfg(windows)]
+        {
+            let id = self.child.id();
+            let _ = std::panic::catch_unwind(|| signal(id, "CONT"));
+            let _ = Command::new("taskkill").args(["/T", "/F", "/PID", &id.to_string()]).output();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -84,7 +90,21 @@ fn slp(port: u16) -> String {
     })
 }
 
+/// Congela (STOP), reanuda (CONT) o mata (KILL) una "PC": simula una PC colgada o sin red.
+#[cfg(unix)]
 fn signal(pid: u32, sig: &str) { assert!(Command::new("kill").arg(format!("-{sig}")).arg(pid.to_string()).status().unwrap().success()); }
+#[cfg(windows)]
+fn signal(pid: u32, sig: &str) {
+    let script = match sig {
+        "KILL" => format!("Stop-Process -Id {pid} -Force"),
+        "STOP" | "CONT" => {
+            let f = if sig == "STOP" { "NtSuspendProcess" } else { "NtResumeProcess" };
+            format!("Add-Type -Name N -Namespace W -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int {f}(IntPtr h);'; $p = Get-Process -Id {pid}; if ([W.N]::{f}($p.Handle) -ne 0) {{ exit 1 }}")
+        }
+        other => panic!("señal {other}"),
+    };
+    assert!(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).status().unwrap().success(), "señal {sig} a {pid}");
+}
 
 fn fresh(v: &Value) -> (u64, u64) { (v["epoch"].as_u64().unwrap_or(0), v["seq"].as_u64().unwrap_or(0)) }
 
@@ -294,16 +314,17 @@ fn stale_copy_cannot_start_after_release() {
 #[test]
 #[ignore]
 fn real_minecraft_handover() {
-    let jar = std::path::Path::new("/tmp/mctest/server.jar");
-    assert!(jar.exists(), "falta /tmp/mctest/server.jar");
-    std::env::var("HOST939_TEST_JAVA25").expect("definí HOST939_TEST_JAVA25");
     let tmp = tempfile::tempdir().unwrap();
-    // Precargar el jar oficial en la caché de cada "PC" (se verifica por SHA-1 igual).
-    let sha1 = String::from_utf8(Command::new("sha1sum").arg(jar).output().unwrap().stdout).unwrap().split_whitespace().next().unwrap().to_string();
-    for n in ["a", "b"] {
-        let d = tmp.path().join(n).join("cache/jars");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::copy(jar, d.join(format!("{sha1}.jar"))).unwrap();
+    // Sin internet (entorno de desarrollo): se precarga el jar oficial en la caché de cada "PC"
+    // (se verifica por SHA-1 igual). Con internet (CI en Windows) cada PC lo descarga de Mojang.
+    let jar = std::path::Path::new("/tmp/mctest/server.jar");
+    if jar.exists() {
+        let sha1 = host939_core::net::sha1_file(jar).unwrap();
+        for n in ["a", "b"] {
+            let d = tmp.path().join(n).join("cache/jars");
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::copy(jar, d.join(format!("{sha1}.jar"))).unwrap();
+        }
     }
     let mut a = Node::spawn("A", &tmp.path().join("a"), false, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), false, &[]);
