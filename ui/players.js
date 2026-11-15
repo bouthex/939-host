@@ -124,7 +124,9 @@ const enchName = (id) => media.names?.[`enchantment:${bare(id)}`] || bare(id).re
 
 /* ───────── pestaña ───────── */
 tabDraw.players = async (el) => {
-  el.innerHTML = `<div class="stack" style="gap:16px"><div id="assets-note"></div><div class="players">
+  const gg = state.share?.enabled ? state.share.group : null;
+  const away = gg && !gg.iAmHost && gg.lease?.state === 'hosting' && !isActive(state.server) ? (gg.members.find((m) => m.isHost)?.name || gg.lease.hostName) : null;
+  el.innerHTML = `<div class="stack" style="gap:16px">${away ? `<div class="note">${icon('info')}<div class="grow"><b>Se está jugando en la PC de ${esc(away)}</b><span class="sm t2">Acá ves la última copia sincronizada. Para ver vida, inventario y ubicación en vivo, abrí 939 Host en esa PC.</span></div></div>` : ''}<div id="assets-note"></div><div class="players">
     <div class="card plist-card"><div class="card-head" style="flex-wrap:wrap"><h2>Jugadores</h2><span class="sm t3" id="pl-count"></span></div>
       <div class="pad" style="padding:12px 16px;border-bottom:1px solid var(--line)"><div class="row" style="gap:8px"><input class="input mono" id="pl-add" placeholder="Agregar por nombre" maxlength="16" autocomplete="off" spellcheck="false" aria-label="Nombre de Minecraft"><button class="btn icon" data-a="pl-add" title="Agregar a la lista blanca" aria-label="Agregar a la lista blanca">${icon('plus', 16)}</button></div></div>
       <div class="list plist" id="pl-list"></div></div>

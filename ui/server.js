@@ -335,7 +335,7 @@ tabDraw.group = async (el) => {
         <div class="card"><div class="card-head"><h2>PCs del grupo</h2><span class="sm t3">${online} de ${g.members.length} conectadas</span></div><div class="list">
           ${g.members.map((m) => `<div class="li">${pcAvatar(m.symbol, 32, m.isHost ? 'inv' : '')}<div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(m.name)}</b>${m.isMe ? '<span class="sm t3">(vos)</span>' : ''}${m.isHost ? '<span class="chip s fill">Anfitrión</span>' : ''}<span class="chip s">${ROLE[m.role] || esc(m.role)}</span></div>
             <div class="sm t3">${m.online ? `${SHAPES.dot.replace('class="dot"', 'class="dot" style="display:inline-block;width:6px;height:6px;margin-right:4px"')}Conectada${m.path ? ` · ${m.path === 'relay' ? 'por relay' : 'directa'}${m.rttMs != null ? ` · ${m.rttMs} ms` : ''}` : ''}` : 'Desconectada'}${m.canHost ? ` · estado ${esc(ago(m.latestAt))}` : ''}</div></div>
-            ${m.isMe ? `<button class="btn s icon ghost" data-a="identity" title="Cambiar el nombre de esta PC" aria-label="Cambiar el nombre de esta PC">${icon('edit', 15)}</button>` : ''}${!m.isMe && m.role !== 'propietario' && !m.isHost ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}">Quitar</button>` : ''}</div>`).join('')}</div></div>
+            ${m.isMe ? `<button class="btn s icon ghost" data-a="identity" title="Cambiar el nombre de esta PC" aria-label="Cambiar el nombre de esta PC">${icon('edit', 15)}</button>` : ''}${!m.isMe && m.role !== 'propietario' && !m.isHost && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}">Quitar</button>` : ''}</div>`).join('')}</div></div>
         <div class="card pad stack"><h2>Invitar</h2>${inviteBtns}
           ${st.invites.length ? `<div><div class="sec" style="margin:6px 0">Invitaciones sin usar</div>${st.invites.map((i) => `<div class="kv"><span>${ROLE[i.role] || 'Jugador'} <span class="sm t3">${esc(fmtDate(i.createdAt))}</span></span><button class="btn s ghost" data-a="invite-revoke" data-secret="${esc(i.secret)}">Revocar</button></div>`).join('')}</div>` : ''}</div>
       </div></div></div>`;
@@ -450,6 +450,7 @@ tabDraw.settings = async (el) => {
   updateSavebar();
   updateJvmPreview();
   onLeave(() => { srvEdit.cfg = null; });
+  scrollSpy('.settings .toc', 'ss');
   guards.push(async () => !isDirty() || (await dialog({ title: 'Hay cambios sin guardar', body: '<p>Si salís de Ajustes se descartan.</p>', confirm: 'Descartar cambios' }) && (srvEdit.cfg = null, true)));
 };
 function updateSavebar() {

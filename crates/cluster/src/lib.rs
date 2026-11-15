@@ -449,6 +449,9 @@ impl GroupNode {
 
     /// Saca a una PC del grupo (no puede quitarse al anfitrión actual).
     pub fn remove_member(&self, server: &str, node: &str) -> Result<()> {
+        if network::load_share(server).member(&self.inner.me).map(|m| m.role != "propietario").unwrap_or(true) {
+            bail!("Solo la PC propietaria puede quitar PCs del grupo.");
+        }
         if lease::read(server).map(|l| l.held_by(node)).unwrap_or(false) { bail!("Esa PC es la anfitriona ahora: primero pasá el servidor a otra."); }
         let mut s = network::load_share(server);
         s.members.retain(|m| m.node_id != node || m.role == "propietario");
@@ -586,7 +589,16 @@ impl GroupNode {
         if target == inner.me { bail!("Elegí otra PC."); }
         let info = match inner.rpc(&target, &Req::Info { server: server.into() }).await? { Resp::Info(i) => i, _ => bail!("respuesta inesperada") };
         if !info.has_copy || !info.can_host { bail!("{} no puede hostear este servidor (no es coanfitriona o lo tiene desactivado).", nice(&info.name)); }
-        inner.set_busy(server, Some(format!("Pasando el servidor a {}", info.name)));
+        // Un solo traspaso a la vez (tomar la marca es atómico).
+        let label_busy = format!("Pasando el servidor a {}", info.name);
+        if !inner.with_state(server, |s| if s.busy.is_some() { false } else { s.busy = Some(label_busy.clone()); true }) {
+            bail!("Ya hay un traspaso en curso.");
+        }
+        inner.local.changed(server);
+        let epoch0 = l.epoch;
+        // ¿Esta PC sigue siendo la anfitriona con el mismo permiso? Si otra PC lo tomó mientras
+        // tanto (recuperación) o esta PC se aisló, el traspaso se corta y no se vuelve a encender.
+        let still_mine = || lease::read(server).map(|l| l.held_by(&inner.me) && l.epoch == epoch0).unwrap_or(false) && !inner.with_state(server, |s| s.fenced);
         let result = async {
             let was_running = inner.local.is_running(server);
             let take = |label: String| { let l2 = inner.local.clone(); let s2 = server.to_string(); async move { tokio::task::spawn_blocking(move || l2.snapshot(&s2, &label, "auto")).await?.map_err(|e| anyhow!(e)) } };
@@ -607,6 +619,7 @@ impl GroupNode {
                 if let Err(e) = prefetch(pre.id.clone()).await {
                     bail!("{} no pudo copiar el mundo ({e}). El servidor sigue en esta PC.", info.name);
                 }
+                if !still_mine() { bail!("El servidor cambió de anfitriona mientras se preparaba el traspaso."); }
                 inner.local.note(server, &format!("Pasando el servidor a {}: guardando y apagando…", info.name));
                 inner.blocking(server, |l, s| l.stop(s)).await?;
             }
@@ -614,20 +627,30 @@ impl GroupNode {
             // entrega el permiso: así nunca queda una PC con permiso y sin mundo.
             let snap = take(format!("Traspaso a {}", info.name)).await?;
             if let Err(e) = prefetch(snap.id.clone()).await {
-                if was_running { let _ = inner.blocking(server, |l, s| l.start(s)).await; }
+                if was_running && still_mine() { let _ = inner.blocking(server, |l, s| l.start(s)).await; }
                 bail!("{} no pudo copiar el último estado ({e}). El servidor siguió en esta PC.", info.name);
             }
+            if !still_mine() { bail!("El servidor cambió de anfitriona durante el traspaso; esta PC no lo vuelve a encender."); }
             let next = lease::next_for(server, &target, &info.name);
             let sent = inner.rpc(&target, &Req::Handover { server: server.into(), lease: next.clone(), snapshot: Some(snap.id.clone()) }).await;
             let accepted = match sent {
                 Ok(Resp::Ok) => true,
-                Ok(Resp::Err { msg }) => { inner.local.note(server, &format!("{} rechazó el traspaso: {msg}", info.name)); false }
-                _ => matches!(inner.rpc(&target, &Req::Info { server: server.into() }).await, Ok(Resp::Info(i)) if i.lease.as_ref() == Some(&next)),
+                Ok(Resp::Err { msg }) => {
+                    // Rechazo explícito: la otra PC NO tomó el permiso; volver a encender es seguro.
+                    inner.local.note(server, &format!("{} rechazó el traspaso: {msg}", info.name));
+                    if was_running && still_mine() { let _ = inner.blocking(server, |l, s| l.start(s)).await; }
+                    bail!("No se pudo completar el traspaso; el servidor siguió en esta PC.");
+                }
+                // Sin respuesta: no se sabe si la otra PC tomó el permiso. Para que nunca haya dos
+                // encendidos, se da por entregado (la otra PC ya tiene todo el mundo copiado). Si no
+                // llegó, el grupo lo recupera como cuando una anfitriona deja de responder.
+                _ => {
+                    let confirmed = matches!(inner.rpc(&target, &Req::Info { server: server.into() }).await, Ok(Resp::Info(i)) if i.lease.as_ref() == Some(&next));
+                    if !confirmed { inner.local.note(server, &format!("No se pudo confirmar que {} recibió el servidor. Queda apagado en esta PC para proteger el mundo.", info.name)); }
+                    true
+                }
             };
-            if !accepted {
-                if was_running { let _ = inner.blocking(server, |l, s| l.start(s)).await; }
-                bail!("No se pudo completar el traspaso; el servidor siguió en esta PC.");
-            }
+            let _ = accepted;
             lease::adopt(server, &next).map_err(|e| anyhow!(e.message))?;
             inner.broadcast_lease(server).await;
             inner.local.note(server, &format!("Servidor pasado a {} (época {}).", info.name, next.epoch));
@@ -1204,7 +1227,12 @@ impl Inner {
             let ages: Vec<String> = self.with_state(server, |s| s.last_ok.iter().map(|(k, t)| format!("{}:{:.1}", &k[..4], t.elapsed().as_secs_f32())).collect());
             debug(&format!("{} tick lease={:?} busy={busy} ages={ages:?}", self.name(), l.as_ref().map(|l| (l.epoch, &l.host[..4], l.state))));
         }
-        if busy { return; }
+        if busy {
+            // Durante un traspaso la anfitriona sigue vigilando su contacto con el grupo: si lo
+            // pierde, se aísla igual (nunca dos encendidas, aunque el traspaso dure minutos).
+            if l.as_ref().map(|l| l.held_by(&self.me)).unwrap_or(false) { self.host_checks(server, &share).await; }
+            return;
+        }
         match &l {
             Some(l) if l.held_by(&self.me) => self.host_checks(server, &share).await,
             Some(l) if copy => {
@@ -1447,6 +1475,9 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             if !network::load_share(&server).member(remote).map(|m| m.can_host()).unwrap_or(false) {
                 return Resp::Err { msg: "Solo las PCs coanfitrionas pueden alojar el servidor.".into() };
             }
+            if inner.with_state(&server, |s| s.infos.get(remote).map(|i| !i.can_host).unwrap_or(false)) {
+                return Resp::Err { msg: "Esa PC no tiene copia del servidor o tiene desactivado hostear.".into() };
+            }
             let name: String = pcname_or(&name);
             let symbol = if host939_core::pcname::valid_symbol(&symbol) { symbol } else { String::new() };
             let ttl = inner.timing.request_ttl;
@@ -1498,6 +1529,7 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             if !cur.as_ref().map(|c| c.held_by(remote)).unwrap_or(false) { return Resp::Err { msg: "Quien pide copiar no es la anfitriona según esta PC.".into() }; }
             if !has_copy(&server) || !inner.local.allow_hosting(&server) { return Resp::Err { msg: "Esta PC no puede hostear este servidor.".into() }; }
             if std::env::var("H939_TEST_FAIL_PREFETCH").is_ok() { return Resp::Err { msg: "falla simulada al copiar".into() }; }
+            if let Some(secs) = std::env::var("H939_TEST_SLOW_PREFETCH").ok().and_then(|v| v.parse::<u64>().ok()) { tokio::time::sleep(Duration::from_secs(secs)).await; }
             // Una sola copia a la vez (la sincronización periódica espera).
             for _ in 0..600 {
                 if inner.with_state(&server, |s| if s.syncing { false } else { s.syncing = true; true }) { break; }
@@ -1505,7 +1537,13 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             }
             let r = inner.pull(&server, remote, &snapshot).await;
             inner.with_state(&server, |s| s.syncing = false);
-            match r { Ok(_) => Resp::Ok, Err(e) => Resp::Err { msg: format!("no se pudo copiar el mundo: {e}") } }
+            if let Err(e) = r { return Resp::Err { msg: format!("no se pudo copiar el mundo: {e}") }; }
+            // También deja instalado lo necesario (Java, servidor, loader) antes de aceptar el
+            // permiso, para que el encendido posterior no falle por una descarga.
+            match inner.blocking(&server, |l, s| l.prepare(s)).await {
+                Ok(()) => Resp::Ok,
+                Err(e) => Resp::Err { msg: format!("no se pudo preparar el servidor: {e}") },
+            }
         }
     }
 }

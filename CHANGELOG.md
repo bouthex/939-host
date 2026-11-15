@@ -40,6 +40,11 @@
   vez, se puede cancelar y vence sola. Si la anfitriona no responde, actúa la recuperación de siempre.
 - Traspaso más seguro: la otra PC copia el mundo **antes** de recibir el permiso (primero con el
   servidor encendido, después solo lo que cambió). Si la copia falla, el servidor sigue donde estaba.
+- Protecciones extra en el traspaso: no se pueden iniciar dos a la vez; durante un traspaso largo la
+  anfitriona sigue controlando que no la hayan reemplazado; si la confirmación no tiene respuesta, la
+  PC vieja no vuelve a encender (evita dos mundos activos); la PC nueva instala lo necesario antes de
+  aceptar. Solo la propietaria puede quitar PCs del grupo.
+- La lista de servidores y la consola muestran «En otra PC» y quién lo aloja.
 
 ### Diseño
 - Íconos propios «Bloque» y lenguaje de movimiento: indicadores que se deslizan, carga en escalón,

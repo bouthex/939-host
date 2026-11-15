@@ -402,3 +402,29 @@ function pring(frac, size = 22, indet = false) {
   return `<svg class="pring ${indet ? 'indet' : ''}" width="${size}" height="${size}" viewBox="0 0 22 22" aria-hidden="true"><circle class="track" cx="11" cy="11" r="${r}" fill="none" stroke-width="2.2"/><circle class="val" cx="11" cy="11" r="${r}" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}"/></svg>`;
 }
 function setPring(el, frac) { const v = el?.querySelector('.val'); if (!v) return; const c = 2 * Math.PI * 9; v.style.strokeDashoffset = (c * (1 - Math.max(0, Math.min(1, frac)))).toFixed(2); }
+
+/* Índice que sigue la sección visible (Configuración y Ajustes del servidor). */
+function scrollSpy(tocSel, prefix) {
+  const toc = document.querySelector(tocSel);
+  if (!toc) return;
+  const btns = [...toc.querySelectorAll('button[data-v]')];
+  const secs = btns.map((b) => [b, document.getElementById(`${prefix}-${b.dataset.v}`)]).filter(([, el]) => el);
+  let pinned = null, pinUntil = 0, raf = 0;
+  const mark = (btn) => btns.forEach((b) => b.classList.toggle('on', b === btn));
+  const update = () => {
+    raf = 0;
+    if (pinned && Date.now() < pinUntil) return mark(pinned);
+    const top = main.getBoundingClientRect().top + 96;
+    let cur = secs[0] && secs[0][0];
+    for (const [b, el] of secs) if (el.getBoundingClientRect().top <= top) cur = b;
+    // Al llegar al final, una sección corta no puede subir hasta arriba: queda la que se eligió
+    if (pinned && main.scrollTop + main.clientHeight >= main.scrollHeight - 4) cur = pinned;
+    if (cur) mark(cur);
+  };
+  const onScroll = () => { if (!raf) raf = requestAnimationFrame(update); };
+  const onClick = (e) => { const b = e.target.closest('button[data-v]'); if (b && btns.includes(b)) { pinned = b; pinUntil = Date.now() + 900; mark(b); } };
+  main.addEventListener('scroll', onScroll, { passive: true });
+  toc.addEventListener('click', onClick);
+  update();
+  onLeave(() => { main.removeEventListener('scroll', onScroll); toc.removeEventListener('click', onClick); if (raf) cancelAnimationFrame(raf); });
+}

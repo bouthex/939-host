@@ -395,3 +395,24 @@ pub async fn host_requests_pending(cluster: State<'_, Cluster>) -> AppResult<Vec
     }
     Ok(out)
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostingView { pub id: String, pub i_am_host: bool, pub hosting: bool, pub host_name: String, pub host_symbol: String, pub host_online: bool }
+
+/// Quién aloja cada servidor compartido (para la lista de servidores).
+#[tauri::command]
+pub async fn servers_hosting(cluster: State<'_, Cluster>) -> AppResult<Vec<HostingView>> {
+    let Some(node) = cluster.try_node() else { return Ok(vec![]) };
+    let mut out = vec![];
+    for sid in network::shared_servers() {
+        let st = node.status(&sid).await;
+        let host = st.members.iter().find(|m| m.is_host);
+        out.push(HostingView {
+            id: sid, i_am_host: st.i_am_host, hosting: st.lease.as_ref().map(|l| l.state == host939_core::lease::LeaseState::Hosting).unwrap_or(false),
+            host_name: host.map(|m| m.name.clone()).or_else(|| st.lease.as_ref().map(|l| l.host_name.clone())).unwrap_or_default(),
+            host_symbol: host.map(|m| m.symbol.clone()).unwrap_or_default(), host_online: st.host_online,
+        });
+    }
+    Ok(out)
+}

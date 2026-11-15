@@ -96,6 +96,7 @@ routes.settings = async function renderSettings() {
             .map(([t, d, u]) => `<button class="li" data-a="link" data-url="${u}"><span class="grow">${t}</span><span class="sm t3">${d}</span>${icon('external', 15)}</button>`).join('')}</div></section>
       </div></div></div>`;
   scrollToSection();
+  scrollSpy('.settings .toc', 'set');
   const tick = async () => {
     if (state.route !== 'settings' || !a) return;
     try {

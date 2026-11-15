@@ -215,6 +215,7 @@ fn main() {
             network::host_request_cancel,
             network::host_request_answer,
             network::host_requests_pending,
+            network::servers_hosting,
             v3::pause_server,
             v3::resume_server,
             v3::stop_server_warned,

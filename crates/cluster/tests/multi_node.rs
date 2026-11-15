@@ -430,3 +430,41 @@ fn host_requests_and_pc_names() {
     signal(pid_c, "CONT");
     println!("✔ con la anfitriona sin responder no se pide: queda la recuperación automática");
 }
+
+/// Traspaso aceptado con una copia lenta: mientras la otra PC copia (fase 1), el servidor sigue
+/// encendido en la anfitriona y los jugadores siguen entrando; nunca hay dos encendidos.
+#[test]
+fn slow_two_phase_handover_keeps_playing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_TEST_SLOW_PREFETCH", "4")]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let sid = a.ok("create Lento 25821").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    for (n, port) in [(&mut b, 25822), (&mut c, 25823)] {
+        let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+        n.ok(&format!("join {t}"));
+        n.ok(&format!("setport {sid} {port}"));
+    }
+    wait("que se vean", Duration::from_secs(20), || a.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 3);
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} marca.txt lento"));
+    let port_c = c.ok(&format!("route {sid} 41931")).as_u64().unwrap() as u16;
+    wait("C llega a A", Duration::from_secs(15), || slp(port_c).contains("hosteado por A"));
+    b.ok(&format!("request {sid}"));
+    wait("A ve la solicitud", Duration::from_secs(5), || a.status(&sid)["incomingRequest"]["name"] == "B");
+    // A acepta (la orden queda esperando el traspaso); mientras tanto se mira desde C y B.
+    writeln!(a.stdin, "answer {sid} si").unwrap();
+    a.stdin.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(slp(port_c).contains("hosteado por A"), "durante la fase 1 se sigue jugando en A: {}", slp(port_c));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "B no enciende antes de tener el permiso");
+    let line = a.rx.recv_timeout(Duration::from_secs(120)).expect("respuesta de A");
+    let r: Value = serde_json::from_str(&line).unwrap();
+    assert!(r["ok"].as_bool().unwrap(), "traspaso: {r}");
+    wait("B en línea", Duration::from_secs(30), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert_eq!(b.ok(&format!("read {sid} marca.txt")).as_str(), Some("lento"));
+    wait("C llega a B", Duration::from_secs(15), || slp(port_c).contains("hosteado por B"));
+    println!("✔ copia lenta: se siguió jugando en A durante la fase 1; después B tomó el servidor con el mundo intacto y la misma dirección llevó a B");
+}

@@ -92,7 +92,7 @@ function onRepairProgress(p) {
   paintRepair();
 }
 function progressHTML() {
-  const ic = { done: `<span class="ok-badge" style="width:26px;height:26px;border-radius:50%">${icon('check', 14, 2)}</span>`, run: SHAPES.ring.replace('class="ring"', 'class="ring" style="width:18px;height:18px"') };
+  const ic = { done: `<span class="ok-badge" style="width:26px;height:26px;border-radius:50%">${icon('check', 14, 2)}</span>`, run: SHAPES.ring.replace('class="vload"', 'class="vload lg"') };
   return `<div class="pad stack" style="padding:28px"><h2>Reparando…</h2><p class="sm t2" style="margin:0">No cierres 939 Host. ${rp.verify ? 'Al final se arranca el servidor para comprobar que funciona (puede tardar un par de minutos).' : ''}</p>
     <div>${rp.progress.map((s) => `<div class="rep-step"><span class="ico">${ic[s.st]}</span><div class="${s.st === 'run' ? 'b' : ''}">${esc(s.msg)}</div></div>`).join('')}</div></div>`;
 }
@@ -100,9 +100,9 @@ function resultHTML() {
   const r = rp.result;
   const applied = r.applied?.length ? `<div><div class="sec" style="margin-bottom:6px">Qué se cambió</div>${r.applied.map((a) => `<div class="kv"><span>${esc(a)}</span>${icon('check', 14)}</div>`).join('')}</div>` : '';
   const undo = r.canUndo ? `<button class="btn" data-a="rp-undo">${icon('restart', 16)}Deshacer</button>` : '';
-  if (r.verification === 'ok') return `<div class="pad stack" style="padding:28px;gap:18px"><div class="row" style="align-items:flex-start"><span class="ok-badge">${icon('check', 22, 2)}</span><div><h2>Listo: el servidor arrancó bien</h2><p class="t2" style="margin:4px 0 0">Se comprobó que Minecraft terminó de cargar. Tus amigos ya pueden entrar.</p></div></div>${applied}
+  if (r.verification === 'ok') return `<div class="pad stack" style="padding:28px;gap:18px"><div class="row" style="align-items:flex-start"><span class="ok-badge pop okdraw">${icon('check', 22, 2)}</span><div><h2>Listo: el servidor arrancó bien</h2><p class="t2" style="margin:4px 0 0">Se comprobó que Minecraft terminó de cargar. Tus amigos ya pueden entrar.</p></div></div>${applied}
     <div class="btns">${undo}<button class="btn pri" data-a="open" data-id="${esc(rp.id)}">Ir al servidor</button></div></div>`;
-  if (r.verification === 'skipped') return `<div class="pad stack" style="padding:28px;gap:18px"><div class="row" style="align-items:flex-start"><span class="ok-badge">${icon('check', 22, 2)}</span><div><h2>Cambios aplicados</h2><p class="t2" style="margin:4px 0 0">No se arrancó el servidor para comprobarlo.</p></div></div>${applied}
+  if (r.verification === 'skipped') return `<div class="pad stack" style="padding:28px;gap:18px"><div class="row" style="align-items:flex-start"><span class="ok-badge pop okdraw">${icon('check', 22, 2)}</span><div><h2>Cambios aplicados</h2><p class="t2" style="margin:4px 0 0">No se arrancó el servidor para comprobarlo.</p></div></div>${applied}
     <div class="btns">${undo}<button class="btn pri" data-a="rp-start">${icon('play', 16)}Iniciar y comprobar</button></div></div>`;
   return `<div class="pad stack" style="padding:28px;gap:18px"><div class="note strong">${icon('alert')}<div class="grow"><b>${r.verification === 'error' ? 'No se pudo completar la reparación' : 'El servidor todavía no arranca'}</b><span class="sm t2">${esc(r.error || 'Puede haber otro problema además del que se resolvió.')}</span></div></div>${applied}
     ${r.remaining?.problems?.length ? `<p class="sm t2" style="margin:0">El nuevo análisis encontró ${r.remaining.problems.length === 1 ? 'otro problema' : `${r.remaining.problems.length} problemas`}.</p>` : ''}

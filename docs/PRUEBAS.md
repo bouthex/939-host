@@ -88,3 +88,49 @@ Prueba con jsdom (DOM simulado y comandos de la app reemplazados por respuestas 
 | Descargas reales de Modrinth, Adoptium (Java) y del servicio de Fabric | Bloqueados en el entorno. Modrinth se probó con datos en su formato oficial; Fabric por su repositorio Maven (accesible) |
 | Mundo completo del modpack (2,5 GB) | Se usó una muestra de 119 MB para no cargar la conexión de la PC |
 | Reconexión automática dentro del juego | Necesita un cliente de Minecraft; se probó la instalación del mod en una carpeta de perfil simulada |
+
+## 8. Diseño v3, nombres de PC y «Solicitar ser anfitrión» (15/11/2026)
+
+Mismo entorno Linux aislado. Nada de esto se ejecutó contra la instalación de Minecraft del usuario ni contra el mundo 939 Z: los servidores reales son servidores oficiales de Mojang descargados en carpetas temporales.
+
+| Prueba | Tipo | Qué verifica |
+|---|---|---|
+| `cargo test` core + p2p + cluster | Automática | 31 + 5 + 2 pruebas, 0 fallas (incluye `pcname`: nombres válidos, sin caracteres de control, 1–24) |
+| `host_requests_and_pc_names` (3 PCs, P2P real por localhost) | Protocolo con servidores simulados | Renombrar no cambia la identidad ni el permiso; un jugador sin rol de coanfitrión no puede solicitar; solicitud duplicada o simultánea rechazada; cancelar y rechazar; aceptar usa el traspaso existente y el mundo llega intacto; si la copia previa falla, la anfitriona vieja sigue; si la anfitriona no responde, no se crea solicitud |
+| `slow_two_phase_handover_keeps_playing` | Protocolo con servidores simulados | Durante una fase 1 lenta (copia en caliente) el juego sigue en la anfitriona vieja y nunca hay dos encendidos |
+| `real_minecraft_handover` | **Servidor real** 26.2 | Traspaso en dos fases entre dos procesos: el marcador del scoreboard llega a B y la dirección fija apunta a B |
+| `v3_features` | **Servidor real** 26.2 | Fases de arranque, consulta oculta, pausa, guardado, SNBT real de jugadores, cuenta regresiva, reinicio, recursos del juego (1,1 MB, no se redistribuyen), reparación de puerto ocupado + deshacer, reparación de mods |
+| `full_server_lifecycle`, `players_and_permissions_real_server` | **Servidor real** 26.2 | Sin regresiones respecto de 0.9.0 |
+| Capturas en claro y oscuro, 1024×680 a 2560×1440 | Interfaz con backend simulado (Playwright) | Sin desbordes ni textos cortados |
+| Rendimiento de animaciones (CPU ×4 más lenta) | Interfaz con backend simulado | Mediana 16,7 ms por cuadro, p99 33 ms, 3 cuadros > 50 ms al cambiar de pantalla |
+| Movimiento reducido | Interfaz con backend simulado | Con `prefers-reduced-motion` o la opción de la app: transiciones 0 s, sin animación de páginas |
+
+Errores encontrados en la revisión y corregidos antes de esta tanda: durante un traspaso largo se salteaba el control de aislamiento (riesgo de dos escritores); tras perder el permiso se podía reiniciar localmente; una confirmación sin respuesta podía reencender en la PC vieja; dos traspasos simultáneos; cualquier miembro podía quitar a otro (ahora solo la propietaria).
+
+**Hallazgo de esta tanda (corregido):** la primera corrida de `real_minecraft_handover` falló porque la PC que recibe ahora instala el servidor *antes* de tener el mundo (fase de preparación) y la carpeta del servidor todavía no existía. El traspaso se canceló de forma segura —el servidor siguió encendido en A, sin dos escritores— y tras crear la carpeta en la instalación la prueba pasó: traspaso real en 11,8 s, marcador = 939 en B. Las pruebas con servidores simulados no lo detectaban porque no instalan nada.
+
+### Limitaciones conocidas de esta versión
+
+- Una PC con 939 Host anterior a esta rama no puede **recibir** un traspaso desde una nueva (no conoce la orden `Prefetch`). Todas las PC del grupo deben actualizarse juntas.
+- Si después de confirmar el traspaso la PC nueva no logra encender, queda con el permiso y el servidor apagado. El mundo está a salvo y cualquiera puede usar «Recuperar aquí» o reintentar; no se vuelve atrás sola para no arriesgar dos escritores.
+- Si la confirmación se envía pero no llega respuesta, la PC vieja asume que se entregó y **no** reenciende. Puede quedar el servidor apagado hasta que la nueva encienda o se recupere.
+- Skins reales de Mojang y la búsqueda de Modrinth en vivo solo se probaron con datos de prueba en su formato oficial (los servicios están bloqueados en el entorno).
+- Arrastrar y soltar `.jar` solo se probó en el navegador del entorno, no en WebView2 de Windows.
+
+## 9. Validación real pendiente (hacer en PCs reales antes de publicar)
+
+Nada de esta lista se ejecutó. **No hay que presentarlo como probado** hasta completarlo en equipos reales.
+
+| # | Qué validar | Cómo | Resultado esperado |
+|---|---|---|---|
+| 1 | Windows 11 real | Instalar el `.exe` en una PC de prueba (no en la PC donde corre el mundo 939 Z) | Abre, bandeja, inicio con Windows, Firewall pide permiso una vez, tema claro y oscuro |
+| 2 | Arrastrar y soltar `.jar` | Arrastrar 2–3 mods sobre la pantalla Mods de un servidor de prueba | Se importan, se marcan los de cliente, no se duplican |
+| 3 | Modrinth en vivo | Buscar «sodium», filtrar por versión y loader, abrir ficha, instalar en servidor de prueba | Resultados reales, dependencias resueltas, hash verificado |
+| 4 | Skins reales de Mojang | Servidor de prueba en modo online con una cuenta real | Se ve la skin; con la opción desactivada no se descarga nada |
+| 5 | Traspaso entre dos PC físicas (misma red) | Solicitar ser anfitrión desde B, aceptar en A | B enciende con el mundo de A, A queda apagada, los jugadores vuelven a entrar por la misma dirección |
+| 6 | Traspaso entre dos casas/redes | Igual que 5 con B en otra red | Conecta directo o por relay; avisos de conectividad visibles en la solicitud |
+| 7 | Reconexión de jugadores tras el cambio | Con un jugador dentro del juego durante el traspaso | Ve «se está mudando», puede volver a entrar sin cambiar la dirección |
+| 8 | Cortes de conexión y recuperación | Desconectar el cable o Wi-Fi de la anfitriona con 3 PC en el grupo | Se detiene sola en la PC aislada; otra toma el servidor en ~35–45 s; al volver, la vieja no reenciende |
+| 9 | Rechazo, cancelación y vencimiento con PCs reales | Solicitar y cancelar; solicitar y dejar vencer (10 min) | El aviso desaparece en ambas PC |
+
+Recomendación: hacer estas pruebas con un **servidor de prueba nuevo** y una copia del mundo, nunca con el mundo 939 Z en uso.

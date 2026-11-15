@@ -47,6 +47,8 @@ tabDraw.console = async (el) => {
   const lines = await invoke('console_history', { id });
   const v = state.server;
   const on = v.status === 'running' || v.status === 'starting';
+  const gg = state.share?.enabled ? state.share.group : null;
+  const away = gg && !gg.iAmHost && gg.lease?.state === 'hosting' && !on ? (gg.members.find((m) => m.isHost)?.name || gg.lease.hostName) : null;
   el.innerHTML = `<div class="stack" style="gap:12px">
     <div class="spread"><div class="quick" aria-label="Acciones rápidas">
       ${[['save-all', 'Guardar mundo'], ['list', 'Ver conectados'], ['time set day', 'Hacer de día'], ['weather clear', 'Despejar clima']].map(([c, l]) => `<button class="btn s" data-a="qcmd" data-cmd="${c}" ${v.status === 'running' ? '' : 'disabled'}>${l}</button>`).join('')}
@@ -57,7 +59,7 @@ tabDraw.console = async (el) => {
         <div class="row" style="gap:14px">${on ? '<span class="live"><span class="dot"></span>En vivo</span>' : '<span class="live">Servidor detenido</span>'}
         <label class="live" style="cursor:pointer"><input type="checkbox" id="con-follow" ${con.follow ? 'checked' : ''} style="accent-color:#fff">Seguir al final</label></div></div>
       <div class="term-log" id="con-log" tabindex="0" aria-live="off" aria-label="Salida de la consola"></div>
-      <div class="term-in"><span style="color:#8A8A8A">›</span><input id="con-in" placeholder="${on ? 'Escribí un comando (con o sin /) — Tab completa, ↑ historial' : 'Iniciá el servidor para usar la consola'}" ${on ? '' : 'disabled'} autocomplete="off" spellcheck="false" aria-label="Comando" aria-autocomplete="list"><div class="ac hidden" id="con-ac" role="listbox"></div></div>
+      <div class="term-in"><span style="color:#8A8A8A">›</span><input id="con-in" placeholder="${on ? 'Escribí un comando (con o sin /) — Tab completa, ↑ historial' : away ? `La consola está en la PC de ${esc(away)}, que aloja el servidor ahora` : 'Iniciá el servidor para usar la consola'}" ${on ? '' : 'disabled'} autocomplete="off" spellcheck="false" aria-label="Comando" aria-autocomplete="list"><div class="ac hidden" id="con-ac" role="listbox"></div></div>
       <div class="hintline" id="con-hint"></div>
     </div></div>`;
   const log = $('#con-log');

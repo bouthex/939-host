@@ -198,6 +198,8 @@ pub async fn install(mgr: &Manager, id: String) {
         java::ensure(dl.java_major, |msg, f| report(msg, 0.05 + f * 0.55)).await?;
 
         let run = paths::server_run_dir(&id);
+        // En un traspaso, la PC nueva instala antes de recibir el mundo: la carpeta puede no existir.
+        std::fs::create_dir_all(&run).map_err(|e| AppError::io("No se pudo crear la carpeta del servidor", e))?;
         if !cfg.loader.uses_installer() {
             let cached = paths::cache().join("jars").join(format!("{}.jar", dl.sha1));
             if !cached.exists() || net::sha1_file(&cached).map(|h| h != dl.sha1).unwrap_or(true) {

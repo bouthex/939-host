@@ -3,8 +3,9 @@
 
 /* ───────── Servidores ───────── */
 routes.servers = async function renderServers() {
-  const servers = await invoke('list_servers');
+  const [servers, hosting] = await Promise.all([invoke('list_servers'), invoke('servers_hosting').catch(() => [])]);
   state.servers = servers;
+  state.hosting = Object.fromEntries(hosting.map((h) => [h.id, h]));
   if (!servers.length) return paintWelcome();
   const hw = state.hw || (state.hw = await invoke('hardware_snapshot').catch(() => null));
   const online = servers.filter((s) => s.status === 'running').length;
@@ -23,17 +24,20 @@ routes.servers = async function renderServers() {
     </div></div>`;
   if (servers.some((s) => isActive(s) || s.installing)) every(10000, () => state.route === 'servers' && routes.servers());
 };
+/* Servidor compartido que ahora se juega en otra PC del grupo. */
+const elsewhere = (s) => { const h = state.hosting?.[s.config.id]; return h && h.hosting && !h.iAmHost && !isActive(s) ? h : null; };
 function serverRow(s) {
   const c = s.config;
   const st = serverState(s);
+  const away = elsewhere(s);
   return `<div class="li click" data-a="open" data-id="${esc(c.id)}" role="button" tabindex="0">
     <span class="srv-ic">${icon('cube')}</span>
     <div class="grow"><div class="b ellipsis">${esc(c.name)}</div><div class="sm t3 ellipsis">${loaderName(c.loader)} ${esc(c.mcVersion)}${c.description ? ` · ${esc(c.description)}` : ''}</div></div>
     <div class="cols">
-      <div class="c" style="min-width:132px">${stateHTML(s)}${st.detail ? `<span class="xs t3 ellipsis">${esc(st.detail)}</span>` : ''}</div>
+      <div class="c" style="min-width:132px">${away ? `<span class="st">${away.hostOnline ? SHAPES.dot : SHAPES.off}En otra PC</span><span class="xs t3 ellipsis">Lo aloja ${esc(away.hostName || 'otra PC')}</span>` : `${stateHTML(s)}${st.detail ? `<span class="xs t3 ellipsis">${esc(st.detail)}</span>` : ''}`}</div>
       <div class="c"><span class="xs t3">Jugadores</span><span class="mono sm">${s.status === 'running' ? `${s.players.length}/${c.maxPlayers}` : '—'}</span></div>
       <div class="c opt"><span class="xs t3">Memoria</span><span class="mono sm">${s.memoryUsedMb != null ? fmtMB(s.memoryUsedMb) : fmtMB(c.memoryMb)}</span></div>
-      <div class="c" style="min-width:96px;align-items:flex-end">${quickAction(s)}</div>
+      <div class="c" style="min-width:96px;align-items:flex-end">${away ? pcAvatar(away.hostSymbol, 30) : quickAction(s)}</div>
     </div>${icon('chev', 16)}</div>`;
 }
 function quickAction(s) {
@@ -239,7 +243,7 @@ routes.friends = async function renderFriends() {
         <div class="spread"><div class="row"><span class="srv-ic">${icon('cube')}</span><div><div class="b">${esc(r.name || 'Servidor')}</div><div class="sm t3">${esc(loaderName(r.loader))} ${esc(r.mcVersion)} · ${r.hasCopy ? 'coanfitrión' : 'jugador'}</div></div></div>
           <span class="st">${r.iAmHost ? SHAPES.dot + 'En esta PC' : r.hostOnline ? SHAPES.dot + 'En línea' : SHAPES.off + 'Sin anfitrión'}</span></div>
         <div class="addr"><span>127.0.0.1:${r.routePort}</span><button class="btn s" data-a="copy" data-text="127.0.0.1:${r.routePort}" data-msg="Dirección copiada">${icon('copy', 14)}Copiar</button></div>
-        <p class="sm t2" style="margin:0">En Minecraft: Multijugador → Agregar servidor → esta dirección. Siempre lleva a la PC que lo esté hosteando${r.hostName ? ` (ahora: ${esc(r.hostName)})` : ''}.</p>
+        <p class="sm t2" style="margin:0">En Minecraft: Multijugador → Agregar servidor → esta dirección. Siempre lleva a la PC que lo esté alojando${r.hostName ? `: ahora, <b>${esc(r.hostName)}</b>` : ''}. Si cambia de PC, no tenés que tocar nada.</p>
         <div class="btns">${r.hasCopy ? `<button class="btn s" data-a="open" data-id="${esc(r.id)}">Abrir</button>` : ''}<button class="btn s ghost" data-a="remote-remove" data-id="${esc(r.id)}">${icon('logout', 14)}Salir del grupo</button></div>
       </div>`).join('')}</div>`
       : `<div class="empty">${icon('friends', 28)}<h2>Todavía no te uniste a ningún servidor</h2><p>Pedile a un amigo que te invite desde su servidor en 939 Host (Grupo → Invitar).</p></div>`}
