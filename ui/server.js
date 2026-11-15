@@ -159,7 +159,7 @@ tabDraw.summary = async (el) => {
   el.innerHTML = `<div class="stack" style="gap:16px">
     <div class="kpis">
       <div class="card kpi"><span class="l">Jugadores</span><span class="v">${running ? v.players.length : '—'}<small>de ${c.maxPlayers}</small></span></div>
-      <div class="card kpi"><span class="l">Tiempo por tick</span><span class="v">${v.mspt != null ? v.mspt.toFixed(1).replace('.', ',') : '—'}<small>ms${v.msptP95 != null ? ` · p95 ${v.msptP95.toFixed(0)}` : ''}</small></span><span class="xs t3">${v.mspt == null ? 'Disponible con el servidor encendido' : v.mspt < 40 ? 'Fluido (menos de 50 ms)' : v.mspt < 50 ? 'Al límite' : 'Con demoras'}</span></div>
+      <div class="card kpi"><span class="l">Tiempo por tick</span><span class="v">${v.mspt != null ? v.mspt.toFixed(1).replace('.', ',') : '—'}<small>ms${v.msptP95 != null ? ` · p95 ${v.msptP95.toFixed(1).replace('.', ',')}` : ''}</small></span><span class="xs t3">${v.mspt == null ? 'Disponible con el servidor encendido' : v.mspt < 40 ? 'Fluido (menos de 50 ms)' : v.mspt < 50 ? 'Al límite' : 'Con demoras'}</span></div>
       <div class="card kpi"><span class="l">Memoria</span><span class="v">${v.memoryUsedMb != null ? fmtMB(v.memoryUsedMb) : '—'}<small>en uso · ${fmtMB(c.memoryMb)} asignados al mundo</small></span>${v.memoryUsedMb != null ? `<div class="bar"><i style="width:${Math.min(100, Math.round(v.memoryUsedMb / c.memoryMb * 100))}%"></i></div>` : ''}</div>
       <div class="card kpi"><span class="l">Mundo</span><span class="v">${fmtMB(v.worldSizeMb)}</span><span class="xs t3">${DIFF[c.difficulty] || c.difficulty} · ${MODE[c.gamemode] || c.gamemode}</span></div>
     </div>

@@ -46,6 +46,15 @@
   aceptar. Solo la propietaria puede quitar PCs del grupo.
 - La lista de servidores y la consola muestran «En otra PC» y quién lo aloja.
 
+### Windows (probado en máquinas Windows reales)
+- Mover un servidor o un mundo a la Papelera ya no falla cuando Windows (antivirus, indexador)
+  retiene un archivo por un instante.
+- Fichas de jugadores sin conexión, estadísticas y logros con el formato de mundo de 26.x
+  (`players/data`); antes solo se leía el formato anterior.
+- Instalación y desinstalación silenciosas sin diálogos que las frenen.
+- Barra lateral sin cortes en la ventana mínima; memoria del servidor explicada («en uso ·
+  asignados al mundo»); el último paso del asistente explica qué pasa al crear.
+
 ### Diseño
 - Íconos propios «Bloque» y lenguaje de movimiento: indicadores que se deslizan, carga en escalón,
   progreso circular y transiciones cortas. Respeta «reducir animaciones» de Windows.

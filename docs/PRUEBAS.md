@@ -123,12 +123,12 @@ Nada de esta lista se ejecutó. **No hay que presentarlo como probado** hasta co
 
 | # | Qué validar | Cómo | Resultado esperado |
 |---|---|---|---|
-| 1 | Windows 11 real | Instalar el `.exe` en una PC de prueba (no en la PC donde corre el mundo 939 Z) | Abre, bandeja, inicio con Windows, Firewall pide permiso una vez, tema claro y oscuro |
+| 1 | Windows 11 real — *app instalada y usada en Windows Server 2025; falta Windows 11 de escritorio* | Instalar el `.exe` en una PC de prueba (no en la PC donde corre el mundo 939 Z) | Abre, bandeja, inicio con Windows, Firewall pide permiso una vez, tema claro y oscuro |
 | 2 | Arrastrar y soltar `.jar` | Arrastrar 2–3 mods sobre la pantalla Mods de un servidor de prueba | Se importan, se marcan los de cliente, no se duplican |
-| 3 | Modrinth en vivo | Buscar «sodium», filtrar por versión y loader, abrir ficha, instalar en servidor de prueba | Resultados reales, dependencias resueltas, hash verificado |
+| 3 | Modrinth en vivo — *hecho en Windows (Lithium en Fabric 26.3)* | Buscar «sodium», filtrar por versión y loader, abrir ficha, instalar en servidor de prueba | Resultados reales, dependencias resueltas, hash verificado |
 | 4 | Skins reales de Mojang | Servidor de prueba en modo online con una cuenta real | Se ve la skin; con la opción desactivada no se descarga nada |
-| 5 | Traspaso entre dos PC físicas (misma red) | Solicitar ser anfitrión desde B, aceptar en A | B enciende con el mundo de A, A queda apagada, los jugadores vuelven a entrar por la misma dirección |
-| 6 | Traspaso entre dos casas/redes | Igual que 5 con B en otra red | Conecta directo o por relay; avisos de conectividad visibles en la solicitud |
+| 5 | Traspaso entre dos PC físicas (misma red) — *hecho entre dos máquinas Windows de GitHub; falta en casa* | Solicitar ser anfitrión desde B, aceptar en A | B enciende con el mundo de A, A queda apagada, los jugadores vuelven a entrar por la misma dirección |
+| 6 | Traspaso entre dos casas/redes — *hecho entre regiones de Azure; falta con routers hogareños* | Igual que 5 con B en otra red | Conecta directo o por relay; avisos de conectividad visibles en la solicitud |
 | 7 | Reconexión de jugadores tras el cambio | Con un jugador dentro del juego durante el traspaso | Ve «se está mudando», puede volver a entrar sin cambiar la dirección |
 | 8 | Cortes de conexión y recuperación | Desconectar el cable o Wi-Fi de la anfitriona con 3 PC en el grupo | Se detiene sola en la PC aislada; otra toma el servidor en ~35–45 s; al volver, la vieja no reenciende |
 | 9 | Rechazo, cancelación y vencimiento con PCs reales | Solicitar y cancelar; solicitar y dejar vencer (10 min) | El aviso desaparece en ambas PC |
@@ -154,7 +154,8 @@ usuario** y no toca ninguna instalación de Minecraft. No publica nada.
 | Funciones v3 (pausa, guardado, SNBT, cuenta regresiva, reinicio, recursos del juego, reparación) | ✔ |
 | **Traspaso de anfitrión real entre dos «PCs» por P2P** (dos nodos en la misma máquina, sin relays) | ✔ en 27,9 s; el marcador del mundo llegó intacto y la misma dirección apunta a la nueva anfitriona |
 | Instalador NSIS silencioso sin administrador, SHA-256, app abre y queda abierta | ✔ |
-| Interfaz de la app instalada manejada por WebView2 (crear, instalar, encender, consola, copia, recorrido claro/oscuro) | ver resultados de la última ejecución |
+| Interfaz de la app instalada, manejada por WebView2 como una persona: crear un servidor con el asistente, descarga real, encender, comando en la consola, todas las pestañas, copia en caliente, tema claro y oscuro, detener con confirmación | ✔ 15/15 pasos, sin errores de JavaScript (ventana de 1024×768) |
+| **Dos máquinas Windows distintas** (regiones centralus y westcentralus de Azure), P2P con relays habilitados como la app | ✔ unión en 1 s; la invitada entra al servidor real de la otra máquina por `127.0.0.1:41911`; «Solicitar ser anfitrión» → aceptar → traspaso en 16 s con el marcador intacto; la PC vieja deja de alojar y entra por su dirección fija al servidor nuevo |
 
 **Problemas que solo aparecieron en Windows y se corrigieron:**
 - Mover un servidor (o un mundo) a la Papelera fallaba con «Acceso denegado» cuando un archivo
@@ -167,6 +168,11 @@ después de «Done» se corta y la siguiente (1 s después) responde. Pasó con 
 con la ruta P2P. Para un jugador significa, a lo sumo, un «No se pudo conectar» que se resuelve
 al reintentar.
 
-**Lo que estas pruebas no cubren:** dos PCs físicas en redes distintas (NAT real, relays),
-Smart App Control activo, una PC con antivirus de terceros, y el uso con Minecraft real
-conectado como cliente.
+**Lo que estas pruebas no cubren:** routers hogareños con NAT estricto (las máquinas de Azure
+tienen redes de datacenter; la conexión fue directa), Smart App Control activo, antivirus de
+terceros, PCs con poca memoria, y un cliente de Minecraft real conectado jugando durante el
+traspaso.
+
+Nota: la máquina Linux de una prueba intermedia no pudo preparar Java para Linux (la app solo
+se distribuye para Windows); el traspaso se canceló de forma segura y el servidor siguió en la
+PC anfitriona. Por eso la prueba definitiva usa dos Windows.
