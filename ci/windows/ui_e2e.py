@@ -8,6 +8,8 @@ No hay datos simulados: todo pasa por el backend real de la app. Las capturas qu
 `capturas/` para revisión visual.
 """
 import asyncio, os, sys, time, json
+
+sys.stdout.reconfigure(encoding="utf-8")
 from playwright.async_api import async_playwright
 
 OUT = os.environ.get("OUT", "capturas")

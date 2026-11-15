@@ -388,7 +388,8 @@ input[type=range] { width: 100%; accent-color: var(--text); }
   .item-detail { width: 100%; }
 }
 @media (max-width: 1080px) {
-  .side { width: 212px; }
+  .side { width: 224px; padding-inline: 10px; }
+  .navi { padding: 0 8px; gap: 9px; }
   .navi span:not(.count) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .welcome { grid-template-columns: minmax(0, 1fr); }
   .players { grid-template-columns: minmax(0, 1fr); }
