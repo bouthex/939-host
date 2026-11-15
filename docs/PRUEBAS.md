@@ -134,3 +134,39 @@ Nada de esta lista se ejecutó. **No hay que presentarlo como probado** hasta co
 | 9 | Rechazo, cancelación y vencimiento con PCs reales | Solicitar y cancelar; solicitar y dejar vencer (10 min) | El aviso desaparece en ambas PC |
 
 Recomendación: hacer estas pruebas con un **servidor de prueba nuevo** y una copia del mundo, nunca con el mundo 939 Z en uso.
+
+## 10. Pruebas reales en Windows (GitHub Actions, Windows Server 2025)
+
+Flujo `.github/workflows/pruebas-windows.yml`, en la rama `rediseno-v3`. Corre en máquinas
+Windows limpias de GitHub (misma base que Windows 11, con internet real): **no es la PC del
+usuario** y no toca ninguna instalación de Minecraft. No publica nada.
+
+| Prueba | Resultado (15/11/2026) |
+|---|---|
+| Núcleo, P2P y grupo (38 pruebas), con PCs congeladas de verdad (`NtSuspendProcess`) | ✔ incluida la recuperación por mayoría en ~14 s y «Recuperar aquí» con 2 PCs |
+| Vanilla 26.3: descarga real de Java 25 y del servidor de Mojang, encendido, comando, apagado | ✔ en línea en ~15 s |
+| Fabric 26.3 (loader 0.20.1) | ✔ ~17 s |
+| Forge 26.3 (66.1.8, instalador oficial) | ✔ ~18 s |
+| NeoForge 26.3 (26.3.0.103, instalador oficial) | ✔ ~17 s |
+| Modrinth real: búsqueda, plan, descarga con hash verificado, servidor Fabric con Lithium, quitar | ✔ |
+| Ciclo completo: copia en caliente, puntos incrementales, puerto ocupado, restaurar, borrar a la Papelera | ✔ (después de corregir el bloqueo de Windows, ver abajo) |
+| Jugadores y permisos con servidor real | ✔ |
+| Funciones v3 (pausa, guardado, SNBT, cuenta regresiva, reinicio, recursos del juego, reparación) | ✔ |
+| **Traspaso de anfitrión real entre dos «PCs» por P2P** (dos nodos en la misma máquina, sin relays) | ✔ en 27,9 s; el marcador del mundo llegó intacto y la misma dirección apunta a la nueva anfitriona |
+| Instalador NSIS silencioso sin administrador, SHA-256, app abre y queda abierta | ✔ |
+| Interfaz de la app instalada manejada por WebView2 (crear, instalar, encender, consola, copia, recorrido claro/oscuro) | ver resultados de la última ejecución |
+
+**Problemas que solo aparecieron en Windows y se corrigieron:**
+- Mover un servidor (o un mundo) a la Papelera fallaba con «Acceso denegado» cuando un archivo
+  quedaba abierto un instante. Ahora se reintenta unos segundos (antivirus/indexador).
+- Los diálogos del instalador/desinstalador bloqueaban la desinstalación silenciosa.
+- La barra lateral cortaba «Servidores de amigos» en la ventana mínima (1024 px).
+
+**Observado y no corregido (bajo impacto):** en Windows, la primera consulta de estado justo
+después de «Done» se corta y la siguiente (1 s después) responde. Pasó con los cuatro loaders y
+con la ruta P2P. Para un jugador significa, a lo sumo, un «No se pudo conectar» que se resuelve
+al reintentar.
+
+**Lo que estas pruebas no cubren:** dos PCs físicas en redes distintas (NAT real, relays),
+Smart App Control activo, una PC con antivirus de terceros, y el uso con Minecraft real
+conectado como cliente.

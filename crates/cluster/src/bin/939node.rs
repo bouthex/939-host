@@ -129,7 +129,9 @@ async fn main() {
     let timing = if std::env::var("H939_FAST").is_ok() {
         Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15), request_ttl: Duration::from_secs(std::env::var("H939_REQUEST_TTL").ok().and_then(|v| v.parse().ok()).unwrap_or(120)) }
     } else { Timing::default() };
-    let node = GroupNode::start(secret, &name, host939_p2p::Relays::Disabled, local.clone(), timing).await.expect("nodo");
+    // --relays: igual que la app (conexión directa y relays públicos solo como último recurso).
+    let relays = if std::env::args().any(|a| a == "--relays") { host939_p2p::Relays::PublicFallback } else { host939_p2p::Relays::Disabled };
+    let node = GroupNode::start(secret, &name, relays, local.clone(), timing).await.expect("nodo");
     assert_eq!(node.id(), node_id.node_id);
     say("##", &format!("listo {}", node.id()));
 
