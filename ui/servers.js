@@ -140,8 +140,7 @@ function drawCreate() {
       ['Red', `Puerto ${w.port} · ${w.onlineMode ? 'cuentas verificadas' : 'sin verificar cuentas'}`],
       ['Copias', 'Puntos de restauración automáticos cada 15 min'],
     ].map(([k, v]) => `<div class="kv"><span class="k">${k}</span><span>${v}</span></div>`).join('')}</div></div>
-    <label class="check"><input type="checkbox" data-w="eula" ${w.eula ? 'checked' : ''}><span>Acepto el <button class="link" data-a="link" data-url="https://aka.ms/MinecraftEULA">EULA de Minecraft</button><span class="hint">Mojang exige aceptarlo para ejecutar un servidor. 939 Host lo registra con fecha.</span></span></label>
-    <p class="sm t2" style="margin:0">Al crear, 939 Host descarga el servidor oficial y el Java que corresponde, y verifica cada archivo antes de usarlo.</p>`;
+    <label class="check"><input type="checkbox" data-w="eula" ${w.eula ? 'checked' : ''}><span>Acepto el <button class="link" data-a="link" data-url="https://aka.ms/MinecraftEULA">EULA de Minecraft</button><span class="hint">Mojang exige aceptarlo para ejecutar un servidor. 939 Host lo registra con fecha.</span></span></label>`;
 
   main.innerHTML = `<div class="page">
     <div class="crumbs"><button data-a="nav" data-route="servers">Servidores</button><span>/</span><span>Crear servidor</span></div>
@@ -152,12 +151,15 @@ function drawCreate() {
         <button class="btn" data-a="${w.step === 1 ? 'nav' : 'wback'}" data-route="servers">${w.step === 1 ? 'Cancelar' : 'Atrás'}</button>
         ${w.step < 4 ? `<button class="btn pri" data-a="wnext" ${stepValid() ? '' : 'disabled'}>Continuar</button>` : `<button class="btn pri" data-a="wcreate" ${w.eula && !w.creating ? '' : 'disabled'}>${w.creating ? 'Creando…' : 'Crear servidor'}</button>`}
       </div></div>
-      <aside class="card pad stack"><h3>Resumen</h3><div>
+      ${w.step < 4 ? `<aside class="card pad stack"><h3>Resumen</h3><div>
         <div class="kv"><span class="k">Nombre</span><span class="ellipsis">${esc(w.name) || '—'}</span></div>
-        <div class="kv"><span class="k">Versión</span><span class="mono sm">${loaderName(w.loader)} ${esc(w.mcVersion)}</span></div>
-        <div class="kv"><span class="k">Memoria</span><span class="mono">${fmtMB(w.memoryMb)}</span></div>
+        <div class="kv"><span class="k">Versión</span><span class="num">${loaderName(w.loader)} ${esc(w.mcVersion)}</span></div>
+        <div class="kv"><span class="k">Memoria</span><span class="num">${fmtMB(w.memoryMb)}</span></div>
         <div class="kv"><span class="k">Mundo</span><span>${w.worldMode === 'import' ? 'Copia' : 'Nuevo'}</span></div>
-        <div class="kv"><span class="k">Puerto</span><span class="mono">${w.port}</span></div></div>
+        <div class="kv"><span class="k">Puerto</span><span class="num">${w.port}</span></div></div>` : `<aside class="card pad stack"><h3>Qué pasa al crear</h3><ol class="next-steps">
+        <li><b>Descarga verificada</b><span class="sm t2">Servidor oficial de Mojang${w.loader !== 'vanilla' ? `, ${loaderName(w.loader)}` : ''} y el Java que corresponde. Cada archivo se comprueba antes de usarlo.</span></li>
+        <li><b>Primer encendido</b><span class="sm t2">Se genera el mundo. Puede tardar un par de minutos la primera vez.</span></li>
+        <li><b>Listo para invitar</b><span class="sm t2">Desde la pestaña Grupo compartís el servidor con tus amigos.</span></li></ol>`}</div>
       </aside></div></div>`;
 }
 function loaderText(loader, idle) {

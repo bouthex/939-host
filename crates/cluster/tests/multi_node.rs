@@ -188,8 +188,8 @@ fn group_protocol_fake_servers() {
     // ── B vuelve: ve la época mayor, se aísla y aparta su copia ──
     signal(pid_b, "CONT");
     wait("B se detiene sola", Duration::from_secs(30), || !b.ok(&format!("running {sid}")).as_bool().unwrap());
-    let snaps = b.ok(&format!("snapshots {sid}"));
-    assert!(snaps.as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"), "B debe apartar su copia: {snaps}");
+    // La copia de seguridad se toma justo después de apagar: se espera a que aparezca.
+    wait("B aparta su copia", Duration::from_secs(20), || b.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
     assert!(b.err(&format!("start {sid}")).contains("hosteando"));
     println!("✔ B volvió, detectó que C tomó el servidor, se detuvo y apartó su copia (no se mezclan mundos)");
 
@@ -242,7 +242,7 @@ fn two_pcs_manual_recovery_and_no_stale_start() {
     println!("✔ «Recuperar aquí» en B: encendió con el último estado sincronizado (d1)");
     signal(pid_a, "CONT");
     wait("A se aísla al volver", Duration::from_secs(30), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
-    assert!(a.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
+    wait("A aparta su copia", Duration::from_secs(20), || a.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
     println!("✔ A volvió, vio la época nueva, se detuvo y apartó su copia");
 
     // B escribe y suelta mientras A está desconectada → A no puede encender con su versión vieja.

@@ -102,7 +102,7 @@ async def main():
             await p.wait_for_selector(".srv-title", timeout=60000)
             return "asistente completo"
 
-        if not await step("crear servidor Vanilla desde el asistente", create):
+        if not await step("crear servidor Vanilla desde el asistente", create()):
             raise SystemExit(1)
         await shot("servidor-instalando", 3000)
 

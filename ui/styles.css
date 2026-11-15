@@ -495,3 +495,9 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 .cmp .h { font-weight: 600; font-size: 12px; color: var(--text3); }
 .cmp .k { color: var(--text2); padding-right: 16px; }
 .ok-badge.pop { animation: pop .45s var(--spring) both; }
+
+/* Asistente: valores numéricos alineados sin cambiar de tipografía */
+.num { font-variant-numeric: tabular-nums; }
+.next-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; counter-reset: ns; }
+.next-steps li { display: grid; grid-template-columns: 24px 1fr; column-gap: 12px; row-gap: 2px; counter-increment: ns; }
+.next-steps li::before { content: counter(ns); grid-row: span 2; width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }

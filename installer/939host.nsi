@@ -72,7 +72,7 @@ Function .onInit
   ; 939 Host abierto: pedir que se cierre antes de actualizar (los servidores se guardan al salir).
   FindWindow $0 "" "939 Host"
   ${If} $0 != 0
-    MessageBox MB_OK|MB_ICONEXCLAMATION "939 Host está abierto. Cerralo con «Salir» (así guarda y pasa los servidores) y volvé a ejecutar el instalador."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "939 Host está abierto. Cerralo con «Salir» (así guarda y pasa los servidores) y volvé a ejecutar el instalador." /SD IDOK
     Abort
   ${EndIf}
 FunctionEnd
@@ -113,7 +113,7 @@ Section "939 Host" SecMain
   ReadRegStr $2 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
   ${If} $1 == ""
   ${AndIf} $2 == ""
-    MessageBox MB_YESNO|MB_ICONINFORMATION "939 Host necesita Microsoft Edge WebView2, que no se encontró en esta PC. ¿Abrir la página oficial de descarga?" IDNO +2
+    MessageBox MB_YESNO|MB_ICONINFORMATION "939 Host necesita Microsoft Edge WebView2, que no se encontró en esta PC. ¿Abrir la página oficial de descarga?" /SD IDNO IDNO +2
       ExecShell "open" "https://developer.microsoft.com/microsoft-edge/webview2/"
   ${EndIf}
 SectionEnd
@@ -135,5 +135,5 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\939Host"
   DeleteRegKey HKCU "Software\939 Host"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "939 Host"
-  MessageBox MB_OK "939 Host se desinstaló. Tus servidores y copias siguen en $LOCALAPPDATA\939Host (podés borrarlos a mano si ya no los querés)."
+  MessageBox MB_OK "939 Host se desinstaló. Tus servidores y copias siguen en $LOCALAPPDATA\939Host (podés borrarlos a mano si ya no los querés)." /SD IDOK
 SectionEnd

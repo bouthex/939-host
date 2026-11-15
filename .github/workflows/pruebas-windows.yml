@@ -52,16 +52,22 @@ jobs:
       - name: Pruebas automáticas (incluye PCs congeladas y recuperación)
         run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster -- --test-threads 1
       - name: Loaders reales (Vanilla, Fabric, Forge, NeoForge)
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_loaders -- --ignored --nocapture
       - name: Modrinth real
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_modrinth -- --ignored --nocapture
       - name: Ciclo completo, copias y restauración
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test server_lifecycle full_server_lifecycle -- --ignored --nocapture
       - name: Jugadores y permisos
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test server_lifecycle players_and_permissions_real_server -- --ignored --nocapture
       - name: Funciones del diseño v3
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test v3_features -- --ignored --nocapture
       - name: Traspaso de anfitrión con servidores reales (dos PCs por P2P)
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-cluster --test multi_node real_minecraft_handover -- --ignored --nocapture
 
   app-windows:
@@ -91,6 +97,7 @@ jobs:
           python-version: "3.12"
       - run: pip install playwright==1.48.0
       - name: Abrir la app y usarla como una persona
+        timeout-minutes: 35
         shell: pwsh
         env:
           WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: --remote-debugging-port=9222
@@ -109,11 +116,19 @@ jobs:
           $bmp.Save("capturas\escritorio-windows.png")
           Get-Process java -ErrorAction SilentlyContinue | Format-Table Id, CPU, WS
           if ($code -ne 0) { exit $code }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: capturas-windows
+          path: capturas
+          retention-days: 14
       - name: Registro de la app
         if: always()
         shell: pwsh
         run: Get-ChildItem "$env:LOCALAPPDATA\939Host" -Recurse -Include *.log | ForEach-Object { "== $($_.FullName)"; Get-Content $_ -Tail 60 }
       - name: Portable abre sin instalar
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
         shell: pwsh
         run: |
           Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -126,6 +141,7 @@ jobs:
           Stop-Process $p -Force
       - name: Desinstalar
         if: always()
+        timeout-minutes: 5
         shell: pwsh
         run: |
           Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -133,9 +149,3 @@ jobs:
           if (!(Test-Path $u)) { $u = Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host\*.exe" | Where-Object Name -match 'esinst|uninst' | Select-Object -First 1 -ExpandProperty FullName }
           if ($u) { Start-Process $u -ArgumentList '/S' -Wait; Start-Sleep 5 }
           if (Test-Path "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe") { throw "No se desinstaló" }
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: capturas-windows
-          path: capturas
-          retention-days: 14
