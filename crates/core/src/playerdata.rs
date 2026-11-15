@@ -1,6 +1,7 @@
 //! Ficha de un jugador con datos reales del servidor, sin mods complementarios:
 //! - Conectado: `/data get entity <nombre>` por consola (respuesta oculta de la consola).
-//! - Desconectado: el archivo `world/playerdata/<uuid>.dat` que guarda Minecraft.
+//! - Desconectado: el archivo que guarda Minecraft (`world/players/data/<uuid>.dat` en 26.x,
+//!   `world/playerdata/<uuid>.dat` antes).
 //! - Estadísticas: `world/stats/<uuid>.json`; logros: `world/advancements/<uuid>.json`.
 //!
 //! Soporta el formato antiguo (Inventory con ranuras 100-103) y el de 1.21.5+ (`equipment`).
@@ -234,11 +235,28 @@ pub fn world_dir(cfg: &ServerConfig) -> std::path::PathBuf {
     paths::server_run_dir(&cfg.id).join(level)
 }
 
+/// Archivo de un jugador dentro del mundo. Minecraft 26.x guarda todo bajo `players/`
+/// (`players/data`, `players/stats`, `players/advancements`); las versiones anteriores usan
+/// `playerdata`, `stats` y `advancements` en la raíz del mundo. Se prueba primero lo nuevo.
+pub fn player_file(world: &std::path::Path, kind: &str, uuid: &str, ext: &str) -> std::path::PathBuf {
+    let new = world.join("players").join(kind).join(format!("{uuid}.{ext}"));
+    if new.exists() { return new; }
+    let old_dir = if kind == "data" { "playerdata" } else { kind };
+    let old = world.join(old_dir).join(format!("{uuid}.{ext}"));
+    if old.exists() || !world.join("players").is_dir() { old } else { new }
+}
+
+/// Cantidad de jugadores con datos guardados en el mundo (cualquiera de los dos formatos).
+pub fn saved_player_count(world: &std::path::Path) -> usize {
+    let count = |d: std::path::PathBuf| std::fs::read_dir(d).map(|r| r.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".dat")).count()).unwrap_or(0);
+    count(world.join("players").join("data")).max(count(world.join("playerdata")))
+}
+
 pub fn read_stats(cfg: &ServerConfig, uuid: &str) -> Stats {
     let mut st = Stats::default();
     if uuid.len() != 36 || !uuid.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') { return st; }
     let w = world_dir(cfg);
-    if let Some(j) = std::fs::read_to_string(w.join("stats").join(format!("{uuid}.json"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+    if let Some(j) = std::fs::read_to_string(player_file(&w, "stats", uuid, "json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
         let c = &j["stats"]["minecraft:custom"];
         let g = |k: &str| c.get(format!("minecraft:{k}")).and_then(|x| x.as_i64());
         st.play_time_ticks = g("play_time").or_else(|| g("play_one_minute"));
@@ -252,7 +270,7 @@ pub fn read_stats(cfg: &ServerConfig, uuid: &str) -> Stats {
         let dist: i64 = ["walk_one_cm", "sprint_one_cm", "swim_one_cm", "fly_one_cm", "walk_under_water_one_cm", "walk_on_water_one_cm", "crouch_one_cm", "climb_one_cm", "boat_one_cm", "horse_one_cm", "minecart_one_cm", "aviate_one_cm"].iter().filter_map(|k| g(k)).sum();
         if dist > 0 { st.distance_cm = Some(dist); }
     }
-    if let Some(j) = std::fs::read_to_string(w.join("advancements").join(format!("{uuid}.json"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+    if let Some(j) = std::fs::read_to_string(player_file(&w, "advancements", uuid, "json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
         if let Some(o) = j.as_object() {
             st.advancements = Some(o.iter().filter(|(k, v)| !k.contains("recipes/") && v.get("done").and_then(|d| d.as_bool()).unwrap_or(false)).count() as i64);
         }
@@ -262,7 +280,7 @@ pub fn read_stats(cfg: &ServerConfig, uuid: &str) -> Stats {
 
 fn read_saved(cfg: &ServerConfig, uuid: &str) -> Option<(Value, Option<String>)> {
     if uuid.len() != 36 || !uuid.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') { return None; }
-    let p = world_dir(cfg).join("playerdata").join(format!("{uuid}.dat"));
+    let p = player_file(&world_dir(cfg), "data", uuid, "dat");
     let when = std::fs::metadata(&p).ok().and_then(|m| m.modified().ok()).map(|t| chrono::DateTime::<chrono::Local>::from(t).to_rfc3339());
     nbt::read_nbt_file(&p).ok().map(|v| (v, when))
 }
@@ -323,5 +341,34 @@ mod tests {
         assert_eq!(d.inventory[0].enchantments[0].1, 2);
         assert_eq!(d.armor_points, 2);
         assert_eq!(d.spawn.unwrap().1, [1, 2, 3]);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    #[test]
+    fn finds_player_files_in_both_layouts() {
+        let t = tempfile::tempdir().unwrap();
+        let u = "dc93628e-4a27-409a-8ed7-fa8b31818b75";
+        // 26.x
+        let w = t.path().join("nuevo");
+        std::fs::create_dir_all(w.join("players/data")).unwrap();
+        std::fs::create_dir_all(w.join("players/stats")).unwrap();
+        std::fs::write(w.join(format!("players/data/{u}.dat")), b"x").unwrap();
+        std::fs::write(w.join(format!("players/stats/{u}.json")), b"{}").unwrap();
+        assert_eq!(player_file(&w, "data", u, "dat"), w.join(format!("players/data/{u}.dat")));
+        assert_eq!(player_file(&w, "stats", u, "json"), w.join(format!("players/stats/{u}.json")));
+        assert_eq!(saved_player_count(&w), 1);
+        // anterior
+        let o = t.path().join("viejo");
+        std::fs::create_dir_all(o.join("playerdata")).unwrap();
+        std::fs::write(o.join(format!("playerdata/{u}.dat")), b"x").unwrap();
+        assert_eq!(player_file(&o, "data", u, "dat"), o.join(format!("playerdata/{u}.dat")));
+        assert_eq!(saved_player_count(&o), 1);
+        // mundo sin jugadores: no cuenta carpetas
+        let e = t.path().join("vacio");
+        std::fs::create_dir_all(e.join("players/data")).unwrap();
+        assert_eq!(saved_player_count(&e), 0);
     }
 }

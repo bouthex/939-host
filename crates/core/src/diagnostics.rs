@@ -31,7 +31,7 @@ pub fn world_info(cfg: &ServerConfig) -> WorldInfo {
             }
         }
     }
-    let players = std::fs::read_dir(w.join("playerdata")).or_else(|_| std::fs::read_dir(w.join("players"))).map(|r| r.count()).unwrap_or(0);
+    let players = crate::playerdata::saved_player_count(&w);
     WorldInfo {
         size_bytes: paths::dir_size(&w),
         level_name: "world".into(),
