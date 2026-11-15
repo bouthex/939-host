@@ -14,11 +14,13 @@ Versión de desarrollo de la rama `rediseno-v3`. No es una release publicada: sa
 
 ## Instalar (en cada PC)
 
-1. Descargar `939Host-windows-prueba.zip` y descomprimirlo.
+1. Conseguir el instalador: `939Host-prueba-<commit>-instalador.exe` (el que se pasa por el chat)
+   o, desde GitHub Actions → «Pruebas en Windows» → artefacto `939Host-windows-prueba`,
+   `939Host-0.9.0-instalador.exe` (la versión interna sigue siendo 0.9.0).
 2. Verificar el archivo (opcional, recomendado). En PowerShell, dentro de la carpeta:
-   `Get-FileHash .\939Host-0.9.0-instalador.exe -Algorithm SHA256`
+   `Get-FileHash .\<nombre-del-instalador>.exe -Algorithm SHA256`
    El resultado tiene que coincidir con la línea correspondiente de `SHA256SUMS.txt`.
-3. Abrir `939Host-0.9.0-instalador.exe`. No pide permisos de administrador.
+3. Abrir el instalador. No pide permisos de administrador.
 4. **Aviso de SmartScreen.** Como el archivo no tiene firma digital, Windows muestra «Windows
    protegió tu PC» / «Editor desconocido». Es esperable. Si verificaste el SHA-256, elegí
    «Más información» → «Ejecutar de todos modos». No cambies ninguna configuración de Windows.
@@ -40,7 +42,7 @@ y navegador → Smart App Control.
 
 ### Portable (sin instalar)
 
-`939Host-0.9.0-portable.zip`: descomprimir en una carpeta propia (por ejemplo `Documentos\939 Host`)
+El `.zip` portable: descomprimir en una carpeta propia (por ejemplo `Documentos\939 Host`)
 y abrir `939Host.exe`. Usa la misma carpeta de datos que la instalada, así que no conviene tener
 las dos a la vez. Los mismos avisos de SmartScreen y Smart App Control aplican.
 
