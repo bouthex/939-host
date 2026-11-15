@@ -95,7 +95,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install playwright==1.48.0
+      - run: pip install playwright==1.48.0 pillow
       - name: Abrir la app y usarla como una persona
         timeout-minutes: 35
         shell: pwsh
@@ -107,6 +107,9 @@ jobs:
           $p = Start-Process $exe -PassThru
           Start-Sleep 8
           if ($p.HasExited) { throw "La app se cerró al abrir (código $($p.ExitCode))" }
+          Get-Process 939Host, msedgewebview2 -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, MainWindowTitle
+          try { (Invoke-WebRequest http://127.0.0.1:9222/json/version -TimeoutSec 5).Content } catch { "Puerto de depuración: $_" }
+          New-Item -ItemType Directory -Force capturas | Out-Null
           python ci/windows/ui_e2e.py
           $code = $LASTEXITCODE
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -115,6 +118,7 @@ jobs:
           [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
           $bmp.Save("capturas\escritorio-windows.png")
           Get-Process java -ErrorAction SilentlyContinue | Format-Table Id, CPU, WS
+          python ci/windows/volcar_capturas.py capturas
           if ($code -ne 0) { exit $code }
       - uses: actions/upload-artifact@v7
         if: always()

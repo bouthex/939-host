@@ -32,6 +32,29 @@ pub fn trash_slot(label: &str) -> PathBuf {
     trash().join(format!("{label}-{}-{}", chrono::Local::now().format("%Y%m%d-%H%M%S-%3f"), hex::encode(b)))
 }
 
+/// Mueve un archivo o carpeta, reintentando unos segundos si Windows lo tiene bloqueado.
+///
+/// En Windows, el antivirus o el indexador abren por un momento los archivos recién escritos
+/// (después de un apagado, una restauración o una copia) y renombrar la carpeta falla con
+/// «Acceso denegado» aunque nadie la esté usando de verdad. Se reintenta hasta ~8 s.
+pub fn rename_retry(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
+    let (from, to) = (from.as_ref(), to.as_ref());
+    let mut wait = std::time::Duration::from_millis(150);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            // 5 = acceso denegado, 32 = archivo en uso por otro proceso.
+            Err(e) if std::time::Instant::now() < deadline
+                && (e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(5) | Some(32))) => {
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(std::time::Duration::from_secs(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Carpeta de un servidor: contiene `instance.json`, `server/` (lo que ve Java) y `backups/`.
 pub fn server_dir(id: &str) -> PathBuf { servers().join(id) }
 pub fn server_run_dir(id: &str) -> PathBuf { server_dir(id).join("server") }

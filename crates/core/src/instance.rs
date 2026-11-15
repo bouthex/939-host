@@ -315,7 +315,7 @@ pub fn delete(mgr: &Manager, id: &str, confirm_name: &str) -> AppResult<()> {
         return Err(AppError::busy("Detené el servidor antes de borrarlo."));
     }
     let dst = paths::trash_slot(id);
-    std::fs::rename(paths::server_dir(id), &dst).map_err(|e| AppError::io("No se pudo mover el servidor a la Papelera", e))?;
+    paths::rename_retry(paths::server_dir(id), &dst).map_err(|e| AppError::io("No se pudo mover el servidor a la Papelera", e))?;
     Ok(())
 }
 
@@ -347,7 +347,7 @@ pub fn import_world(mgr: &Manager, id: &str, src: &Path) -> AppResult<u64> {
     let src = validate_world_source(src)?;
     let world = paths::server_run_dir(id).join("world");
     if world.exists() {
-        std::fs::rename(&world, paths::trash_slot(&format!("{id}-world"))).map_err(|e| AppError::io("No se pudo apartar el mundo actual", e))?;
+        paths::rename_retry(&world, paths::trash_slot(&format!("{id}-world"))).map_err(|e| AppError::io("No se pudo apartar el mundo actual", e))?;
     }
     paths::copy_dir(&src, &world)
 }

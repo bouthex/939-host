@@ -86,7 +86,11 @@ fn slp(port: u16) -> String {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let c = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(10), host939_cluster::moving::status(c)).await.unwrap().unwrap_or_default()
+        match tokio::time::timeout(Duration::from_secs(10), host939_cluster::moving::status(c)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => format!("(error: {e})"),
+            Err(_) => "(sin respuesta en 10 s)".into(),
+        }
     })
 }
 

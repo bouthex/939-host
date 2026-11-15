@@ -293,7 +293,7 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
         let snapshot_has_dir = snap.files.iter().any(|f| f.path.starts_with(&format!("{d}/")));
         if *d != "world" && !snapshot_has_dir && !snap_covers_dirs(&snap) { continue; }
         if cur.exists() {
-            std::fs::rename(&cur, paths::trash_slot(&format!("{id}-{d}"))).map_err(|e| AppError::io("No se pudo apartar la carpeta actual", e))?;
+            paths::rename_retry(&cur, paths::trash_slot(&format!("{id}-{d}"))).map_err(|e| AppError::io("No se pudo apartar la carpeta actual", e))?;
         }
         if st.exists() {
             std::fs::rename(&st, &cur).map_err(|e| AppError::io("No se pudo colocar la carpeta restaurada", e))?;

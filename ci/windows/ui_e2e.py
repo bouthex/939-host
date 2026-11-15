@@ -21,6 +21,7 @@ def log(ok, what, extra=""):
 
 
 async def find_page(pw):
+    last = None
     for _ in range(90):
         try:
             b = await pw.chromium.connect_over_cdp("http://127.0.0.1:9222")
@@ -28,10 +29,11 @@ async def find_page(pw):
                 for p in c.pages:
                     if "index.html" in p.url or p.url.startswith("http://tauri.localhost") or p.url.startswith("tauri://"):
                         return b, p
-        except Exception:
-            pass
+            last = "conectado, páginas: " + ", ".join(p.url for c in b.contexts for p in c.pages)
+        except Exception as e:
+            last = str(e).splitlines()[0]
         await asyncio.sleep(2)
-    raise SystemExit("No se pudo conectar con la ventana de 939 Host (WebView2)")
+    raise SystemExit(f"No se pudo conectar con la ventana de 939 Host (WebView2): {last}")
 
 
 async def main():

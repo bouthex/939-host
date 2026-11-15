@@ -49,7 +49,7 @@ pub fn new_world(mgr: &Manager, cfg: &mut ServerConfig, seed: Option<String>) ->
     let w = paths::server_run_dir(&cfg.id).join("world");
     if w.join("level.dat").exists() {
         crate::snapshots::capture(&cfg.id, "Antes de crear un mundo nuevo", "manual", &cfg.mc_version)?;
-        std::fs::rename(&w, paths::trash_slot(&format!("{}-mundo", cfg.id))).map_err(|e| AppError::io("No se pudo apartar el mundo", e))?;
+        paths::rename_retry(&w, paths::trash_slot(&format!("{}-mundo", cfg.id))).map_err(|e| AppError::io("No se pudo apartar el mundo", e))?;
     }
     if let Some(s) = seed { cfg.level_seed = s.trim().chars().take(64).collect(); }
     crate::instance::save(cfg)

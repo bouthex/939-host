@@ -61,19 +61,28 @@ fn wait_for(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
 }
 
 /// Consulta de estado del protocolo de Minecraft (lo que hace la lista de servidores del juego).
-fn slp_status(port: u16) -> String {
+fn slp_once(port: u16) -> Result<String, String> {
     use std::io::{Read, Write};
     fn varint(mut v: u32, out: &mut Vec<u8>) { loop { let b = (v & 0x7f) as u8; v >>= 7; if v == 0 { out.push(b); break } out.push(b | 0x80); } }
     fn read_varint(r: &mut impl Read) -> std::io::Result<u32> { let mut n = 0u32; for i in 0..5 { let mut b = [0u8]; r.read_exact(&mut b)?; n |= ((b[0] & 0x7f) as u32) << (7 * i); if b[0] & 0x80 == 0 { return Ok(n) } } Ok(n) }
-    let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
+    let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("conectar: {e}"))?;
     c.set_read_timeout(Some(Duration::from_secs(10))).ok();
     let mut body = vec![0u8]; varint(767, &mut body); varint(9, &mut body); body.extend_from_slice(b"127.0.0.1"); body.extend_from_slice(&port.to_be_bytes()); varint(1, &mut body);
     let mut pkt = vec![]; varint(body.len() as u32, &mut pkt); pkt.extend(body); pkt.extend_from_slice(&[1, 0]);
-    if c.write_all(&pkt).is_err() { return String::new() }
-    let Ok(len) = read_varint(&mut c) else { return String::new() };
+    c.write_all(&pkt).map_err(|e| format!("enviar: {e}"))?;
+    let len = read_varint(&mut c).map_err(|e| format!("leer largo: {e}"))?;
     let mut buf = vec![0u8; len as usize];
-    if c.read_exact(&mut buf).is_err() { return String::new() }
-    String::from_utf8_lossy(&buf).to_string()
+    c.read_exact(&mut buf).map_err(|e| format!("leer respuesta: {e}"))?;
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+fn slp_status(port: u16) -> String {
+    let mut last = String::new();
+    for _ in 0..10 {
+        match slp_once(port) { Ok(s) if s.contains("\"version\"") => return s, Ok(s) => last = s, Err(e) => last = e }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    format!("sin respuesta en el puerto {port}: {last}")
 }
 
 /// Primera versión de la lista que el loader soporta (la más nueva primero).
@@ -120,7 +129,13 @@ async fn run_server(mgr: &Manager, rec: &Recorder, probe: &Probe, cfg: ServerCon
     assert!(wait_for(Duration::from_secs(20), || mgr.console(&cfg.id).iter().any(|l| l.contains("hola desde la prueba"))), "el comando no llegó");
     // Estado por el protocolo de Minecraft (lo mismo que ve el juego).
     let st = slp_status(cfg.port);
-    assert!(st.contains("\"version\""), "estado del servidor: {st}");
+    if !st.contains("\"version\"") {
+        let props = std::fs::read_to_string(paths::server_run_dir(&cfg.id).join("server.properties")).unwrap_or_default();
+        let ports: Vec<_> = props.lines().filter(|l| l.contains("port") || l.contains("server-ip")).collect();
+        let net = std::process::Command::new(if cfg!(windows) { "netstat" } else { "ss" }).args(if cfg!(windows) { vec!["-ano", "-p", "TCP"] } else { vec!["-ltnp"] }).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| l.contains("LISTEN")).map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+        let pid = mgr.runtime(&cfg.id).lock().unwrap().pid;
+        panic!("estado del servidor: {st}\nproperties: {ports:?}\npid java: {pid:?}\nescuchando:\n{net}\nconsola:\n{}", mgr.console(&cfg.id).iter().rev().take(15).cloned().collect::<Vec<_>>().join("\n"));
+    }
     mgr.stop(&cfg.id).unwrap();
     assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)), "no se apagó");
     assert_eq!(rt.lock().unwrap().status(), RunStatus::Stopped, "apagado no limpio: {:?}", rt.lock().unwrap().last_error);
