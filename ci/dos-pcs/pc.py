@@ -1,4 +1,4 @@
-"""Prueba entre dos máquinas reales de GitHub (Windows y Linux), en redes separadas.
+"""Prueba entre dos máquinas Windows reales y separadas de GitHub.
 
 Cada máquina corre un nodo `939node` con relays habilitados como la app, y servidores de
 Minecraft reales descargados por 939 Host. Se intercambian la invitación y las señales con
@@ -32,6 +32,7 @@ class Node:
         self.p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, encoding="utf-8", env={**os.environ})
         self.q = queue.Queue()
+        self.notes = []
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -40,7 +41,11 @@ class Node:
             if line.startswith("@@ "):
                 self.q.put(line[3:])
             elif line.startswith("## "):
+                self.notes.append(line[3:])
                 print("    · " + line[3:], flush=True)
+
+    def failed_handover(self):
+        return next((x for x in self.notes if "no se pudo completar" in x), None)
 
     def cmd(self, c, timeout=900):
         self.p.stdin.write(c + "\n"); self.p.stdin.flush()
@@ -104,6 +109,8 @@ def wait_until(what, timeout, f):
     while time.time() < end:
         try:
             if f(): return True
+        except RuntimeError:
+            raise
         except Exception:
             pass
         time.sleep(2)
@@ -111,7 +118,7 @@ def wait_until(what, timeout, f):
 
 
 def anfitriona():
-    n = Node("Windows")
+    n = Node("Anfitriona")
     sid = n.ok("create Casas939 25811"); log(True, f"servidor creado {sid}")
     n.ok(f"share {sid}")
     tok = n.ok(f"invite {sid} coanfitrion")
@@ -144,7 +151,7 @@ def anfitriona():
 
 def invitada():
     sid, tok = wait_file("invitacion.txt", 1800).splitlines()
-    n = Node("Linux")
+    n = Node("Invitada")
     t0 = time.time(); n.ok(f"join {tok}", timeout=300)
     log(True, f"se unió al grupo por P2P en {time.time() - t0:.1f} s")
     n.ok(f"setport {sid} 25812")
@@ -158,7 +165,14 @@ def invitada():
     t0 = time.time()
     n.ok(f"request {sid}")
     log(True, "pidió ser anfitriona")
-    wait_until("esta PC queda alojando", 1500, lambda: n.ok(f"online {sid}"))
+    def alojando():
+        bad = n.failed_handover()
+        if bad: raise RuntimeError(bad)
+        return n.ok(f"online {sid}")
+    try:
+        wait_until("esta PC queda alojando", 1500, alojando)
+    except TimeoutError:
+        raise RuntimeError(n.failed_handover() or "no quedó alojando")
     log(True, f"recibió el servidor y está en línea ({time.time() - t0:.0f} s desde la solicitud, incluye descargas)")
     if not os.environ.get("PC_FAKE"):
         n.ok(f"cmd {sid} scoreboard players get marcador casas")
@@ -176,5 +190,7 @@ try:
     anfitriona() if ROLE == "anfitriona" else invitada()
 except Exception as e:
     log(False, f"{type(e).__name__}: {e}")
+    # Avisar a la otra PC para que no espere de más.
+    put_file(f"{ROLE}-fin.txt", json.dumps(results))
 json.dump(results, open(f"resultado-{ROLE}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 sys.exit(0 if results and all(r["ok"] for r in results) else 1)

@@ -154,7 +154,7 @@ jobs:
           if ($u) { Start-Process $u -ArgumentList '/S' -Wait; Start-Sleep 5 }
           if (Test-Path "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe") { throw "No se desinstaló" }
 
-  # Dos máquinas reales en redes separadas (Windows ↔ Linux), P2P con relays como la app,
+  # Dos máquinas Windows reales y separadas, P2P con relays como la app,
   # servidores de Minecraft reales, «Solicitar ser anfitrión» y traspaso con el mundo intacto.
   dos-pcs-windows:
     name: Dos PCs · Windows (anfitriona)
@@ -187,21 +187,20 @@ jobs:
         with: { name: dos-pcs-encendido, path: sig/encendido.txt, retention-days: 1 }
       - name: Esperar el traspaso
         shell: bash
-        run: ci/dos-pcs/esperar_archivo.sh sig/anfitriona-fin.txt 2400 anfitriona.log
+        run: ci/dos-pcs/esperar_archivo.sh sig/anfitriona-fin.txt 1500 anfitriona.log
       - uses: actions/upload-artifact@v7
         with: { name: dos-pcs-anfitriona-fin, path: sig/anfitriona-fin.txt, retention-days: 1 }
       - name: Esperar a la otra PC y resultado
         if: always()
         shell: bash
         run: |
-          ci/dos-pcs/artefacto.sh dos-pcs-invitada-fin sig 1200 || true
+          ci/dos-pcs/artefacto.sh dos-pcs-invitada-fin sig 600 anfitriona.log || true
           for i in $(seq 1 30); do [ -f resultado-anfitriona.json ] && break; sleep 2; done
-          cat anfitriona.log
           python -c "import json,sys; r=json.load(open('resultado-anfitriona.json',encoding='utf-8')); sys.exit(0 if r and all(x['ok'] for x in r) else 1)"
 
-  dos-pcs-linux:
-    name: Dos PCs · Linux (invitada)
-    runs-on: ubuntu-24.04
+  dos-pcs-invitada:
+    name: Dos PCs · Windows (invitada, otra máquina)
+    runs-on: windows-2025
     timeout-minutes: 75
     permissions:
       contents: read
@@ -213,22 +212,25 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          key: linux-node
+          key: windows-msvc-node
       - run: cargo build --locked --release -p host939-cluster --bin 939node
       - name: Esperar la invitación de la otra PC
+        shell: bash
         run: ci/dos-pcs/artefacto.sh dos-pcs-invitacion sig 2400
       - name: Unirse, entrar, pedir ser anfitriona y recibir el servidor
+        shell: bash
         run: |
-          NODE_BIN="$PWD/target/release/939node" nohup python3 ci/dos-pcs/pc.py invitada sig > invitada.log 2>&1 &
-          ci/dos-pcs/artefacto.sh dos-pcs-encendido sig 2400
-          ci/dos-pcs/artefacto.sh dos-pcs-anfitriona-fin sig 3000
-          ci/dos-pcs/esperar_archivo.sh sig/invitada-fin.txt 600 invitada.log
+          NODE_BIN="$PWD/target/release/939node.exe" nohup python ci/dos-pcs/pc.py invitada sig > invitada.log 2>&1 &
+          ci/dos-pcs/artefacto.sh dos-pcs-encendido sig 1500 invitada.log
+          ci/dos-pcs/artefacto.sh dos-pcs-anfitriona-fin sig 1500 invitada.log
+          ci/dos-pcs/esperar_archivo.sh sig/invitada-fin.txt 300 invitada.log
       - uses: actions/upload-artifact@v7
         if: always()
         with: { name: dos-pcs-invitada-fin, path: sig/invitada-fin.txt, retention-days: 1, if-no-files-found: ignore }
       - name: Resultado
         if: always()
+        shell: bash
         run: |
           for i in $(seq 1 30); do [ -f resultado-invitada.json ] && break; sleep 2; done
-          cat invitada.log
-          python3 -c "import json,sys; r=json.load(open('resultado-invitada.json')); sys.exit(0 if r and all(x['ok'] for x in r) else 1)"
+          tail -40 invitada.log
+          python -c "import json,sys; r=json.load(open('resultado-invitada.json',encoding='utf-8')); sys.exit(0 if r and all(x['ok'] for x in r) else 1)"
