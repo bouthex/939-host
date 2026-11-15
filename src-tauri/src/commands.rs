@@ -232,6 +232,7 @@ pub fn open_folder(id: Option<String>, which: String) -> AppResult<()> {
         (Some(id), "backups") => paths::server_backups_dir(id),
         (Some(id), "logs") => paths::server_run_dir(id).join("logs"),
         (Some(id), "mods") => paths::server_run_dir(id).join("mods"),
+        (Some(id), "world") => host939_core::playerdata::world_dir(&instance::load(id)?),
         (None, "data") => paths::root().to_path_buf(),
         (None, "trash") => paths::trash(),
         (None, "applogs") => paths::root().join("logs"),

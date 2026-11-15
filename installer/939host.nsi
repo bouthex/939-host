@@ -46,6 +46,11 @@ BrandingText "939 Host ${VERSION}"
 !define MUI_ICON "${SRCDIR}/icon.ico"
 !define MUI_UNICON "${SRCDIR}/icon.ico"
 !define MUI_ABORTWARNING
+!define MUI_WELCOMEFINISHPAGE_BITMAP "bienvenida.bmp"
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP "bienvenida.bmp"
+!define MUI_HEADERIMAGE
+!define MUI_HEADERIMAGE_RIGHT
+!define MUI_HEADERIMAGE_BITMAP "encabezado.bmp"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APPEXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "Abrir 939 Host"
 

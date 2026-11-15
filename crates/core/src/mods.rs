@@ -606,3 +606,34 @@ pub fn import_files(cfg: &ServerConfig, files: &[PathBuf]) -> AppResult<ImportRe
     r.copied.sort();
     Ok(r)
 }
+
+/// Vincula un archivo agregado a mano con su proyecto de Modrinth (identificado por hash), para
+/// que 939 Host lo administre: actualizaciones, dependencias y quitar con un clic. No descarga
+/// ni cambia el archivo.
+pub async fn link_file<S: Source>(src: &S, cfg: &ServerConfig, file_name: &str) -> AppResult<InstalledMod> {
+    if file_name.contains(['/', '\\']) || !file_name.ends_with(".jar") { return Err(AppError::invalid("Archivo inválido.")); }
+    let path = mods_dir(&cfg.id).join(file_name);
+    if !path.is_file() { return Err(AppError::not_found("el archivo")); }
+    let mut manifest = load_manifest(&cfg.id);
+    if manifest.mods.iter().any(|m| m.file_name == file_name) { return Err(AppError::invalid("Ese archivo ya está administrado por 939 Host.")); }
+    let sha = net::sha1_file(&path)?;
+    let found = src.versions_by_sha1(std::slice::from_ref(&sha)).await?;
+    let v = found.get(&sha).ok_or_else(|| AppError::invalid("Modrinth no reconoce este archivo: no se puede vincular."))?;
+    if manifest.mods.iter().any(|m| m.project_id == v.project_id) { return Err(AppError::invalid("Ese mod ya está instalado con otro archivo. Apartá el duplicado.")); }
+    let project = src.projects(std::slice::from_ref(&v.project_id)).await?.into_iter().next();
+    let m = InstalledMod {
+        project_id: v.project_id.clone(),
+        version_id: v.id.clone(),
+        title: project.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| v.name.clone()),
+        version_number: v.version_number.clone(),
+        file_name: file_name.to_string(),
+        sha1: sha,
+        side: project.as_ref().map(|p| modrinth::side_label(&p.client_side, &p.server_side).to_string()).unwrap_or_else(|| "unknown".into()),
+        explicit: true,
+        required_by: vec![],
+        depends_on: vec![],
+    };
+    manifest.mods.push(m.clone());
+    save_manifest(&cfg.id, &manifest)?;
+    Ok(m)
+}

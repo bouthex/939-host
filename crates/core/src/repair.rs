@@ -256,7 +256,9 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
             }
         }
     }
-    if regex::Regex::new(r"(?i)failed to bind to port").unwrap().is_match(&log) {
+    let active = mgr.runtime(&cfg.id).lock().unwrap().is_active();
+    // Solo si el puerto sigue ocupado ahora: un registro viejo con "FAILED TO BIND" no alcanza.
+    if !active && port_busy_any(cfg.port) {
         let port = free_port(cfg.port);
         add(&mut problems, Problem { id: "port".into(), kind: "port".into(),
             title: format!("El puerto {} está ocupado por otro programa", cfg.port),
@@ -417,6 +419,8 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
     };
     Diagnosis { problems, fixable, summary }
 }
+
+fn port_busy_any(port: u16) -> bool { std::net::TcpListener::bind(("0.0.0.0", port)).is_err() || std::net::TcpListener::bind(("127.0.0.1", port)).is_err() }
 
 fn add(list: &mut Vec<Problem>, p: Problem) { if !list.iter().any(|x| x.id == p.id) { list.push(p); } }
 

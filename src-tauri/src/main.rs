@@ -33,6 +33,13 @@ impl Events for TauriEvents {
     fn mods_progress(&self, id: &str, message: &str, fraction: f64) { let _ = self.0.emit("mods-progress", ModsPayload { id, message, fraction }); }
 }
 
+/// Fondo de la ventana según el tema elegido, para que no destelle blanco en modo oscuro.
+fn theme_background(w: Option<&tauri::WebviewWindow>) -> tauri::window::Color {
+    let theme = settings::load().theme;
+    let dark = theme == "dark" || (theme != "light" && w.and_then(|w| w.theme().ok()) == Some(tauri::Theme::Dark));
+    if dark { tauri::window::Color(9, 9, 9, 255) } else { tauri::window::Color(250, 250, 250, 255) }
+}
+
 /// Muestra la ventana principal; si se había destruido para ahorrar memoria, la vuelve a crear.
 pub fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -46,6 +53,7 @@ pub fn show_main(app: &AppHandle) {
         .inner_size(1280.0, 820.0)
         .min_inner_size(1024.0, 680.0)
         .center()
+        .background_color(theme_background(None))
         .build();
 }
 
@@ -107,7 +115,11 @@ fn main() {
             commands::start_snapshot_scheduler(app.handle().clone());
             // Con --minimized (inicio con Windows) arranca solo en la bandeja.
             if !std::env::args().any(|a| a == "--minimized") {
-                if let Some(w) = app.get_webview_window("main") { let _ = w.show(); let _ = w.set_focus(); }
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.set_background_color(Some(theme_background(Some(&w))));
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
             } else if let Some(w) = app.get_webview_window("main") {
                 let _ = w.destroy();
             }
@@ -216,6 +228,7 @@ fn main() {
             v3::mods_explore,
             v3::mods_project,
             v3::mods_import_files,
+            v3::mods_link,
         ])
         .build(tauri::generate_context!())
         .expect("no se pudo iniciar 939 Host");

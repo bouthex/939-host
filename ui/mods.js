@@ -1,0 +1,261 @@
+'use strict';
+/* Mods: Instalados, Explorar Modrinth (categorías y lado), Actualizaciones, Archivos agregados a
+   mano, página de detalle e importación arrastrando o eligiendo .jar. */
+
+const MSUB = [['installed', 'Instalados'], ['explore', 'Explorar Modrinth'], ['updates', 'Actualizaciones'], ['files', 'Archivos']];
+const CATS = [['', 'Todas'], ['optimization', 'Optimización'], ['utility', 'Utilidades'], ['library', 'Bibliotecas'], ['game-mechanics', 'Mecánicas'], ['adventure', 'Aventura'],
+  ['worldgen', 'Generación de mundo'], ['mobs', 'Criaturas'], ['magic', 'Magia'], ['technology', 'Tecnología'], ['storage', 'Almacenamiento'], ['equipment', 'Equipamiento'],
+  ['decoration', 'Decoración'], ['food', 'Comida'], ['transportation', 'Transporte'], ['management', 'Administración'], ['social', 'Social'], ['economy', 'Economía'], ['minigame', 'Minijuegos']];
+const SIDE = { server: 'Solo servidor', both: 'Servidor y jugadores', client: 'Solo jugadores', unknown: 'Lado desconocido' };
+const ISSUE = { duplicate: 'Duplicado', incompatible: 'Otra versión de Minecraft', client_only: 'Solo para jugadores', unknown: 'No está en Modrinth' };
+const md = { sub: 'installed', list: [], offline: false, updates: {}, perf: [], q: '', cat: '', side: 'server', sort: 'relevance', results: null, offset: 0, detail: null, busy: false, loadedFor: null };
+const sideOf = (cl, sv) => (sv === 'unsupported' ? 'client' : cl === 'unsupported' ? 'server' : 'both');
+const imgs = () => state.info.settings.modImagesEnabled !== false;
+const modIcon = (url, title, cls = '') => `<span class="mod-ic ${cls}">${url && imgs() ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc((title || '?')[0].toUpperCase())}</span>`;
+
+tabDraw.mods = async (el) => {
+  const c = state.server.config;
+  if (c.loader === 'vanilla') {
+    el.innerHTML = `<div class="empty">${icon('box', 28)}<h2>Este servidor es Vanilla</h2><p>Los mods necesitan Fabric, NeoForge o Forge. Creá un servidor con uno de ellos (podés usar una copia de este mismo mundo) para instalar mods.</p><button class="btn pri" data-a="new">${icon('plus', 16)}Crear servidor</button></div>`;
+    return;
+  }
+  if (md.loadedFor !== c.id) { Object.assign(md, { sub: 'installed', results: null, q: '', cat: '', updates: {}, detail: null, offset: 0 }); md.loadedFor = c.id; }
+  el.innerHTML = '<div id="mods-root" class="stack" style="gap:16px"><div class="card pad"><div class="bar indet"><i></i></div></div></div>';
+  await loadMods();
+  if (!md.perf.length) md.perf = await invoke('mods_performance_list').catch(() => []);
+  paintMods();
+};
+async function loadMods() {
+  const id = state.params.id;
+  try { md.list = await invoke('mods_list', { id, online: true }); md.offline = false; }
+  catch { md.list = await invoke('mods_list', { id, online: false }).catch(() => []); md.offline = true; }
+}
+function paintMods() {
+  const root = $('#mods-root');
+  if (!root) return;
+  if (md.detail) { paintDetail(root); return; }
+  const files = md.list.filter((x) => !x.managed);
+  const counts = { installed: md.list.filter((x) => x.managed).length, updates: Object.keys(md.updates).length, files: files.length };
+  root.innerHTML = `
+    ${md.offline ? `<div class="note">${icon('alert')}<div class="grow"><b>Sin conexión con Modrinth</b><span class="sm t2">Se muestran los archivos locales. Para buscar, instalar o identificar mods hace falta internet.</span></div><button class="btn s" data-a="mods-reload">${icon('refresh', 14)}Reintentar</button></div>` : ''}
+    <div class="spread" style="flex-wrap:wrap"><div class="seg" role="tablist">${MSUB.map(([k, l]) => `<button class="${md.sub === k ? 'on' : ''}" data-a="msub" data-v="${k}" role="tab" aria-selected="${md.sub === k}">${l}${counts[k] ? ` <span class="t3">${counts[k]}</span>` : ''}</button>`).join('')}</div>
+      <div class="btns"><span class="chip soft">${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)}</span><button class="btn s ghost" data-a="folder" data-which="mods">${icon('folder', 14)}Carpeta de mods</button></div></div>
+    <div id="mods-progress"></div>
+    <div id="mods-sub"></div>`;
+  const sub = $('#mods-sub');
+  if (md.sub === 'installed') paintInstalled(sub);
+  else if (md.sub === 'explore') paintExplore(sub);
+  else if (md.sub === 'updates') paintUpdates(sub);
+  else paintFiles(sub, files);
+}
+A.msub = (el) => { md.sub = el.dataset.v; paintMods(); if (md.sub === 'explore' && !md.results && !md.offline) runSearch(); };
+A['mods-reload'] = async () => { await loadMods(); paintMods(); };
+
+function dropZone() {
+  return `<div class="drop" id="mods-drop">${icon('upload', 22)}<div class="grow"><b>Agregar mods desde archivos</b><div class="sm t2">Arrastrá archivos .jar a esta ventana o elegilos. Se copian; los originales no se tocan. Los mods solo para jugadores se omiten.</div></div>
+    <div class="btns"><button class="btn s" data-a="mods-pick">Elegir archivos…</button><button class="btn s ghost" data-a="mods-import-folder">Importar carpeta…</button></div></div>`;
+}
+function paintInstalled(el) {
+  const list = md.list.filter((x) => x.managed);
+  const active = isActive(state.server);
+  el.innerHTML = `<div class="grid2" style="grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)">
+    <div class="stack" style="gap:16px">
+      <div class="card"><div class="card-head"><h2>Instalados por 939 Host</h2><span class="sm t3">${list.length}</span></div>
+      ${list.length ? `<div class="list">${list.map((x) => `<div class="li">${modIcon(null, x.title, 'sm')}
+        <div class="mod-main"><span class="t">${x.projectId ? `<button class="link" data-a="mod-open" data-project="${esc(x.projectId)}">${esc(x.title)}</button>` : esc(x.title)}${x.versionNumber ? `<span class="mono xs t3">${esc(x.versionNumber)}</span>` : ''}${x.issues.map((i) => `<span class="chip s">${ISSUE[i] || esc(i)}</span>`).join('')}</span>
+        <span class="xs t3">${SIDE[x.side] || esc(x.side)} · ${x.explicit ? 'Instalado por vos' : 'Dependencia'}${x.requiredBy.length ? ` de ${esc(x.requiredBy.join(', '))}` : ''}</span></div>
+        <div class="btns">${md.updates[x.projectId] ? `<button class="btn s" data-a="mod-install" data-project="${esc(x.projectId)}" data-title="${esc(x.title)}">${icon('download', 14)}${esc(md.updates[x.projectId])}</button>` : ''}
+        <button class="btn s icon ghost" data-a="mod-remove" data-project="${esc(x.projectId)}" data-title="${esc(x.title)}" ${x.requiredBy.length ? 'disabled title="Otro mod lo necesita"' : 'title="Quitar"'} aria-label="Quitar ${esc(x.title)}">${icon('trash', 15)}</button></div></div>`).join('')}</div>`
+        : `<div class="pad sm t2">Todavía no instalaste mods con 939 Host. Buscalos en <button class="link" data-a="msub" data-v="explore">Explorar Modrinth</button>${md.list.length ? ' o revisá los <button class="link" data-a="msub" data-v="files">archivos agregados a mano</button>' : ''}.</div>`}</div>
+      ${dropZone()}
+      ${active ? `<div class="note">${icon('info')}<div class="grow"><span class="sm t2">Los cambios en mods se aplican al reiniciar el servidor. Para importar archivos, detenelo primero.</span></div></div>` : ''}
+    </div>
+    <div class="card pad stack"><div class="row" style="gap:8px">${icon('gauge')}<h2>Optimización</h2></div>
+      <p class="sm t2" style="margin:0">Mods de rendimiento que corren en el servidor. Se instala la versión exacta para ${esc(state.server.config.mcVersion)}.</p>
+      <div>${md.perf.map((p) => `<div class="kv"><span style="text-align:left"><b>${esc(p.title)}</b>${p.recommended ? ' <span class="chip s">Recomendado</span>' : ''}<br><span class="sm t3">${esc(p.description)}</span></span>
+        ${md.list.some((x) => (x.title || '').toLowerCase().startsWith(p.title.toLowerCase())) ? '<span class="sm t3">Instalado</span>' : `<button class="btn s" data-a="mod-install" data-project="${esc(p.slug)}" data-title="${esc(p.title)}" ${md.offline ? 'disabled' : ''}>Instalar</button>`}</div>`).join('')}</div></div>
+  </div>`;
+}
+
+/* ───────── Explorar ───────── */
+function paintExplore(el) {
+  const r = md.results;
+  el.innerHTML = `<div class="store">
+    <nav class="cats" aria-label="Categorías">${CATS.map(([k, l]) => `<button class="${md.cat === k ? 'on' : ''}" data-a="mcat" data-v="${k}">${l}</button>`).join('')}</nav>
+    <div class="stack">
+      <div class="row wrap" style="gap:10px"><div class="search grow" style="min-width:240px">${icon('search', 16)}<input id="mod-q" placeholder="Buscar en Modrinth (por ejemplo: voice chat, mapas, rendimiento)" value="${esc(md.q)}" aria-label="Buscar mods" ${md.offline ? 'disabled' : ''}></div>
+        <div class="seg" role="group" aria-label="Dónde se instala">${[['server', 'Servidor'], ['both', 'Servidor y jugadores'], ['', 'Todos']].map(([k, l]) => `<button class="${md.side === k ? 'on' : ''}" data-a="mside" data-v="${k}">${l}</button>`).join('')}</div>
+        <select class="input" id="mod-sort" style="width:auto" aria-label="Ordenar">${[['relevance', 'Más relevantes'], ['downloads', 'Más descargados'], ['follows', 'Más seguidos'], ['updated', 'Actualizados'], ['newest', 'Nuevos']].map(([k, l]) => `<option value="${k}" ${md.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <p class="xs t3" style="margin:0">Solo aparecen mods para ${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)}: no se puede instalar algo incompatible por error.</p>
+      <div class="card" id="mod-results">${!r ? `<div class="pad">${md.offline ? '<span class="sm t2">Sin conexión con Modrinth.</span>' : '<div class="bar indet"><i></i></div>'}</div>`
+        : r.hits.length ? `<div class="list">${r.hits.map(hitRow).join('')}</div>${r.totalHits > r.hits.length ? `<div class="pad" style="text-align:center"><button class="btn s" data-a="mod-more">Ver más · ${r.hits.length} de ${fmtNum(r.totalHits)}</button></div>` : ''}`
+          : '<div class="pad sm t2">No hay resultados con esos filtros.</div>'}</div>
+    </div></div>`;
+  const q = $('#mod-q');
+  q?.addEventListener('input', debounce(() => { md.q = q.value; runSearch(); }, 350));
+  $('#mod-sort')?.addEventListener('change', (e) => { md.sort = e.target.value; runSearch(); });
+}
+function hitRow(h) {
+  const installed = md.list.some((x) => x.projectId === h.projectId);
+  return `<div class="li">${modIcon(h.iconUrl, h.title)}
+    <div class="mod-main"><span class="t"><button class="link" data-a="mod-open" data-project="${esc(h.projectId)}" style="text-decoration:none">${esc(h.title)}</button><span class="chip s">${SIDE[sideOf(h.clientSide, h.serverSide)]}</span></span>
+      <span class="d">${esc(h.description)}</span><span class="xs t3">por ${esc(h.author)} · ${fmtNum(h.downloads)} descargas</span></div>
+    ${installed ? '<span class="chip">Instalado</span>' : `<button class="btn s" data-a="mod-install" data-project="${esc(h.projectId)}" data-title="${esc(h.title)}">${icon('download', 14)}Instalar</button>`}</div>`;
+}
+async function runSearch(more = false) {
+  if (md.offline) return;
+  const offset = more ? md.offset + 20 : 0;
+  const seq = (runSearch.seq = (runSearch.seq || 0) + 1);
+  try {
+    const r = await invoke('mods_explore', { id: state.params.id, query: md.q.trim(), categories: md.cat ? [md.cat] : [], side: md.side, sort: md.sort, offset });
+    if (seq !== runSearch.seq) return;
+    md.offset = offset;
+    md.results = more && md.results ? { ...r, hits: [...md.results.hits, ...r.hits] } : r;
+  } catch (e) { fail(e); md.results = md.results || { hits: [], totalHits: 0 }; }
+  if (md.sub !== 'explore' || md.detail) return;
+  const box = $('#mod-results');
+  if (!box) return;
+  const r = md.results;
+  box.innerHTML = r.hits.length ? `<div class="list">${r.hits.map(hitRow).join('')}</div>${r.totalHits > r.hits.length ? `<div class="pad" style="text-align:center"><button class="btn s" data-a="mod-more">Ver más · ${r.hits.length} de ${fmtNum(r.totalHits)}</button></div>` : ''}` : '<div class="pad sm t2">No hay resultados con esos filtros.</div>';
+}
+A.mcat = (el) => { md.cat = el.dataset.v; document.querySelectorAll('.cats button').forEach((b) => b.classList.toggle('on', b === el)); md.results = null; runSearch(); };
+A.mside = (el) => { md.side = el.dataset.v; el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); runSearch(); };
+A['mod-more'] = (el) => { el.disabled = true; runSearch(true); };
+
+/* ───────── Actualizaciones ───────── */
+function paintUpdates(el) {
+  const ups = Object.entries(md.updates);
+  const byId = Object.fromEntries(md.list.filter((x) => x.projectId).map((x) => [x.projectId, x]));
+  el.innerHTML = `<div class="card"><div class="card-head"><h2>Actualizaciones</h2><div class="btns">${ups.length > 1 ? `<button class="btn s pri" data-a="mod-update-all">Actualizar todo</button>` : ''}<button class="btn s" data-a="mod-check" ${md.offline ? 'disabled' : ''}>${icon('refresh', 14)}Buscar ahora</button></div></div>
+    ${ups.length ? `<div class="list">${ups.map(([pid, ver]) => `<div class="li">${modIcon(null, byId[pid]?.title)}<div class="mod-main"><span class="t">${esc(byId[pid]?.title || pid)}</span><span class="xs t3 mono">${esc(byId[pid]?.versionNumber || '')} → ${esc(ver)}</span></div><button class="btn s" data-a="mod-install" data-project="${esc(pid)}" data-title="${esc(byId[pid]?.title || pid)}">${icon('download', 14)}Actualizar</button></div>`).join('')}</div>`
+      : `<div class="pad sm t2">${md.checked ? 'Todo está al día.' : 'Tocá «Buscar ahora» para ver si hay versiones nuevas compatibles con este servidor.'}</div>`}</div>`;
+}
+A['mod-check'] = async (el) => {
+  el.disabled = true;
+  try { md.updates = await invoke('mods_updates', { id: state.params.id }); md.checked = true; const n = Object.keys(md.updates).length; toast(n ? `${n} ${n === 1 ? 'actualización disponible' : 'actualizaciones disponibles'}` : 'Todo está al día'); } catch (e) { fail(e); }
+  paintMods();
+};
+A['mod-update-all'] = async () => {
+  for (const pid of Object.keys(md.updates)) {
+    try { await invoke('mods_install', { id: state.params.id, projectId: pid, versionId: null }); delete md.updates[pid]; } catch (e) { fail(e); break; }
+  }
+  toast(isActive(state.server) ? 'Actualizados. Reiniciá el servidor para usarlos.' : 'Mods actualizados');
+  await loadMods(); paintMods();
+};
+
+/* ───────── Archivos agregados a mano ───────── */
+function paintFiles(el, files) {
+  el.innerHTML = `<div class="stack" style="gap:16px"><div class="card"><div class="card-head"><h2>Archivos agregados a mano</h2><span class="sm t3">${files.length}</span></div>
+    ${files.length ? `<div class="list">${files.map((x) => `<div class="li">${modIcon(null, x.title, 'sm')}<div class="mod-main"><span class="t">${esc(x.title)}${x.versionNumber ? `<span class="mono xs t3">${esc(x.versionNumber)}</span>` : ''}${x.issues.map((i) => `<span class="chip s">${ISSUE[i] || esc(i)}</span>`).join('')}</span>
+      <span class="xs t3 mono ellipsis">${esc(x.fileName)} · ${x.sizeKb >= 1024 ? fmtMB(x.sizeKb / 1024) : `${x.sizeKb} KB`}</span>
+      <span class="xs t3">${x.projectId ? 'Reconocido en Modrinth: se puede vincular para recibir actualizaciones.' : md.offline ? 'Sin conexión para identificarlo.' : 'No está en Modrinth: 939 Host no puede actualizarlo.'}</span></div>
+      <div class="btns">${x.projectId && !x.issues.includes('duplicate') ? `<button class="btn s" data-a="mod-link" data-file="${esc(x.fileName)}">${icon('link', 14)}Vincular</button>` : ''}<button class="btn s ghost" data-a="mod-aside" data-file="${esc(x.fileName)}">Apartar</button></div></div>`).join('')}</div>`
+      : '<div class="pad sm t2">No hay archivos agregados a mano. Todo lo que está en la carpeta de mods lo administra 939 Host.</div>'}</div>
+    ${dropZone()}</div>`;
+}
+A['mod-link'] = async (el) => {
+  el.disabled = true;
+  try { const m = await invoke('mods_link', { id: state.params.id, fileName: el.dataset.file }); toast(`${m.title} ahora lo administra 939 Host`); } catch (e) { fail(e); }
+  await loadMods(); paintMods();
+};
+A['mod-aside'] = async (el) => {
+  if (!(await dialog({ title: 'Apartar archivo', body: `<p><span class="mono sm">${esc(el.dataset.file)}</span> se mueve a la Papelera de 939 Host. Podés recuperarlo desde ahí.</p>`, confirm: 'Apartar' }))) return;
+  try { await invoke('mods_set_aside', { id: state.params.id, fileName: el.dataset.file }); toast('Archivo apartado'); } catch (e) { fail(e); }
+  await loadMods(); paintMods();
+};
+
+/* ───────── instalar, quitar, importar ───────── */
+async function installMod(projectId, title, versionId = null) {
+  let plan;
+  try { plan = await invoke('mods_plan', { id: state.params.id, projectId, versionId }); } catch (e) { fail(e); return; }
+  const rows = plan.items.map((i) => `<div class="kv"><span style="text-align:left"><b>${esc(i.title)}</b> <span class="mono xs">${esc(i.version.versionNumber)}</span><br><span class="sm t3">${esc(i.reason)}${i.replaces ? ` · reemplaza ${esc(i.replaces)}` : ''}</span></span><span class="chip s">${SIDE[i.side] || esc(i.side)}</span></div>`).join('');
+  const warn = plan.warnings.length ? `<div class="note">${icon('info')}<div class="grow">${plan.warnings.map((w) => `<span class="sm t2">${esc(w)}</span>`).join('')}</div></div>` : '';
+  const ok = await dialog({ title: plan.items.length > 1 ? `Instalar ${title} y ${plan.items.length - 1} ${plan.items.length === 2 ? 'dependencia' : 'dependencias'}` : `Instalar ${title}`, body: `<div>${rows}</div>${warn}<p class="sm">Descarga: ${fmtMB(plan.totalBytes / 1048576)}. Cada archivo se verifica por hash.</p>`, confirm: 'Instalar' });
+  if (!ok) return;
+  const prog = $('#mods-progress');
+  if (prog) prog.innerHTML = `<div class="card pad stack"><b id="mp-msg">Preparando…</b><div class="bar"><i id="mp-bar" style="width:0%"></i></div></div>`;
+  try { await invoke('mods_install', { id: state.params.id, projectId, versionId }); delete md.updates[projectId]; toast(isActive(state.server) ? 'Instalado. Reiniciá el servidor para usarlo.' : 'Mods instalados'); } catch (e) { fail(e); }
+  await loadMods(); paintMods();
+}
+A['mod-install'] = (el) => installMod(el.dataset.project, el.dataset.title, el.dataset.version || null);
+A['mod-remove'] = async (el) => {
+  if (!(await dialog({ title: `Quitar ${el.dataset.title}`, body: '<p>Se borra el archivo del mod. Las dependencias que solo usaba este mod también se quitan.</p>', confirm: 'Quitar' }))) return;
+  try { const r = await invoke('mods_remove', { id: state.params.id, projectId: el.dataset.project }); toast(`Quitado: ${r.join(', ')}`); } catch (e) { fail(e); }
+  await loadMods(); paintMods();
+};
+function importReport(r) {
+  const part = (label, list) => (list.length ? `<div class="kv"><span class="k">${label}</span><span class="sm" style="max-width:60%">${esc(list.join(', '))}</span></div>` : '');
+  return dialog({ title: r.copied.length ? `${r.copied.length} ${r.copied.length === 1 ? 'mod agregado' : 'mods agregados'}` : 'No se agregó ningún mod', body: `<div>${part('Agregados', r.copied)}${part('Solo para jugadores (omitidos)', r.skippedClient)}${part('Duplicados (se usó el más nuevo)', r.skippedDuplicate)}${part('Ya estaban', r.skippedExisting)}${part('No son mods', r.notMods)}</div><p class="sm">Los archivos originales no se modificaron.</p>`, confirm: 'Listo', cancel: null });
+}
+async function importPaths(paths) {
+  if (isActive(state.server)) { toast('Detené el servidor antes de agregar mods.', 'error'); return; }
+  const jars = paths.filter((p) => /\.jar$/i.test(p));
+  if (!jars.length) { toast('Solo se pueden agregar archivos .jar.', 'error'); return; }
+  try { const r = await invoke('mods_import_files', { id: state.params.id, paths: jars }); await importReport(r); } catch (e) { fail(e); }
+  md.sub = md.sub === 'files' ? 'files' : 'installed';
+  await loadMods(); paintMods();
+}
+A['mods-pick'] = async () => {
+  const sel = await TAURI.dialog.open({ multiple: true, title: 'Elegí archivos de mods (.jar)', filters: [{ name: 'Mods de Minecraft', extensions: ['jar'] }] });
+  if (!sel) return;
+  importPaths(Array.isArray(sel) ? sel : [sel]);
+};
+A['mods-import-folder'] = async () => {
+  if (isActive(state.server)) { toast('Detené el servidor antes de importar mods.', 'error'); return; }
+  const path = await TAURI.dialog.open({ directory: true, title: 'Elegí una carpeta de mods (por ejemplo, la de tu perfil de Minecraft)' });
+  if (!path) return;
+  try { await importReport(await invoke('mods_import_folder', { id: state.params.id, path })); } catch (e) { fail(e); }
+  await loadMods(); paintMods();
+};
+/* Arrastrar y soltar (eventos nativos de la ventana: traen las rutas reales). */
+function dropActive() { return state.route === 'server' && state.tab === 'mods' && state.server?.config.loader !== 'vanilla'; }
+function showDropOverlay(on) {
+  let el = $('#drop-full');
+  if (on && !el) { el = document.createElement('div'); el.id = 'drop-full'; el.className = 'dropzone-full'; el.innerHTML = '<div>Soltá los archivos .jar para agregarlos a este servidor</div>'; document.body.appendChild(el); }
+  if (!on && el) el.remove();
+  $('#mods-drop')?.classList.toggle('over', on);
+}
+function setupDragDrop() {
+  listen('tauri://drag-enter', () => { if (dropActive()) showDropOverlay(true); });
+  listen('tauri://drag-leave', () => showDropOverlay(false));
+  listen('tauri://drag-drop', (ev) => { showDropOverlay(false); if (dropActive() && ev.payload?.paths?.length) importPaths(ev.payload.paths); });
+}
+
+/* ───────── detalle de un mod ───────── */
+A['mod-open'] = async (el) => {
+  md.detail = { id: el.dataset.project, loading: true };
+  paintMods();
+  try {
+    const [p, versions] = await Promise.all([invoke('mods_project', { project: el.dataset.project }), invoke('mods_versions', { id: state.params.id, projectId: el.dataset.project }).catch(() => [])]);
+    if (md.detail?.id === el.dataset.project) md.detail = { id: el.dataset.project, p, versions };
+  } catch (e) { fail(e); md.detail = null; }
+  paintMods();
+};
+A['mod-back'] = () => { md.detail = null; paintMods(); };
+const plainBody = (s) => String(s || '').replace(/<[^>]+>/g, '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/^#+\s*/gm, '').replace(/\*\*|__|`/g, '').replace(/\n{3,}/g, '\n\n').trim();
+function paintDetail(root) {
+  const d = md.detail;
+  if (d.loading) { root.innerHTML = `<button class="btn s ghost" data-a="mod-back" style="align-self:flex-start">${icon('back', 14)}Volver</button><div class="card pad"><div class="bar indet"><i></i></div></div>`; return; }
+  const p = d.p;
+  const inst = md.list.find((x) => x.projectId === p.id);
+  const side = sideOf(p.clientSide, p.serverSide);
+  const links = [['Modrinth', `https://modrinth.com/mod/${p.slug}`], ['Código fuente', p.sourceUrl], ['Reportar problemas', p.issuesUrl], ['Wiki', p.wikiUrl]].filter(([, u]) => u && /^https:\/\//.test(u));
+  root.innerHTML = `<button class="btn s ghost" data-a="mod-back" style="align-self:flex-start">${icon('back', 14)}Volver</button>
+    <div class="card pad"><div class="row" style="align-items:flex-start;gap:20px">${modIcon(p.iconUrl, p.title, 'lg')}
+      <div class="grow stack" style="gap:6px"><h2 style="font-size:20px">${esc(p.title)}</h2><span class="t2">${esc(p.description)}</span>
+        <div class="row wrap" style="gap:6px"><span class="chip">${SIDE[side]}</span>${p.categories.filter((c) => CATS.some(([k]) => k === c)).map((c) => `<span class="chip soft">${CATS.find(([k]) => k === c)[1]}</span>`).join('')}</div></div>
+      <div class="stack" style="align-items:flex-end;gap:8px">${inst ? `<span class="chip fill">Instalado · ${esc(inst.versionNumber || '')}</span>` : `<button class="btn pri" data-a="mod-install" data-project="${esc(p.id)}" data-title="${esc(p.title)}" ${d.versions.length ? '' : `disabled title="No hay versión para ${esc(state.server.config.mcVersion)}"`}>${icon('download', 16)}Instalar</button>`}
+        ${d.versions.length ? '' : `<span class="xs t3">Sin versión para ${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)}</span>`}</div></div></div>
+    <div class="grid2" style="grid-template-columns:minmax(0,1.7fr) minmax(0,1fr)">
+      <div class="stack" style="gap:16px">
+        ${imgs() && p.gallery.length ? `<div class="gallery">${p.gallery.slice(0, 6).map((g) => `<img src="${esc(g.url)}" alt="${esc(g.title || '')}" loading="lazy" referrerpolicy="no-referrer">`).join('')}</div>` : ''}
+        <div class="card pad stack"><h2>Descripción</h2><div class="mod-body">${esc(plainBody(p.body)) || '<span class="t3">Sin descripción.</span>'}</div></div></div>
+      <div class="stack" style="gap:16px">
+        <div class="card pad"><div class="kv"><span class="k">Descargas</span><span class="mono">${fmtNum(p.downloads)}</span></div><div class="kv"><span class="k">Seguidores</span><span class="mono">${fmtNum(p.followers)}</span></div>
+          <div class="kv"><span class="k">Actualizado</span><span>${p.updated ? esc(ago(p.updated)) : '—'}</span></div><div class="kv"><span class="k">Licencia</span><span>${esc(p.license?.name || p.license?.id || '—')}</span></div></div>
+        ${links.length ? `<div class="card list">${links.map(([l, u]) => `<button class="li" data-a="link" data-url="${esc(u)}"><span class="grow">${l}</span>${icon('external', 15)}</button>`).join('')}</div>` : ''}
+        <div class="card"><div class="card-head"><h2>Versiones compatibles</h2><span class="sm t3">${d.versions.length}</span></div>
+          ${d.versions.length ? `<div class="list">${d.versions.slice(0, 8).map((v) => `<div class="li" style="padding:10px 20px"><div class="grow"><div class="mono sm b ellipsis">${esc(v.versionNumber)}</div><div class="xs t3">${{ release: 'Estable', beta: 'Beta', alpha: 'Alfa' }[v.versionType] || esc(v.versionType)} · ${esc(ago(v.datePublished))}</div></div>
+            ${inst && inst.versionNumber === v.versionNumber ? '<span class="xs t3">Instalada</span>' : `<button class="btn s ghost" data-a="mod-install" data-project="${esc(p.id)}" data-title="${esc(p.title)}" data-version="${esc(v.id)}">Instalar</button>`}</div>`).join('')}</div>` : '<div class="pad sm t2">Ninguna para este servidor.</div>'}</div>
+      </div></div>`;
+}

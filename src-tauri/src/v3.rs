@@ -273,3 +273,11 @@ pub async fn mods_import_files(app: AppHandle, id: String, paths: Vec<String>) -
     app.state::<Manager>().changed(&id);
     Ok(r)
 }
+
+#[tauri::command]
+pub async fn mods_link(app: AppHandle, id: String, file_name: String) -> AppResult<mods::InstalledMod> {
+    let cfg = instance::load(&id)?;
+    let r = mods::link_file(&Modrinth, &cfg, &file_name).await?;
+    app.state::<Manager>().changed(&id);
+    Ok(r)
+}

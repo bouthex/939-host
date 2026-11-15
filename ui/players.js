@@ -1,0 +1,361 @@
+'use strict';
+/* Jugadores: lista + perfil con datos reales del servidor (sin mods complementarios).
+   - Conectado: el servidor responde a una consulta interna cada 4 s, solo mientras el perfil
+     está abierto y la ventana visible. La consulta no aparece en la consola.
+   - Desconectado: el último guardado de Minecraft (playerdata).
+   Skins reales de Mojang e imágenes originales del juego, ambas desactivables en Configuración. */
+
+const pl = { list: [], sel: null, tab: 'summary', detail: null, err: null, picked: null, poll: null, loading: false };
+const media = { skins: {}, sprites: {}, requested: new Set(), names: null, namesFor: null, assets: null };
+const DIM = { 'minecraft:overworld': 'Mundo normal', 'minecraft:the_nether': 'Nether', 'minecraft:the_end': 'End' };
+const PTABS = [['summary', 'Resumen'], ['inv', 'Inventario'], ['ender', 'Cofre de ender'], ['stats', 'Estadísticas'], ['perm', 'Permisos']];
+const roman = (n) => ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'][n] || String(n);
+const bare = (id) => String(id || '').replace(/^minecraft:/, '');
+/* Sin imágenes del juego: abreviatura legible (el nombre completo está en el detalle). */
+const abbr = (name) => { const w = String(name).split(/[\s_]+/).filter((x) => x.length > 2 || /\d/.test(x)); return (w.length > 1 ? w.slice(0, 3).map((x) => x[0]).join('') : String(name).slice(0, 4)).toUpperCase(); };
+
+/* ───────── skins ───────── */
+function loadSkin(name) {
+  if (!(name in media.skins)) media.skins[name] = invoke('player_skin', { name }).catch(() => null);
+  return media.skins[name];
+}
+function loadImg(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; }); }
+async function faceCanvas(name, size = 8) {
+  const url = await loadSkin(name);
+  if (!url) return null;
+  const img = await loadImg(url).catch(() => null);
+  if (!img) return null;
+  const c = document.createElement('canvas');
+  c.width = c.height = 8;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  g.drawImage(img, 8, 8, 8, 8, 0, 0, 8, 8);
+  g.drawImage(img, 40, 8, 8, 8, 0, 0, 8, 8);
+  c.setAttribute('aria-hidden', 'true');
+  return c;
+}
+async function bodyCanvas(name) {
+  const url = await loadSkin(name);
+  if (!url) return null;
+  const img = await loadImg(url).catch(() => null);
+  if (!img) return null;
+  const legacy = img.height === 32;
+  const c = document.createElement('canvas');
+  c.width = 16; c.height = 32;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  const d = (sx, sy, w, h, dx, dy, flip = false) => {
+    if (!flip) { g.drawImage(img, sx, sy, w, h, dx, dy, w, h); return; }
+    g.save(); g.translate(dx + w, dy); g.scale(-1, 1); g.drawImage(img, sx, sy, w, h, 0, 0, w, h); g.restore();
+  };
+  d(8, 8, 8, 8, 4, 0); d(20, 20, 8, 12, 4, 8); d(44, 20, 4, 12, 0, 8); d(4, 20, 4, 12, 4, 20);
+  if (legacy) { d(44, 20, 4, 12, 12, 8, true); d(4, 20, 4, 12, 8, 20, true); }
+  else {
+    d(36, 52, 4, 12, 12, 8); d(20, 52, 4, 12, 8, 20);
+    d(20, 36, 8, 12, 4, 8); d(44, 36, 4, 12, 0, 8); d(52, 52, 4, 12, 12, 8); d(4, 36, 4, 12, 4, 20); d(4, 52, 4, 12, 8, 20);
+  }
+  d(40, 8, 8, 8, 4, 0);
+  c.setAttribute('aria-hidden', 'true');
+  return c;
+}
+/* Reemplaza las iniciales de [data-skin] por la cara de la skin (si están activadas). */
+function paintSkins(root = document) {
+  root.querySelectorAll('[data-skin]').forEach(async (el) => {
+    const c = await faceCanvas(el.dataset.skin);
+    if (c && el.isConnected) { el.textContent = ''; el.appendChild(c); }
+  });
+}
+
+/* ───────── imágenes del juego ───────── */
+function assetsVersion() { return state.server?.config.mcVersion; }
+async function ensureAssets() {
+  const v = assetsVersion();
+  try { media.assets = await invoke('game_assets_status', { version: v }); } catch { media.assets = { enabled: false, ready: false }; }
+  paintAssetsNote();
+  if (media.assets.enabled && !media.assets.ready && !media.assets.preparing) {
+    media.assets.preparing = true;
+    paintAssetsNote();
+    invoke('game_assets_prepare', { version: v }).then((s) => { media.assets = s; media.requested.clear(); loadNames(true); paintAssetsNote(); repaintProfile(); })
+      .catch((e) => { media.assets = { ...media.assets, preparing: false, error: errMsg(e) }; paintAssetsNote(); });
+  }
+  if (media.assets.ready) loadNames();
+}
+async function loadNames(force = false) {
+  const v = assetsVersion();
+  if (!force && media.namesFor === v) return;
+  media.namesFor = v;
+  media.names = await invoke('game_names', { version: v }).catch(() => ({}));
+  repaintProfile();
+}
+function paintAssetsNote() {
+  const el = $('#assets-note');
+  if (!el) return;
+  const a = media.assets;
+  if (!a) { el.innerHTML = ''; return; }
+  if (!a.enabled) el.innerHTML = `<div class="note">${icon('eye')}<div class="grow"><span class="sm t2">Las imágenes originales del juego están desactivadas: se muestran nombres y formas simples.</span></div><button class="btn s ghost" data-a="settings-section" data-sec="privacy">Configurar</button></div>`;
+  else if (a.preparing && !a.ready) el.innerHTML = `<div class="note">${SHAPES.ring}<div class="grow"><b>Descargando las imágenes del juego desde Mojang</b><span class="sm t2" id="assets-msg">Una sola vez para Minecraft ${esc(assetsVersion())}. Quedan en esta PC; no se comparten.</span><div class="bar" style="margin-top:6px"><i id="assets-bar" style="width:0%"></i></div></div></div>`;
+  else if (a.error) el.innerHTML = `<div class="note">${icon('alert')}<div class="grow"><b>No se pudieron descargar las imágenes del juego</b><span class="sm t2">${esc(a.error)}. Se muestran nombres.</span></div><button class="btn s" data-a="assets-retry">Reintentar</button></div>`;
+  else el.innerHTML = '';
+}
+A['assets-retry'] = () => { media.assets = null; ensureAssets(); };
+/* Pide al backend las imágenes que falten y vuelve a pintar cuando llegan. */
+function sprite(key) {
+  const v = assetsVersion();
+  const k = `${v}|${key}`;
+  if (media.sprites[k] !== undefined) return media.sprites[k];
+  if (media.assets?.ready && !media.requested.has(k)) { media.requested.add(k); queueSprite(key); }
+  return null;
+}
+let spriteQueue = new Set(), spriteTimer = null;
+function queueSprite(key) {
+  spriteQueue.add(key);
+  clearTimeout(spriteTimer);
+  spriteTimer = setTimeout(async () => {
+    const v = assetsVersion();
+    const keys = [...spriteQueue]; spriteQueue = new Set();
+    const got = await invoke('game_sprites', { version: v, keys }).catch(() => ({}));
+    for (const key of keys) media.sprites[`${v}|${key}`] = got[key] || null;
+    repaintProfile();
+  }, 30);
+}
+const itemName = (id) => { const b = bare(id); return media.names?.[`item:${b}`] || media.names?.[`block:${b}`] || b.replace(/_/g, ' '); };
+const effectName = (id) => media.names?.[`effect:${bare(id)}`] || bare(id).replace(/_/g, ' ');
+const enchName = (id) => media.names?.[`enchantment:${bare(id)}`] || bare(id).replace(/_/g, ' ');
+
+/* ───────── pestaña ───────── */
+tabDraw.players = async (el) => {
+  el.innerHTML = `<div class="stack" style="gap:16px"><div id="assets-note"></div><div class="players">
+    <div class="card plist-card"><div class="card-head" style="flex-wrap:wrap"><h2>Jugadores</h2><span class="sm t3" id="pl-count"></span></div>
+      <div class="pad" style="padding:12px 16px;border-bottom:1px solid var(--line)"><div class="row" style="gap:8px"><input class="input mono" id="pl-add" placeholder="Agregar por nombre" maxlength="16" autocomplete="off" spellcheck="false" aria-label="Nombre de Minecraft"><button class="btn icon" data-a="pl-add" title="Agregar a la lista blanca" aria-label="Agregar a la lista blanca">${icon('plus', 16)}</button></div></div>
+      <div class="list plist" id="pl-list"></div></div>
+    <div class="card" id="pl-profile"></div></div></div>`;
+  $('#pl-add').addEventListener('keydown', (e) => { if (e.key === 'Enter') A['pl-add'](); });
+  onLeave(stopPoll);
+  await loadPlayers();
+  ensureAssets();
+  paintAssetsNote();
+};
+tabRefresh.players = () => loadPlayers(true);
+async function loadPlayers(quiet = false) {
+  const before = pl.list.find((p) => p.name === pl.sel);
+  const wasLive = !!(before?.online && pl.poll);
+  try { pl.list = await invoke('players_list', { id: state.params.id }); } catch (e) { if (!quiet) fail(e); return; }
+  pl.list.sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name));
+  const prevSel = pl.sel;
+  if (state.playerSel) { pl.sel = state.playerSel; state.playerSel = null; }
+  if (pl.sel && !pl.list.some((p) => p.name === pl.sel)) pl.sel = null;
+  if (!pl.sel && pl.list.length) pl.sel = (pl.list.find((p) => p.online) || pl.list[0]).name;
+  paintList();
+  const now = pl.list.find((p) => p.name === pl.sel);
+  const liveNow = !!(now?.online && state.server.status === 'running');
+  // Sin cambios en el jugador abierto: no se vuelve a consultar (el sondeo sigue su ritmo).
+  if (quiet && prevSel === pl.sel && wasLive === liveNow && pl.detail) { paintProfile(); return; }
+  selectPlayer(pl.sel, prevSel === pl.sel);
+}
+function paintList() {
+  const el = $('#pl-list');
+  if (!el) return;
+  const online = pl.list.filter((p) => p.online).length;
+  $('#pl-count').textContent = pl.list.length ? `${online} conectados · ${pl.list.length} en total` : '';
+  el.innerHTML = pl.list.length ? pl.list.map((p) => `<button class="li ${p.name === pl.sel ? 'sel' : ''}" data-a="pl-sel" data-name="${esc(p.name)}" style="padding:12px 16px">
+      <span class="avatar" data-skin="${esc(p.name)}">${esc(initials(p.name))}</span>
+      <div class="grow"><div class="row" style="gap:6px"><b class="ellipsis">${esc(p.name)}</b>${p.opLevel ? '<span class="chip s">Operador</span>' : ''}</div>
+      <div class="xs t3 ellipsis">${p.online ? 'En línea' : p.banned ? 'Baneado' : p.lastSeen ? `Visto ${esc(ago(p.lastSeen))}` : p.whitelisted ? 'En la lista blanca' : 'Desconectado'}</div></div>
+      ${p.online ? '<span class="dot" aria-label="en línea"></span>' : ''}</button>`).join('')
+    : `<div class="pad sm t2">Todavía no entró nadie. ${state.server.config.whitelist ? 'La lista blanca está activa: agregá a tus amigos por nombre arriba.' : 'Cualquiera con la dirección puede entrar (la lista blanca está desactivada).'}</div>`;
+  paintSkins(el);
+}
+A['pl-sel'] = (el) => selectPlayer(el.dataset.name);
+A['pl-add'] = async () => {
+  const inp = $('#pl-add');
+  const name = inp.value.trim();
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(name)) { toast('Escribí un nombre de Minecraft válido (3 a 16 letras, números o _).', 'error'); return; }
+  try { toast(await invoke('player_action', { id: state.params.id, name, action: 'whitelist_add', reason: null })); inp.value = ''; pl.sel = name; } catch (e) { fail(e); }
+  setTimeout(() => loadPlayers(true), 500);
+};
+
+function selectPlayer(name, keepData = false) {
+  const changed = pl.sel !== name;
+  pl.sel = name;
+  if (changed || !keepData) { pl.detail = null; pl.err = null; pl.picked = null; }
+  document.querySelectorAll('#pl-list .li').forEach((b) => b.classList.toggle('sel', b.dataset.name === name));
+  stopPoll();
+  if (!name) { paintProfile(); return; }
+  fetchDetail();
+  const p = pl.list.find((x) => x.name === name);
+  if (p?.online && state.server.status === 'running') pl.poll = setInterval(() => { if (!document.hidden) fetchDetail(true); }, 4000);
+  paintProfile();
+}
+function stopPoll() { if (pl.poll) { clearInterval(pl.poll); pl.poll = null; } }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && pl.poll) fetchDetail(true); });
+async function fetchDetail(quiet = false) {
+  const name = pl.sel;
+  if (!name || pl.loading) return;
+  pl.loading = true;
+  try {
+    const d = await invoke('player_detail', { id: state.params.id, name });
+    if (pl.sel === name) { pl.detail = d; pl.err = null; }
+  } catch (e) {
+    if (pl.sel === name) { pl.err = errMsg(e); if (!quiet) pl.detail = null; }
+  } finally { pl.loading = false; }
+  if (pl.sel === name) repaintProfile();
+}
+function repaintProfile() { if (state.route === 'server' && state.tab === 'players') paintProfile(); }
+
+/* ───────── perfil ───────── */
+function paintProfile() {
+  const el = $('#pl-profile');
+  if (!el) return;
+  const p = pl.list.find((x) => x.name === pl.sel);
+  if (!p) { el.innerHTML = `<div class="empty" style="border:0">${icon('user', 28)}<h2>Elegí un jugador</h2><p>Vas a ver su vida, inventario, ubicación y estadísticas con datos reales del servidor.</p></div>`; return; }
+  const d = pl.detail;
+  const src = !d ? (pl.err ? `<span class="t2">${esc(pl.err)}</span>` : 'Cargando…')
+    : d.source === 'live' ? '<span class="live"><span class="dot"></span>En vivo · se actualiza cada 4 s</span>'
+      : d.source === 'saved' ? `Último guardado de Minecraft${d.savedAt ? ` · ${esc(fmtDate(d.savedAt))}` : ''}`
+        : 'Sin datos guardados: todavía no entró a este mundo.';
+  const scrollY = el.querySelector('.pf-scroll')?.scrollTop || 0;
+  el.innerHTML = `<div class="pf-head">
+      <span class="avatar lg" data-skin="${esc(p.name)}">${esc(initials(p.name))}</span>
+      <div class="grow stack" style="gap:6px"><div class="row wrap" style="gap:8px"><h2 style="font-size:20px">${esc(p.name)}</h2>
+        ${p.online ? '<span class="chip fill s">En línea</span>' : '<span class="chip s">Desconectado</span>'}${p.opLevel ? `<span class="chip s">Operador · nivel ${p.opLevel}</span>` : ''}${p.banned ? '<span class="chip s">Baneado</span>' : ''}${d?.gamemode ? `<span class="chip soft s">${MODE[d.gamemode] || esc(d.gamemode)}</span>` : ''}</div>
+        <div class="sm t3">${src}</div></div>
+      ${p.online ? `<button class="btn s" data-a="pl-act" data-act="kick">Expulsar</button>` : ''}</div>
+    <div class="pf-tabs tabs" role="tablist">${PTABS.map(([k, l]) => `<button class="tab ${pl.tab === k ? 'on' : ''}" role="tab" aria-selected="${pl.tab === k}" data-a="pf-tab" data-v="${k}">${l}</button>`).join('')}</div>
+    <div class="pf-body pf-scroll">${profileBody(p, d)}</div>`;
+  el.querySelector('.pf-scroll').scrollTop = scrollY;
+  paintSkins(el);
+  if (pl.tab === 'inv') bodyCanvas(p.name).then((c) => { const f = $('#pf-figure'); if (c && f) { f.textContent = ''; f.appendChild(c); } });
+}
+A['pf-tab'] = (el) => { pl.tab = el.dataset.v; pl.picked = null; paintProfile(); };
+function profileBody(p, d) {
+  if (pl.tab === 'perm') return permBody(p);
+  if (!d) return pl.err ? `<div class="note">${icon('alert')}<div class="grow"><b>No se pudieron leer los datos</b><span class="sm t2">${esc(pl.err)}</span></div><button class="btn s" data-a="pl-retry">Reintentar</button></div>` : '<div class="bar indet"><i></i></div>';
+  if (d.source === 'none' && pl.tab !== 'stats') return `<div class="empty" style="border:0">${icon('info', 24)}<h2>Sin datos todavía</h2><p>Minecraft guarda los datos de cada jugador la primera vez que entra a este mundo.</p></div>`;
+  if (pl.tab === 'inv') return invBody(d);
+  if (pl.tab === 'ender') return enderBody(d);
+  if (pl.tab === 'stats') return statsBody(d);
+  return summaryBody(d);
+}
+A['pl-retry'] = () => fetchDetail();
+
+function iconsRow(kind, value, max = 20) {
+  const n = Math.max(0, Math.min(max, Math.round(value)));
+  const hud = { heart: ['heart/full', 'heart/half', 'heart/container'], food: ['food_full', 'food_half', 'food_empty'], armor: ['armor_full', 'armor_half', 'armor_empty'] }[kind];
+  let out = '';
+  for (let i = 0; i < max / 2; i++) {
+    const state_ = n >= (i + 1) * 2 ? 0 : n === i * 2 + 1 ? 1 : 2;
+    const img = sprite(`hud:${hud[state_]}`);
+    const base = state_ !== 2 && kind === 'heart' ? sprite('hud:heart/container') : null;
+    out += img ? `<span style="position:relative;width:18px;height:18px">${base ? `<img class="sprite" src="${base}" alt="" style="position:absolute">` : ''}<img class="sprite" src="${img}" alt="" style="position:absolute"></span>`
+      : `<span class="glyph ${kind} ${['', 'half', 'no'][state_]}"></span>`;
+  }
+  return `<div class="icons-row" role="img" aria-label="${n / 2} de ${max / 2}">${out}</div>`;
+}
+function summaryBody(d) {
+  const pos = d.pos ? d.pos.map((x) => Math.floor(x)) : null;
+  return `<div class="grid2" style="gap:24px">
+    <div class="vitals">
+      <div class="sec">Vida</div><div class="row" style="gap:12px">${iconsRow('heart', d.health ?? 0)}<span class="mono sm">${d.health != null ? (Math.round(d.health * 10) / 20).toString().replace('.', ',') : '—'} / 10</span></div>
+      <div class="sec">Hambre</div><div class="row" style="gap:12px">${iconsRow('food', d.food ?? 0)}<span class="mono sm">${d.food != null ? (d.food / 2).toString().replace('.', ',') : '—'} / 10</span></div>
+      ${d.armorPoints ? `<div class="sec">Armadura</div><div class="row" style="gap:12px">${iconsRow('armor', d.armorPoints)}<span class="mono sm">${d.armorPoints} pts</span></div>` : ''}
+      <div class="sec">Experiencia</div><div class="xp"><span class="mono b">Nivel ${d.xpLevel ?? 0}</span><div class="bar"><i style="width:${Math.round((d.xpProgress || 0) * 100)}%"></i></div><span class="mono sm t3">${Math.round((d.xpProgress || 0) * 100)} %</span></div>
+    </div>
+    <div class="stack">
+      ${pos ? `<div class="coords">${['X', 'Y', 'Z'].map((k, i) => `<div><div class="xs t3">${k}</div><div class="v">${pos[i]}</div></div>`).join('')}</div>` : ''}
+      <div><div class="kv"><span class="k">Dimensión</span><span>${esc(DIM[d.dimension] || bare(d.dimension) || '—')}</span></div>
+      <div class="kv"><span class="k">Mirando hacia</span><span>${esc(d.facing || '—')}</span></div>
+      <div class="kv"><span class="k">Punto de aparición</span><span class="mono sm">${d.spawn ? `${d.spawn[1].join(' ')} · ${esc(DIM[d.spawn[0]] || bare(d.spawn[0]))}` : 'El del mundo'}</span></div>
+      ${pos ? `<div class="kv"><span class="k">Ir hasta ahí</span><button class="btn s ghost" data-a="copy" data-text="/tp @s ${pos.join(' ')}" data-msg="Comando copiado">${icon('copy', 14)}Copiar /tp</button></div>` : ''}</div>
+    </div></div>
+    <div class="stack"><div class="sec">Efectos activos</div>${d.effects.length ? `<div class="effects">${d.effects.map((e) => {
+      const img = sprite(`effect:${bare(e.id)}`);
+      return `<div class="effect">${img ? `<img class="sprite" src="${img}" alt="">` : `<span class="avatar" style="width:24px;height:24px;border-radius:6px">${icon('layers', 14)}</span>`}<span class="grow b">${esc(effectName(e.id))} ${e.amplifier ? roman(e.amplifier + 1) : ''}</span><span class="mono sm t3">${e.durationTicks < 0 ? '∞' : fmtClock(e.durationTicks / 20)}</span></div>`;
+    }).join('')}</div>` : '<span class="sm t3">Ninguno.</span>'}</div>`;
+}
+const fmtClock = (s) => { s = Math.floor(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+
+function slotHTML(item, opts = {}) {
+  const ph = opts.ph ? sprite(`slot:${opts.ph}`) : null;
+  if (!item) return `<span class="slot ${opts.sel ? 'sel' : ''}" title="${esc(opts.label || 'Vacío')}" aria-label="${esc(opts.label || 'Vacío')}">${ph ? `<img class="ghost" src="${ph}" alt="">` : ''}</span>`;
+  const img = sprite(`item:${bare(item.id)}`);
+  const key = `${opts.group || 'inv'}:${item.slot}`;
+  const dur = item.maxDamage && item.damage != null ? Math.max(0, 1 - item.damage / item.maxDamage) : null;
+  const name = item.customName || itemName(item.id);
+  return `<button class="slot has ${opts.sel ? 'sel' : ''} ${pl.picked === key ? 'picked' : ''}" data-a="pick-item" data-key="${esc(key)}" title="${esc(name)}${item.count > 1 ? ` ×${item.count}` : ''}" aria-label="${esc(name)}${item.count > 1 ? `, ${item.count}` : ''}">
+    ${img ? `<img src="${img}" alt="">` : `<span class="nm">${esc(abbr(name))}</span>`}
+    ${item.count > 1 ? `<span class="ct">${item.count}</span>` : ''}${dur != null && dur < 1 ? `<span class="dur"><i style="width:${Math.round(dur * 100)}%"></i></span>` : ''}</button>`;
+}
+function findItem(d, key) {
+  const [g, s] = key.split(':');
+  const slot = +s;
+  if (g === 'eq') return { 103: d.equipment.head, 102: d.equipment.chest, 101: d.equipment.legs, 100: d.equipment.feet, '-106': d.equipment.offhand }[slot] || null;
+  return (g === 'ender' ? d.ender : d.inventory).find((i) => i.slot === slot) || null;
+}
+A['pick-item'] = (el) => { pl.picked = pl.picked === el.dataset.key ? null : el.dataset.key; paintProfile(); };
+function itemDetail(d) {
+  const it = pl.picked ? findItem(d, pl.picked) : null;
+  if (!it) return `<div class="card pad item-detail sm t2">Tocá un casillero para ver el detalle del ítem.</div>`;
+  const img = sprite(`item:${bare(it.id)}`);
+  const left = it.maxDamage && it.damage != null ? it.maxDamage - it.damage : null;
+  return `<div class="card pad item-detail stack">
+    <div class="row">${img ? `<span class="slot" style="width:48px;height:48px"><img src="${img}" alt=""></span>` : ''}<div class="grow"><b>${esc(it.customName || itemName(it.id))}</b><div class="xs t3 mono ellipsis">${esc(it.id)}</div></div></div>
+    <div><div class="kv"><span class="k">Cantidad</span><span class="mono">${it.count}</span></div>
+    ${left != null ? `<div class="kv"><span class="k">Durabilidad</span><span class="mono">${left} / ${it.maxDamage}</span></div><div class="bar"><i style="width:${Math.round(left / it.maxDamage * 100)}%"></i></div>` : ''}</div>
+    ${it.enchantments.length ? `<div><div class="sec" style="margin-bottom:4px">Encantamientos</div>${it.enchantments.map(([e, l]) => `<div class="kv"><span>${esc(enchName(e))}</span><span class="mono">${roman(l)}</span></div>`).join('')}</div>` : ''}
+    ${it.customName ? `<div class="xs t3">Nombre puesto en un yunque. Original: ${esc(itemName(it.id))}</div>` : ''}</div>`;
+}
+function invBody(d) {
+  const at = (s) => d.inventory.find((i) => i.slot === s) || null;
+  const eq = d.equipment;
+  const main = []; for (let s = 9; s < 36; s++) main.push(slotHTML(at(s)));
+  const hot = []; for (let s = 0; s < 9; s++) hot.push(slotHTML(at(s), { sel: d.selectedSlot === s }));
+  const e = (it, slot, ph, label) => slotHTML(it ? { ...it, slot } : null, { group: 'eq', ph, label });
+  return `<div class="inv-wrap">
+    <div class="stack">
+      <div class="body3"><div class="figure" id="pf-figure"><span class="avatar lg" style="border:0;background:none">${esc(initials(d.name))}</span></div>
+        <div class="slotcol">${e(eq.head, 103, 'helmet', 'Casco')}${e(eq.chest, 102, 'chestplate', 'Pechera')}${e(eq.legs, 101, 'leggings', 'Pantalones')}${e(eq.feet, 100, 'boots', 'Botas')}</div>
+        <div class="stack" style="gap:6px;justify-content:flex-end;align-self:flex-end"><span class="xs t3">Mano secundaria</span>${e(eq.offhand, -106, 'shield', 'Mano secundaria')}</div></div>
+      <div class="grid9">${main.join('')}</div>
+      <div class="grid9" style="padding-top:10px;border-top:1px solid var(--line)">${hot.join('')}</div>
+      <span class="xs t3">El casillero marcado es el que tiene en la mano.</span>
+    </div>${itemDetail(d)}</div>`;
+}
+function enderBody(d) {
+  const cells = []; for (let s = 0; s < 27; s++) cells.push(slotHTML(d.ender.find((i) => i.slot === s) || null, { group: 'ender' }));
+  return `<div class="inv-wrap"><div class="stack"><div class="grid9">${cells.join('')}</div><span class="xs t3">${d.ender.length ? `${d.ender.length} de 27 casilleros ocupados.` : 'Vacío.'}</span></div>${itemDetail(d)}</div>`;
+}
+function statsBody(d) {
+  const s = d.stats;
+  const n = (v) => (v == null ? '—' : v.toLocaleString('es-AR'));
+  const cells = [
+    ['Tiempo jugado', s.playTimeTicks != null ? fmtDuration(s.playTimeTicks / 20) : '—'],
+    ['Muertes', n(s.deaths)], ['Desde la última muerte', s.timeSinceDeathTicks != null ? fmtDuration(s.timeSinceDeathTicks / 20) : '—'],
+    ['Mobs eliminados', n(s.mobKills)], ['Jugadores eliminados', n(s.playerKills)], ['Logros', n(s.advancements)],
+    ['Distancia recorrida', s.distanceCm != null ? `${(s.distanceCm / 100000).toFixed(1).replace('.', ',')} km` : '—'],
+    ['Saltos', n(s.jumps)], ['Daño causado', s.damageDealt != null ? `${n(Math.round(s.damageDealt / 20))} ❤` : '—'],
+  ];
+  return `<div class="statgrid">${cells.map(([k, v]) => `<div><span class="xs t3">${k}</span><span class="v">${v}</span></div>`).join('')}</div>
+    <span class="xs t3">Estadísticas que guarda Minecraft para este mundo. Se actualizan cuando el servidor guarda.</span>`;
+}
+function permBody(p) {
+  return `<div class="stack">
+    <div class="card" style="padding:0 20px">
+      <div class="switch" style="cursor:default"><div class="grow"><b>Lista blanca</b><span class="sm t2">${state.server.config.whitelist ? 'Puede entrar aunque la lista blanca esté activa.' : 'La lista blanca está desactivada: entra cualquiera con la dirección.'}</span></div><button class="btn s" data-a="pl-act" data-act="${p.whitelisted ? 'whitelist_remove' : 'whitelist_add'}">${p.whitelisted ? 'Quitar' : 'Agregar'}</button></div>
+      <div class="switch" style="cursor:default"><div class="grow"><b>Operador</b><span class="sm t2">Puede usar comandos y administrar el servidor.</span></div><button class="btn s" data-a="pl-act" data-act="${p.opLevel ? 'deop' : 'op'}">${p.opLevel ? 'Quitar operador' : 'Hacer operador'}</button></div>
+      <div class="switch" style="cursor:default"><div class="grow"><b>${p.banned ? 'Baneado' : 'Banear'}</b><span class="sm t2">${p.banned ? esc(p.banReason || 'Sin motivo.') : 'No puede volver a entrar hasta que lo desbanees.'}</span></div><button class="btn s" data-a="pl-act" data-act="${p.banned ? 'pardon' : 'ban'}">${p.banned ? 'Desbanear' : 'Banear…'}</button></div>
+    </div>
+    ${p.uuid ? `<div class="kv"><span class="k">UUID</span><span class="mono xs">${esc(p.uuid)}</span></div>` : ''}
+    <span class="xs t3">${state.server.status === 'running' ? 'El servidor está encendido: los cambios se aplican al instante.' : 'El servidor está detenido: los cambios se guardan y se aplican al iniciar.'}</span></div>`;
+}
+A['pl-act'] = async (el) => {
+  const action = el.dataset.act, name = pl.sel;
+  let reason = null;
+  if (action === 'ban' || action === 'kick') {
+    let r = '';
+    const ok = await dialog({ title: action === 'ban' ? `Banear a ${name}` : `Expulsar a ${name}`, body: '<label class="field">Motivo <span class="hint">Opcional; lo ve el jugador</span><input class="input" id="pl-reason" maxlength="120"></label>', confirm: action === 'ban' ? 'Banear' : 'Expulsar', onMount: (d) => d.querySelector('#pl-reason').addEventListener('input', (e) => { r = e.target.value; }) });
+    if (!ok) return;
+    reason = r.trim() || null;
+  }
+  try { toast(await invoke('player_action', { id: state.params.id, name, action, reason })); } catch (e) { fail(e); }
+  setTimeout(() => loadPlayers(true), 600);
+};

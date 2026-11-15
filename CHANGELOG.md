@@ -1,5 +1,42 @@
 # Registro de cambios
 
+## Sin publicar — Diseño v3 (rama `rediseno-v3`)
+
+### Interfaz
+- Interfaz nueva, monocromática y minimalista, con **tema claro y oscuro** diseñados por separado
+  (o según Windows); se recuerda en Configuración.
+- Logo **Cinta** en la app, el ícono, la bandeja, la pantalla de carga, el instalador y «Acerca de».
+- Navegación simplificada: Servidores, Servidores de amigos y Configuración. Primera ejecución sin
+  servidores precargados: Crear servidor, Unirme con un código o Evaluar esta PC.
+- Asistente de creación en cuatro pasos con la memoria recomendada para esta PC.
+
+### Servidores
+- **Ocho estados** claros (Detenido, Iniciando con su etapa, Funcionando, Guardando, Pausado,
+  Reiniciando, Deteniéndose, Error) y controles siempre visibles.
+- **Pausar** con `/tick freeze` (Minecraft 1.20.3 o posterior), sin desconectar a nadie.
+- Detener o reiniciar con jugadores conectados: **aviso con cuenta regresiva en el chat** (cancelable).
+- Consola con filtros, autocompletado con ayuda de argumentos, historial y acciones rápidas; acepta
+  comandos con o sin `/`. Las consultas internas de 939 Host no aparecen en la consola.
+- Pestaña **Mundo** (tamaño, dimensiones, semilla, abrir carpeta, reemplazar, mundo nuevo).
+
+### Jugadores
+- Perfil con datos reales del servidor (sin mods complementarios): vida, hambre, armadura,
+  experiencia, coordenadas, dimensión, orientación, punto de aparición, efectos, inventario con
+  armadura y mano secundaria, cofre de ender, estadísticas y permisos. Conectado: se actualiza cada
+  4 s solo con el perfil abierto; desconectado: último guardado de Minecraft.
+- Skins reales e **imágenes originales del juego** descargadas de Mojang a tu PC (desactivables).
+
+### Asistente de reparación
+- Diagnóstico local en palabras simples (mods para otra versión o loader, dependencias faltantes,
+  mods solo de cliente, duplicados, archivos dañados, Java, puerto, memoria, EULA, mundo dañado).
+- «Solucionar automáticamente» con punto de restauración previo, autorización para cambios
+  importantes, verificación real del arranque y **Deshacer**.
+
+### Mods
+- Tienda con Instalados, Explorar Modrinth (categorías, dónde se instala, orden), Actualizaciones y
+  Archivos agregados a mano (con **Vincular** a Modrinth); página de detalle; agregar .jar
+  arrastrando o eligiendo archivos.
+
 ## 0.9.0 — 14/11/2026
 
 Primera versión pública.

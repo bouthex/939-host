@@ -228,7 +228,7 @@ pub fn parse_reply(line: &str, name: &str) -> AppResult<Value> {
     nbt::parse_snbt(&line[pos + marker.len()..]).map_err(|e| AppError::new("parse", format!("No se pudieron leer los datos del jugador: {e}")))
 }
 
-fn world_dir(cfg: &ServerConfig) -> std::path::PathBuf {
+pub fn world_dir(cfg: &ServerConfig) -> std::path::PathBuf {
     let level = crate::properties::read(&paths::server_run_dir(&cfg.id).join("server.properties")).get("level-name").cloned().unwrap_or_else(|| "world".into());
     let level = if level.contains(['/', '\\']) || level.contains("..") { "world".into() } else { level };
     paths::server_run_dir(&cfg.id).join(level)
