@@ -30,7 +30,7 @@ routes.settings = async function renderSettings() {
       <nav class="toc" aria-label="Secciones">${SSECS.map(([k, l]) => `<button data-a="set-toc" data-v="${k}">${l}</button>`).join('')}</nav>
       <div class="stack" style="gap:32px">
         <section class="section" id="set-general"><h2>General</h2><div class="card">
-          <div class="switch" style="cursor:default"><div class="grow"><b>Nombre de esta PC</b><span class="sm t2">Así la ven tus amigos en el grupo.</span></div><input class="input" data-s="nodeName" maxlength="40" value="${esc(s.nodeName)}" style="width:240px" aria-label="Nombre de esta PC"></div>
+          <div class="switch" style="cursor:default;align-items:center"><div class="row" style="gap:14px">${pcAvatar(s.nodeSymbol, 44, 'inv lg')}<div class="grow"><b>${esc(s.nodeName)}</b><span class="sm t2" style="display:block">Así ven tus amigos a esta PC en el grupo. Es solo un nombre: no cambia su identidad ni sus permisos.</span></div></div><button class="btn" data-a="identity">${icon('edit', 16)}Cambiar</button></div>
           ${sw('startWithWindows', 'Iniciar con Windows', 'Arranca en la bandeja, sin abrir la ventana, para que tus servidores compartidos estén disponibles.')}
           ${sw('closeToTray', 'Seguir en la bandeja al cerrar la ventana', 'Los servidores siguen funcionando y la interfaz se cierra por completo para liberar memoria.')}
           <div class="switch" style="cursor:default"><div class="grow"><b>Salir de 939 Host</b><span class="sm t2">Detiene todos los servidores de forma ordenada y deja de participar en el grupo.</span></div><button class="btn" data-a="quit">${icon('logout', 16)}Salir</button></div>
@@ -39,7 +39,7 @@ routes.settings = async function renderSettings() {
         <section class="section" id="set-look"><h2>Apariencia</h2><div class="card">
           <div class="switch" style="cursor:default"><div class="grow"><b>Tema</b><span class="sm t2">Se recuerda en esta PC.</span></div>
             <div class="seg" role="group" aria-label="Tema">${[['light', 'sun', 'Claro'], ['dark', 'moon', 'Oscuro'], ['system', 'monitor', 'Según Windows']].map(([k, ic, l]) => `<button class="${(s.theme || 'system') === k ? 'on' : ''}" data-a="set-theme" data-v="${k}" aria-pressed="${(s.theme || 'system') === k}">${icon(ic, 15)}${l}</button>`).join('')}</div></div>
-          ${sw('reduceMotion', 'Reducir animaciones', 'Quita las transiciones y los indicadores animados.')}
+          ${sw('reduceMotion', 'Reducir animaciones', 'Quita las transiciones y los indicadores animados. Si Windows tiene desactivadas las animaciones, 939 Host las desactiva siempre.')}
           <div class="switch" style="cursor:default"><div class="grow"><b>Tamaño de letra de la consola</b><span class="sm t2">Entre 11 y 18 px.</span></div>
             <div class="row" style="gap:8px"><input type="range" min="11" max="18" step="1" value="${s.consoleFontSize || 13}" data-s="consoleFontSize" data-type="int" style="width:140px" aria-label="Tamaño de letra de la consola"><span class="mono sm" id="cfs">${s.consoleFontSize || 13} px</span></div></div>
         </div></section>
@@ -108,7 +108,7 @@ routes.settings = async function renderSettings() {
   setTimeout(tick, 300);
   every(5000, tick);
 };
-A['set-toc'] = (el) => { el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); document.getElementById(`set-${el.dataset.v}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+A['set-toc'] = (el) => { el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); document.getElementById(`set-${el.dataset.v}`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); };
 A['set-theme'] = async (el) => {
   el.parentElement.querySelectorAll('button').forEach((b) => { b.classList.toggle('on', b === el); b.setAttribute('aria-pressed', b === el); });
   await saveSetting({ theme: el.dataset.v }, null);

@@ -23,6 +23,7 @@ pub mod playerdata;
 pub mod players;
 pub mod process;
 pub mod properties;
+pub mod pcname;
 pub mod repair;
 pub mod settings;
 pub mod skins;

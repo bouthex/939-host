@@ -96,6 +96,9 @@ impl LocalHost for Local {
         let mc = instance::load(server).map(|c| c.mc_version).unwrap_or_default();
         snapshots::take(&self.mgr, server, label, kind, &mc).map_err(|e| e.message)
     }
+    fn profile(&self) -> host939_cluster::HostProfile {
+        host939_cluster::HostProfile { cpu: "CPU de prueba".into(), cores: 4, ram_total_mb: std::env::var("H939_RAM").ok().and_then(|s| s.parse().ok()).unwrap_or(16384), ram_free_mb: 8192, cpu_score: Some(self.score()), disk_free_gb: Some(100.0) }
+    }
     fn score(&self) -> u32 { std::env::var("H939_SCORE").ok().and_then(|s| s.parse().ok()).unwrap_or(100) }
     fn allow_hosting(&self, _: &str) -> bool { std::env::var("H939_NO_HOST").is_err() }
     fn note(&self, server: &str, message: &str) { say("##", &format!("[{}] {message}", &server[..server.len().min(8)])); }
@@ -121,7 +124,7 @@ async fn main() {
     let secret = identity::node_secret().unwrap();
     let local = Arc::new(Local { mgr: Manager::new(Arc::new(NoEvents)), probe: Probe::new(), fake, name: name.clone(), fakes: Default::default(), rt: tokio::runtime::Handle::current() });
     let timing = if std::env::var("H939_FAST").is_ok() {
-        Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15) }
+        Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15), request_ttl: Duration::from_secs(std::env::var("H939_REQUEST_TTL").ok().and_then(|v| v.parse().ok()).unwrap_or(120)) }
     } else { Timing::default() };
     let node = GroupNode::start(secret, &name, host939_p2p::Relays::Disabled, local.clone(), timing).await.expect("nodo");
     assert_eq!(node.id(), node_id.node_id);
@@ -193,6 +196,10 @@ async fn main() {
                 "pid" => Ok(serde_json::json!(local.mgr.runtime(&p(1)).lock().unwrap().pid)),
                 "sync" => { node.sync_now(&p(1)).await; Ok(serde_json::json!(true)) }
                 "quit" => Ok(serde_json::json!(node.quit().await)),
+                "rename" => { node.set_identity(&p(1), &p(2)); Ok(serde_json::json!(true)) }
+                "request" => node.request_host(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
+                "cancelreq" => node.cancel_host_request(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "answer" => node.answer_host_request(&p(1), p(2) == "si").await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
                 "exit" => { node.shutdown().await; say("@@", "{\"ok\":true,\"v\":\"bye\"}"); std::process::exit(0) }
                 other => Err(format!("orden desconocida: {other}")),
             }

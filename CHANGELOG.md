@@ -32,6 +32,19 @@
 - «Solucionar automáticamente» con punto de restauración previo, autorización para cambios
   importantes, verificación real del arranque y **Deshacer**.
 
+### Grupo
+- **Nombre visible para cada PC**, aleatorio la primera vez (Mate, Pampa, Cuadradín…) y editable,
+  con un símbolo. Es solo visual: no cambia la identidad, las claves ni los permisos.
+- **Solicitar ser anfitrión**: cualquier PC coanfitriona puede pedirlo; a la anfitriona le llega un
+  aviso con un resumen del equipo y sus limitaciones, y decide aceptar o rechazar. Una solicitud por
+  vez, se puede cancelar y vence sola. Si la anfitriona no responde, actúa la recuperación de siempre.
+- Traspaso más seguro: la otra PC copia el mundo **antes** de recibir el permiso (primero con el
+  servidor encendido, después solo lo que cambió). Si la copia falla, el servidor sigue donde estaba.
+
+### Diseño
+- Íconos propios «Bloque» y lenguaje de movimiento: indicadores que se deslizan, carga en escalón,
+  progreso circular y transiciones cortas. Respeta «reducir animaciones» de Windows.
+
 ### Mods
 - Tienda con Instalados, Explorar Modrinth (categorías, dónde se instala, orden), Actualizaciones y
   Archivos agregados a mano (con **Vincular** a Modrinth); página de detalle; agregar .jar

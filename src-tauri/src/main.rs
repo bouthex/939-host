@@ -123,6 +123,7 @@ fn main() {
             } else if let Some(w) = app.get_webview_window("main") {
                 let _ = w.destroy();
             }
+            settings::ensure_pc_identity();
             network::start(app.handle().clone());
             commands::recheck_client_reconnect();
             Ok(())
@@ -208,6 +209,12 @@ fn main() {
             network::remote_list,
             network::remote_join,
             network::remote_remove,
+            network::pc_identity_set,
+            network::pc_name_random,
+            network::host_request_send,
+            network::host_request_cancel,
+            network::host_request_answer,
+            network::host_requests_pending,
             v3::pause_server,
             v3::resume_server,
             v3::stop_server_warned,

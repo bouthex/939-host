@@ -173,7 +173,7 @@ async function installMod(projectId, title, versionId = null) {
   const ok = await dialog({ title: plan.items.length > 1 ? `Instalar ${title} y ${plan.items.length - 1} ${plan.items.length === 2 ? 'dependencia' : 'dependencias'}` : `Instalar ${title}`, body: `<div>${rows}</div>${warn}<p class="sm">Descarga: ${fmtMB(plan.totalBytes / 1048576)}. Cada archivo se verifica por hash.</p>`, confirm: 'Instalar' });
   if (!ok) return;
   const prog = $('#mods-progress');
-  if (prog) prog.innerHTML = `<div class="card pad stack"><b id="mp-msg">Preparando…</b><div class="bar"><i id="mp-bar" style="width:0%"></i></div></div>`;
+  if (prog) prog.innerHTML = `<div class="card pad row" style="gap:14px"><span id="mp-ring">${pring(0, 28)}</span><div class="grow stack" style="gap:6px"><b id="mp-msg">Preparando…</b><div class="bar"><i id="mp-bar" style="width:0%"></i></div></div></div>`;
   try { await invoke('mods_install', { id: state.params.id, projectId, versionId }); delete md.updates[projectId]; toast(isActive(state.server) ? 'Instalado. Reiniciá el servidor para usarlo.' : 'Mods instalados'); } catch (e) { fail(e); }
   await loadMods(); paintMods();
 }

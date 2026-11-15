@@ -333,3 +333,100 @@ fn real_minecraft_handover() {
     println!("✔ el mundo sobrevivió al traspaso (marcador = 939) y la misma dirección llega al servidor de B");
     b.ok(&format!("stop {sid}"));
 }
+
+/// Nombres visibles y solicitud manual de anfitrión, sobre el traspaso de siempre:
+/// renombrar no toca la identidad; una solicitud por vez; cancelar; rechazar; aceptar con el
+/// mundo intacto; un traspaso que falla deja todo en la anfitriona; jugadoras no pueden pedir.
+#[test]
+fn host_requests_and_pc_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_SCORE", "200")]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_SCORE", "150"), ("H939_TEST_FAIL_PREFETCH", "1")]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[("H939_SCORE", "60"), ("H939_RAM", "3000")]);
+    let mut d = Node::spawn("D", &tmp.path().join("d"), true, &[]);
+    let sid = a.ok("create Zombies 25811").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    for (n, port) in [(&mut b, 25812), (&mut c, 25813)] {
+        let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+        n.ok(&format!("join {t}"));
+        n.ok(&format!("setport {sid} {port}"));
+    }
+    let tj = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    d.ok(&format!("join {tj}"));
+    wait("que se vean los cuatro", Duration::from_secs(20), || a.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 4);
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} marca.txt m1"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B y C copian", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1) && fresh(&c.status(&sid)["myLatest"]) == fresh(&s1));
+
+    // ── Nombre visible: solo visual ──
+    let id_b = b.ok("id");
+    let lease_before = a.status(&sid)["lease"].clone();
+    b.ok("rename Pampa faro");
+    wait("A ve el nombre nuevo de B", Duration::from_secs(15), || {
+        a.status(&sid)["members"].as_array().unwrap().iter().any(|m| m["nodeId"] == id_b && m["name"] == "Pampa" && m["symbol"] == "faro")
+    });
+    assert_eq!(b.ok("id"), id_b, "el nombre no cambia la identidad");
+    assert_eq!(a.status(&sid)["lease"], lease_before, "el nombre no toca el permiso");
+    println!("✔ B se llama «Pampa» (símbolo faro) para todo el grupo; su identidad y el permiso no cambiaron");
+
+    // ── Una jugadora no puede pedir; una coanfitriona sí ──
+    assert!(d.err(&format!("request {sid}")).contains("jugadora"));
+    assert_eq!(c.ok(&format!("request {sid}")).as_str(), Some("A"));
+    let inc = a.status(&sid)["incomingRequest"].clone();
+    assert_eq!(inc["name"], "C");
+    assert!(inc["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("memoria")), "advertencia de memoria: {inc}");
+    assert!(inc["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("procesador")), "advertencia de CPU: {inc}");
+    assert!(c.status(&sid)["outgoingRequest"].is_object());
+    println!("✔ C pidió alojarlo; A ve la solicitud con advertencias: {}", inc["warnings"]);
+
+    // ── Sin duplicados ni simultáneas ──
+    assert!(c.err(&format!("request {sid}")).contains("Ya le pediste"));
+    assert!(b.err(&format!("request {sid}")).contains("Ya hay una solicitud pendiente de C"));
+    println!("✔ solicitudes duplicadas o simultáneas rechazadas con un mensaje claro");
+
+    // ── Cancelar ──
+    c.ok(&format!("cancelreq {sid}"));
+    wait("A ya no ve la solicitud", Duration::from_secs(5), || a.status(&sid)["incomingRequest"].is_null());
+    println!("✔ C canceló su solicitud");
+
+    // ── Rechazar ──
+    b.ok(&format!("request {sid}"));
+    wait("A ve la solicitud de Pampa", Duration::from_secs(5), || a.status(&sid)["incomingRequest"]["name"] == "Pampa");
+    a.ok(&format!("answer {sid} no"));
+    wait("Pampa recibe el rechazo", Duration::from_secs(5), || { let st = b.status(&sid); st["lastAnswer"]["accepted"] == false && st["outgoingRequest"].is_null() });
+    assert!(a.ok(&format!("running {sid}")).as_bool().unwrap());
+    println!("✔ A rechazó; Pampa recibió la respuesta y A siguió alojando");
+
+    // ── Aceptar: traspaso de siempre, mundo intacto, un solo escritor ──
+    c.ok(&format!("request {sid}"));
+    wait("A ve la solicitud de C", Duration::from_secs(5), || a.status(&sid)["incomingRequest"]["name"] == "C");
+    assert_eq!(a.ok(&format!("answer {sid} si")).as_str(), Some("C"));
+    wait("C en línea", Duration::from_secs(30), || c.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos encendidas");
+    assert_eq!(c.ok(&format!("read {sid} marca.txt")).as_str(), Some("m1"));
+    wait("C sin solicitud pendiente", Duration::from_secs(10), || c.status(&sid)["outgoingRequest"].is_null());
+    println!("✔ A aceptó: C es la anfitriona con el mundo de A (m1); A está apagada");
+
+    // ── Traspaso que falla: la anfitriona conserva el control ──
+    c.ok(&format!("write {sid} marca.txt m2"));
+    b.ok(&format!("request {sid}"));
+    wait("C ve la solicitud de Pampa", Duration::from_secs(5), || c.status(&sid)["incomingRequest"]["name"] == "Pampa");
+    let e = c.err(&format!("answer {sid} si"));
+    assert!(e.contains("sigue en esta PC") || e.contains("siguió en esta PC"), "{e}");
+    assert!(c.ok(&format!("running {sid}")).as_bool().unwrap(), "C sigue encendida");
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(c.status(&sid)["iAmHost"].as_bool().unwrap());
+    assert_eq!(c.ok(&format!("read {sid} marca.txt")).as_str(), Some("m2"));
+    wait("Pampa se entera de la falla", Duration::from_secs(5), || b.status(&sid)["lastAnswer"]["accepted"] == false);
+    println!("✔ el traspaso a Pampa falló al copiar: C siguió alojando sin cortar, con el mundo intacto (m2)");
+
+    // ── Anfitriona que no responde: no se puede pedir (actúa la recuperación) ──
+    let pid_c = c.pid();
+    signal(pid_c, "STOP");
+    std::thread::sleep(Duration::from_secs(3));
+    let e = b.err(&format!("request {sid}"));
+    assert!(e.contains("no responde"), "{e}");
+    signal(pid_c, "CONT");
+    println!("✔ con la anfitriona sin responder no se pide: queda la recuperación automática");
+}

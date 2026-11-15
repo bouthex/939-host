@@ -29,7 +29,7 @@ async function boot() {
   });
   await listen('mods-progress', (ev) => {
     const msg = $('#mp-msg'), bar = $('#mp-bar');
-    if (msg && state.params.id === ev.payload.id) { msg.textContent = ev.payload.message; bar.style.width = `${Math.round(ev.payload.fraction * 100)}%`; }
+    if (msg && state.params.id === ev.payload.id) { msg.textContent = ev.payload.message; bar.style.width = `${Math.round(ev.payload.fraction * 100)}%`; setPring($('#mp-ring'), ev.payload.fraction); }
   });
   await listen('assets-progress', (ev) => {
     const m = $('#assets-msg'), b = $('#assets-bar');
@@ -37,10 +37,12 @@ async function boot() {
     if (b) b.style.width = `${Math.round(ev.payload.fraction * 100)}%`;
   });
   await listen('repair-progress', (ev) => onRepairProgress(ev.payload));
+  await listen('host-request', (ev) => { toast(`${ev.payload.name} quiere alojar uno de tus servidores`); refreshRequests(); });
   let shareTimer = null;
   await listen('share-changed', (ev) => {
     clearTimeout(shareTimer);
     shareTimer = setTimeout(() => {
+      refreshRequests();
       if (state.route === 'server' && state.params.id === ev.payload.id && state.tab === 'group') drawTab();
       else if (state.route === 'friends') routes.friends();
     }, 300);
@@ -60,6 +62,7 @@ async function boot() {
   });
 
   if (!state.info.settings.onboardingDone) saveSetting({ onboardingDone: true }, null);
+  refreshRequests();
   await go('servers');
   $('#splash')?.classList.add('out');
   setTimeout(() => $('#splash')?.remove(), 300);

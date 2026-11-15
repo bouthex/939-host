@@ -32,15 +32,17 @@ pub struct AppInfo {
 
 #[tauri::command]
 pub fn app_info(node: State<'_, NodeIdentity>) -> AppInfo {
-    let mut s = settings::load();
-    if s.node_name.is_empty() { s.node_name = sysinfo::System::host_name().unwrap_or_else(|| "Esta PC".into()); }
+    let s = settings::ensure_pc_identity();
     AppInfo { version: env!("CARGO_PKG_VERSION").into(), data_dir: paths::root().display().to_string(), node: node.inner().clone(), settings: s }
 }
 
 #[tauri::command]
 pub fn save_settings(settings: AppSettings) -> AppResult<AppSettings> {
     let mut s = settings;
-    s.node_name = s.node_name.trim().chars().take(40).collect();
+    // El nombre y el símbolo de la PC se cambian con `pc_identity_set` (actualiza también el grupo).
+    let saved = settings::load();
+    s.node_name = saved.node_name;
+    s.node_symbol = saved.node_symbol;
     s.contribute_cpu_percent = s.contribute_cpu_percent.clamp(10, 100);
     // Los perfiles de reconexión se manejan con sus propios comandos.
     s.reconnect_profiles = settings::load().reconnect_profiles;

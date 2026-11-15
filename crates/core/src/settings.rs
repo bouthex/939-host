@@ -24,6 +24,8 @@ pub struct AppSettings {
     /// Perfiles de Minecraft de esta PC con la reconexión automática activada.
     #[serde(default)]
     pub reconnect_profiles: Vec<crate::client::ClientProfile>,
+    /// Símbolo que acompaña al nombre de esta PC (solo visual).
+    pub node_symbol: String,
     /// Apariencia: "system" (según Windows), "light" o "dark".
     pub theme: String,
     pub reduce_motion: bool,
@@ -51,6 +53,7 @@ impl Default for AppSettings {
             onboarding_done: false,
             start_with_windows: false,
             reconnect_profiles: vec![],
+            node_symbol: String::new(),
             theme: "system".into(),
             reduce_motion: false,
             console_font_size: 13,
@@ -66,6 +69,21 @@ fn path() -> std::path::PathBuf { paths::root().join("settings.json") }
 pub fn load() -> AppSettings { paths::read_json(&path()).unwrap_or_default() }
 
 pub fn save(s: &AppSettings) -> AppResult<()> { paths::write_json(&path(), s) }
+
+/// Da a esta PC un nombre visible y un símbolo la primera vez (o si el nombre era el del
+/// equipo de Windows, que nadie eligió). Solo visual: la identidad técnica no cambia.
+pub fn ensure_pc_identity() -> AppSettings {
+    let mut s = load();
+    let host = sysinfo::System::host_name().unwrap_or_default();
+    let mut changed = false;
+    if s.node_name.trim().is_empty() || (!host.is_empty() && s.node_name.trim().eq_ignore_ascii_case(host.trim())) {
+        s.node_name = crate::pcname::random_name();
+        changed = true;
+    }
+    if !crate::pcname::valid_symbol(&s.node_symbol) { s.node_symbol = crate::pcname::random_symbol(); changed = true; }
+    if changed { let _ = save(&s); }
+    s
+}
 
 /// Registra o quita 939 Host del inicio de Windows (clave Run del usuario actual).
 pub fn apply_autostart(enabled: bool) -> AppResult<()> {

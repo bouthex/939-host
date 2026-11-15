@@ -67,6 +67,22 @@ pub trait LocalHost: Send + Sync + 'static {
     fn note(&self, server: &str, message: &str);
     /// El estado del grupo cambió (para refrescar la interfaz).
     fn changed(&self, server: &str);
+    /// Resumen del hardware de esta PC para quien decide un cambio de anfitrión.
+    fn profile(&self) -> HostProfile { HostProfile::default() }
+    /// Llegó una solicitud para alojar un servidor que hostea esta PC (aviso visible).
+    fn host_request(&self, _server: &str, _from_name: &str) {}
+}
+
+/// Lo que una PC cuenta de sí misma al pedir ser anfitriona (solo para mostrar y advertir).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HostProfile {
+    pub cpu: String,
+    pub cores: u32,
+    pub ram_total_mb: u64,
+    pub ram_free_mb: u64,
+    pub cpu_score: Option<u32>,
+    pub disk_free_gb: Option<f64>,
 }
 
 /// Tiempos del protocolo. Los valores por defecto son los de uso real; las pruebas los acortan.
@@ -83,6 +99,8 @@ pub struct Timing {
     pub seen_window: Duration,
     /// Cuánto espera el anfitrión que suelta el servidor a que otra PC copie el último punto.
     pub release_wait: Duration,
+    /// Una solicitud para ser anfitriona vence si nadie la responde en este tiempo.
+    pub request_ttl: Duration,
 }
 
 impl Default for Timing {
@@ -93,6 +111,7 @@ impl Default for Timing {
             fence: Duration::from_secs(20),
             seen_window: Duration::from_secs(180),
             release_wait: Duration::from_secs(90),
+            request_ttl: Duration::from_secs(600),
         }
     }
 }
@@ -109,13 +128,21 @@ enum Req {
     Vote { server: String, epoch: u64, candidate: String, fresh: (u64, u64) },
     SyncNow { server: String },
     Bye { server: String },
+    /// Una PC del grupo pide alojar el servidor (llega al anfitrión actual).
+    HostRequest { server: String, name: String, symbol: String, profile: HostProfile },
+    HostRequestCancel { server: String },
+    /// Respuesta del anfitrión a quien pidió.
+    HostAnswer { server: String, accepted: bool, message: String },
+    /// Traspaso en dos fases: la PC destino copia el punto ANTES de recibir el permiso.
+    Prefetch { server: String, snapshot: String },
 }
 
 impl Req {
     fn server(&self) -> &str {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
-            | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server } => server,
+            | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } => server,
         }
     }
 }
@@ -126,6 +153,8 @@ impl Req {
 pub struct Info {
     pub node: String,
     pub name: String,
+    #[serde(default)]
+    pub symbol: String,
     pub lease: Option<Lease>,
     pub latest: Option<SnapshotInfo>,
     pub has_copy: bool,
@@ -175,12 +204,26 @@ struct SrvState {
     fenced: bool,
     busy: Option<String>,
     syncing: bool,
+    /// Solicitud que recibió esta PC (siendo anfitriona). Una sola a la vez.
+    incoming: Option<Incoming>,
+    /// Solicitud que hizo esta PC y espera respuesta.
+    outgoing: Option<Outgoing>,
+    /// Última respuesta recibida (para mostrarla un rato).
+    answer: Option<(bool, String, Instant)>,
+    /// Veces que una PC dejó de responder desde que se abrió 939 Host (estabilidad).
+    drops: HashMap<String, u32>,
 }
+
+#[derive(Clone)]
+struct Incoming { node: String, name: String, symbol: String, profile: HostProfile, at: Instant, epoch: u64 }
+
+#[derive(Clone)]
+struct Outgoing { host: String, host_name: String, at: Instant, epoch: u64 }
 
 struct Inner {
     ep: Endpoint,
     me: String,
-    name: String,
+    name: RwLock<(String, String)>,
     local: Arc<dyn LocalHost>,
     timing: Timing,
     started: Instant,
@@ -209,6 +252,81 @@ pub struct GroupStatus {
     pub handover_on_quit: bool,
     pub majority: usize,
     pub members: Vec<MemberStatus>,
+    /// Si esta PC puede pedir ser anfitriona ahora (y si no, por qué).
+    pub can_request: Result<(), String>,
+    /// Solicitud recibida (esta PC es la anfitriona).
+    pub incoming_request: Option<RequestView>,
+    /// Solicitud enviada por esta PC que espera respuesta.
+    pub outgoing_request: Option<OutgoingView>,
+    /// Última respuesta a una solicitud de esta PC (se muestra un minuto).
+    pub last_answer: Option<AnswerView>,
+}
+
+/// Solicitud para alojar el servidor, tal como la ve el anfitrión actual.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestView {
+    pub node_id: String,
+    pub name: String,
+    pub symbol: String,
+    pub age_secs: u64,
+    pub expires_in_secs: u64,
+    pub profile: HostProfile,
+    /// Hardware de esta PC (la anfitriona) para comparar.
+    pub mine: HostProfile,
+    pub online: bool,
+    pub path: String,
+    pub rtt_ms: Option<u64>,
+    /// Limitaciones importantes (nunca bloquean la aceptación).
+    pub warnings: Vec<String>,
+    /// Lo que juega a favor del solicitante.
+    pub strengths: Vec<String>,
+    /// Si al solicitante le falta copiar parte del mundo.
+    pub needs_copy: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutgoingView { pub host_name: String, pub age_secs: u64, pub expires_in_secs: u64 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerView { pub accepted: bool, pub message: String }
+
+fn gb(mb: u64) -> String { format!("{:.1}", mb as f64 / 1024.0).replace(".0", "").replace('.', ",") }
+
+/// Advertencias y fortalezas de una PC candidata frente a la anfitriona actual. Solo informan:
+/// la decisión es de quien aloja (una PC con menos potencia puede tener mejor conexión).
+pub fn assess(cand: &HostProfile, cand_score: u32, mine: &HostProfile, my_score: u32, server_mem_mb: u64, path: &str, rtt_ms: Option<u64>, drops: u32) -> (Vec<String>, Vec<String>) {
+    let mut w = vec![];
+    let mut g = vec![];
+    if cand.ram_total_mb > 0 {
+        if cand.ram_total_mb < server_mem_mb + 2048 {
+            w.push(format!("Tiene {} GB de memoria en total y el servidor usa {} GB: puede quedarse sin memoria.", gb(cand.ram_total_mb), gb(server_mem_mb)));
+        } else if cand.ram_free_mb < server_mem_mb + 512 {
+            w.push(format!("Ahora tiene {} GB libres y el servidor necesita {} GB: conviene que cierre otros programas.", gb(cand.ram_free_mb), gb(server_mem_mb)));
+        } else if mine.ram_free_mb > 0 && cand.ram_free_mb > mine.ram_free_mb + 2048 {
+            g.push("Tiene más memoria libre que esta PC.".into());
+        }
+    }
+    if cand_score > 0 && my_score > 0 {
+        if (cand_score as f64) < my_score as f64 * 0.6 {
+            w.push("Su procesador rinde bastante menos que el de esta PC: con muchos jugadores o mods puede haber lag.".into());
+        } else if cand_score as f64 > my_score as f64 * 1.2 {
+            g.push("Su procesador rinde más que el de esta PC.".into());
+        }
+    } else if cand_score == 0 {
+        w.push("Ahora no está en condiciones de hostear (poca memoria libre o mucho uso).".into());
+    }
+    match (path, rtt_ms) {
+        ("relay", _) => w.push("Se conecta al grupo por un relay: los jugadores pueden notar más latencia.".into()),
+        (_, Some(r)) if r > 150 => w.push(format!("La latencia con esta PC es alta ({r} ms).")),
+        ("directa", Some(r)) => g.push(format!("Conexión directa con el grupo ({r} ms).")),
+        _ => {}
+    }
+    if drops >= 3 { w.push(format!("Se desconectó del grupo {drops} veces desde que abriste 939 Host.")); }
+    if let Some(d) = cand.disk_free_gb { if d < 5.0 { w.push(format!("Le quedan {d:.0} GB libres en el disco.")); } }
+    (w, g)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -216,6 +334,7 @@ pub struct GroupStatus {
 pub struct MemberStatus {
     pub node_id: String,
     pub name: String,
+    pub symbol: String,
     pub role: String,
     pub is_me: bool,
     pub online: bool,
@@ -261,7 +380,7 @@ impl GroupNode {
             if let Ok(a) = serde_json::from_value::<EndpointAddr>(v) { peers.insert(k, a); }
         }
         let inner = Arc::new(Inner {
-            ep: ep.clone(), me, name: name.to_string(), local, timing, started: Instant::now(),
+            ep: ep.clone(), me, name: RwLock::new((name.to_string(), String::new())), local, timing, started: Instant::now(),
             peers: RwLock::new(peers), conns: Default::default(), state: Default::default(), routes: Default::default(),
             stopping: Default::default(),
         });
@@ -302,12 +421,12 @@ impl GroupNode {
         let mut s = network::load_share(server);
         s.enabled = true;
         if s.member(&self.inner.me).is_none() {
-            s.members.insert(0, Member { node_id: self.inner.me.clone(), name: self.inner.name.clone(), joined_at: chrono::Local::now().to_rfc3339(), role: "propietario".into() });
+            s.members.insert(0, Member { node_id: self.inner.me.clone(), name: self.inner.name(), joined_at: chrono::Local::now().to_rfc3339(), role: "propietario".into() });
         }
         s.card = Some(serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase() }));
         bump_rev(&mut s);
         network::save_share(server, &s).map_err(|e| anyhow!(e.message))?;
-        lease::ensure(server, &self.inner.name).map_err(|e| anyhow!(e.message))?;
+        lease::ensure(server, &self.inner.name()).map_err(|e| anyhow!(e.message))?;
         Ok(s)
     }
 
@@ -351,7 +470,7 @@ impl GroupNode {
         let conn = tokio::time::timeout(Duration::from_secs(15), self.inner.ep.connect(addr.clone(), ALPN_JOIN)).await
             .context("tiempo de espera agotado")?.context("no se pudo contactar a la PC que invitó (¿está encendida con 939 Host abierto?)")?;
         let (mut send, mut recv) = conn.open_bi().await?;
-        wire::write_msg(&mut send, &JoinReq { secret, name: self.inner.name.clone() }).await?;
+        wire::write_msg(&mut send, &JoinReq { secret, name: self.inner.name() }).await?;
         send.finish()?;
         let r: JoinResp = wire::read_msg(&mut recv).await?;
         if !r.ok { bail!(r.error.unwrap_or_else(|| "La invitación fue rechazada.".into())); }
@@ -429,7 +548,7 @@ impl GroupNode {
         let share = network::load_share(server);
         if !share.enabled { return Ok(()); }
         let Some(l) = lease::read(server) else {
-            lease::ensure(server, &self.inner.name).map_err(|e| anyhow!(e.message))?;
+            lease::ensure(server, &self.inner.name()).map_err(|e| anyhow!(e.message))?;
             return Ok(());
         };
         if l.held_by(&self.inner.me) {
@@ -449,7 +568,7 @@ impl GroupNode {
                 if mine < l.required {
                     bail!("La última versión del mundo quedó en la PC de {}, que no está conectada. Esperá a que se conecte para copiarla, o usá «Recuperar aquí» con la versión que tenés.", nice(&l.host_name));
                 }
-                lease::claim(server, l.epoch, &self.inner.name).map_err(|e| anyhow!(e.message))?;
+                lease::claim(server, l.epoch, &self.inner.name()).map_err(|e| anyhow!(e.message))?;
                 self.inner.place_latest(server).await?;
                 self.inner.broadcast_lease(server).await;
                 Ok(())
@@ -470,12 +589,34 @@ impl GroupNode {
         inner.set_busy(server, Some(format!("Pasando el servidor a {}", info.name)));
         let result = async {
             let was_running = inner.local.is_running(server);
+            let take = |label: String| { let l2 = inner.local.clone(); let s2 = server.to_string(); async move { tokio::task::spawn_blocking(move || l2.snapshot(&s2, &label, "auto")).await?.map_err(|e| anyhow!(e)) } };
+            let target_ref: &str = &target;
+            let prefetch = |snap: String| async move {
+                match inner.rpc_timeout(target_ref, &Req::Prefetch { server: server.into(), snapshot: snap }, Duration::from_secs(1800)).await {
+                    Ok(Resp::Ok) => Ok(()),
+                    Ok(Resp::Err { msg }) => Err(anyhow!(msg)),
+                    Ok(_) => Err(anyhow!("respuesta inesperada")),
+                    Err(e) => Err(e),
+                }
+            };
+            // Fase 1, con el servidor todavía encendido: la otra PC copia casi todo el mundo.
+            // Si falla acá, nadie se desconectó y el servidor sigue en esta PC.
             if was_running {
+                inner.local.note(server, &format!("Preparando el traspaso a {}: copiando el mundo sin apagar…", info.name));
+                let pre = take(format!("Antes del traspaso a {}", info.name)).await?;
+                if let Err(e) = prefetch(pre.id.clone()).await {
+                    bail!("{} no pudo copiar el mundo ({e}). El servidor sigue en esta PC.", info.name);
+                }
                 inner.local.note(server, &format!("Pasando el servidor a {}: guardando y apagando…", info.name));
                 inner.blocking(server, |l, s| l.stop(s)).await?;
             }
-            let label = format!("Traspaso a {}", info.name);
-            let snap = { let l2 = inner.local.clone(); let s2 = server.to_string(); tokio::task::spawn_blocking(move || l2.snapshot(&s2, &label, "auto")).await?.map_err(|e| anyhow!(e))? };
+            // Fase 2: punto final y copia de lo que cambió (poco). Recién con todo copiado se
+            // entrega el permiso: así nunca queda una PC con permiso y sin mundo.
+            let snap = take(format!("Traspaso a {}", info.name)).await?;
+            if let Err(e) = prefetch(snap.id.clone()).await {
+                if was_running { let _ = inner.blocking(server, |l, s| l.start(s)).await; }
+                bail!("{} no pudo copiar el último estado ({e}). El servidor siguió en esta PC.", info.name);
+            }
             let next = lease::next_for(server, &target, &info.name);
             let sent = inner.rpc(&target, &Req::Handover { server: server.into(), lease: next.clone(), snapshot: Some(snap.id.clone()) }).await;
             let accepted = match sent {
@@ -544,7 +685,7 @@ impl GroupNode {
         }
         inner.set_busy(server, Some("Recuperando el servidor en esta PC".into()));
         let r = async {
-            lease::force_claim(server, &inner.name).map_err(|e| anyhow!(e.message))?;
+            lease::force_claim(server, &inner.name()).map_err(|e| anyhow!(e.message))?;
             inner.broadcast_lease(server).await;
             inner.place_latest(server).await?;
             inner.blocking(server, |l, s| l.prepare(s)).await?;
@@ -620,7 +761,8 @@ impl GroupNode {
                 info.map(|i| (i.running && online, i.can_host, i.score, i.latest.clone())).unwrap_or((false, false, 0, None))
             };
             members.push(MemberStatus {
-                node_id: m.node_id.clone(), name: if is_me { inner.name.clone() } else { info.map(|i| i.name.clone()).unwrap_or_else(|| m.name.clone()) },
+                node_id: m.node_id.clone(), name: if is_me { inner.name() } else { info.map(|i| i.name.clone()).unwrap_or_else(|| m.name.clone()) },
+                symbol: if is_me { inner.symbol() } else { info.map(|i| i.symbol.clone()).unwrap_or_default() },
                 role: m.role.clone(), is_me, online, running, is_host: l.as_ref().map(|l| l.held_by(&m.node_id)).unwrap_or(false),
                 can_host, score, latest_at: latest.as_ref().map(|s| s.created_at.clone()), fresh: fresh(&latest), path: if is_me { String::new() } else { path }, rtt_ms,
             });
@@ -628,9 +770,30 @@ impl GroupNode {
         let i_am_host = l.as_ref().map(|l| l.held_by(&inner.me)).unwrap_or(false);
         let host_online = l.as_ref().map(|l| l.state == LeaseState::Hosting && (l.host == inner.me || inner.recently_ok(server, &l.host, online_window))).unwrap_or(false);
         let can_start = self.can_start_check(server, &l, &my_latest);
+        let can_request = self.can_request_check(server);
+        // El nombre visible del anfitrión es el actual (el del permiso es el que tenía al tomarlo).
+        let mut l = l;
+        if let Some(l) = l.as_mut() { if let Some(m) = members.iter().find(|m| m.node_id == l.host) { l.host_name = m.name.clone(); } }
+        let (incoming, outgoing, answer, drops) = inner.with_state(server, |s| (s.incoming.clone(), s.outgoing.clone(), s.answer.clone(), s.drops.clone()));
+        let ttl = inner.timing.request_ttl;
+        let incoming_request = incoming.filter(|_| i_am_host).map(|r| {
+            let mine = inner.local.profile();
+            let m = members.iter().find(|m| m.node_id == r.node);
+            let (path, rtt_ms, online, score, cand_fresh) = m.map(|m| (m.path.clone(), m.rtt_ms, m.online, m.score, m.fresh)).unwrap_or_default();
+            let mem = host939_core::instance::load(server).map(|c| c.memory_mb as u64).unwrap_or(2048);
+            let (warnings, strengths) = assess(&r.profile, score, &mine, inner.local.score(), mem, &path, rtt_ms, *drops.get(&r.node).unwrap_or(&0));
+            RequestView {
+                node_id: r.node.clone(), name: r.name.clone(), symbol: r.symbol.clone(), age_secs: r.at.elapsed().as_secs(),
+                expires_in_secs: ttl.saturating_sub(r.at.elapsed()).as_secs(), profile: r.profile.clone(), mine, online, path, rtt_ms,
+                warnings, strengths, needs_copy: cand_fresh < fresh(&my_latest),
+            }
+        });
+        let outgoing_request = outgoing.map(|o| OutgoingView { host_name: o.host_name.clone(), age_secs: o.at.elapsed().as_secs(), expires_in_secs: ttl.saturating_sub(o.at.elapsed()).as_secs() });
+        let last_answer = answer.filter(|a| a.2.elapsed() < Duration::from_secs(90)).map(|a| AnswerView { accepted: a.0, message: a.1 });
         GroupStatus {
             server: server.into(), me: inner.me.clone(), lease: l, i_am_host, host_online, my_latest, has_copy: has_copy(server), fenced, busy,
             can_start, auto_failover: share.auto_failover, handover_on_quit: share.handover_on_quit, majority: majority(share.members.len()), members,
+            can_request, incoming_request, outgoing_request, last_answer,
         }
     }
 
@@ -642,6 +805,92 @@ impl GroupNode {
             LeaseState::Hosting => Err(format!("Lo tiene {}.", nice(&l.host_name))),
             LeaseState::Released if fresh(mine) < l.required => Err(format!("La última versión está en la PC de {}.", nice(&l.host_name))),
             LeaseState::Released => Ok(()),
+        }
+    }
+}
+
+impl GroupNode {
+    /* ── Nombre visible de esta PC (solo visual: la identidad es la clave del nodo) ── */
+
+    pub fn set_identity(&self, name: &str, symbol: &str) {
+        *self.inner.name.write().unwrap() = (name.to_string(), symbol.to_string());
+        for server in network::shared_servers() { self.inner.local.changed(&server); }
+    }
+
+    /* ── Pedir ser anfitriona ── */
+
+    fn can_request_check(&self, server: &str) -> Result<(), String> {
+        let inner = &self.inner;
+        let share = network::load_share(server);
+        if !share.enabled { return Err("Este servidor no está compartido.".into()); }
+        if !share.member(&inner.me).map(|m| m.can_host()).unwrap_or(false) { return Err("Esta PC entró como jugadora: para alojarlo tiene que ser coanfitriona.".into()); }
+        if !has_copy(server) { return Err("Esta PC todavía no tiene copia de este servidor.".into()); }
+        if !inner.local.allow_hosting(server) { return Err("En esta PC está desactivado «Esta PC puede ser anfitriona» (Configuración → Red).".into()); }
+        let Some(l) = lease::read(server) else { return Err("Todavía no hay datos del grupo.".into()) };
+        if l.held_by(&inner.me) { return Err("Esta PC ya es la anfitriona.".into()); }
+        if l.state != LeaseState::Hosting { return Err("Nadie lo está alojando: podés encenderlo directamente.".into()); }
+        if !inner.recently_ok(server, &l.host, inner.timing.poll * 3) {
+            return Err(format!("{} no responde. Si se apagó, el grupo lo recupera solo.", nice(&l.host_name)));
+        }
+        if inner.with_state(server, |s| s.busy.is_some()) { return Err("Hay un traspaso en curso.".into()); }
+        Ok(())
+    }
+
+    /// Envía una solicitud para alojar el servidor al anfitrión actual.
+    pub async fn request_host(&self, server: &str) -> Result<String> {
+        let inner = &self.inner;
+        if let Some(o) = inner.with_state(server, |s| s.outgoing.clone()) {
+            bail!("Ya le pediste a {} alojar este servidor. Esperá su respuesta o cancelá la solicitud.", nice(&o.host_name));
+        }
+        self.can_request_check(server).map_err(|e| anyhow!(e))?;
+        let l = lease::read(server).ok_or_else(|| anyhow!("Este servidor no está compartido."))?;
+        let host_name = self.status(server).await.lease.map(|l| l.host_name).unwrap_or_else(|| l.host_name.clone());
+        let req = Req::HostRequest { server: server.into(), name: inner.name(), symbol: inner.symbol(), profile: inner.local.profile() };
+        match inner.rpc(&l.host, &req).await? {
+            Resp::Ok => {}
+            Resp::Err { msg } => bail!(msg),
+            _ => bail!("respuesta inesperada"),
+        }
+        inner.with_state(server, |s| { s.outgoing = Some(Outgoing { host: l.host.clone(), host_name: host_name.clone(), at: Instant::now(), epoch: l.epoch }); s.answer = None; });
+        inner.local.changed(server);
+        Ok(host_name)
+    }
+
+    /// Cancela la solicitud pendiente de esta PC.
+    pub async fn cancel_host_request(&self, server: &str) -> Result<()> {
+        let inner = &self.inner;
+        let Some(o) = inner.with_state(server, |s| s.outgoing.take()) else { return Ok(()) };
+        let _ = inner.rpc_timeout(&o.host, &Req::HostRequestCancel { server: server.into() }, Duration::from_secs(4)).await;
+        inner.local.changed(server);
+        Ok(())
+    }
+
+    /// La anfitriona responde. Aceptar usa el traspaso planificado de siempre: si algo falla,
+    /// el servidor sigue en esta PC con el mundo intacto.
+    pub async fn answer_host_request(&self, server: &str, accept: bool) -> Result<String> {
+        let inner = &self.inner;
+        let Some(r) = inner.with_state(server, |s| s.incoming.take()) else { bail!("Esa solicitud ya no está pendiente.") };
+        inner.local.changed(server);
+        let answer = |accepted: bool, message: String| {
+            let req = Req::HostAnswer { server: server.into(), accepted, message };
+            let node = r.node.clone();
+            async move { let _ = inner.rpc_timeout(&node, &req, Duration::from_secs(4)).await; }
+        };
+        if !accept {
+            answer(false, format!("{} prefirió seguir alojándolo por ahora.", inner.name())).await;
+            inner.local.note(server, &format!("Rechazaste la solicitud de {}.", r.name));
+            return Ok(r.name);
+        }
+        let l = lease::read(server).ok_or_else(|| anyhow!("Este servidor no está compartido."))?;
+        if !l.held_by(&inner.me) || l.epoch != r.epoch { bail!("El servidor ya cambió de anfitriona; la solicitud quedó vieja."); }
+        if !inner.recently_ok(server, &r.node, inner.timing.poll * 3) { bail!("{} no está conectada ahora: no se puede pasar el servidor.", r.name); }
+        answer(true, format!("{} aceptó: preparando el traspaso…", inner.name())).await;
+        match self.handover(server, Some(&r.node)).await {
+            Ok(to) => Ok(to),
+            Err(e) => {
+                answer(false, format!("El traspaso no se pudo completar y el servidor siguió en {}: {e}", inner.name())).await;
+                Err(e)
+            }
         }
     }
 }
@@ -661,6 +910,9 @@ fn rev(s: &ShareConfig) -> Option<u64> { s.card.as_ref().and_then(|c| c.get("rev
 /* ─────────────────────────────── Lógica interna ─────────────────────────────── */
 
 impl Inner {
+    fn name(&self) -> String { self.name.read().unwrap().0.clone() }
+    fn symbol(&self) -> String { self.name.read().unwrap().1.clone() }
+
     fn learn(&self, addr: EndpointAddr) {
         let key = addr.id.to_string();
         if key == self.me { return; }
@@ -728,7 +980,7 @@ impl Inner {
             share.members.iter().filter_map(|m| p.get(&m.node_id).cloned()).collect()
         };
         Info {
-            node: self.me.clone(), name: self.name.clone(), lease: lease::read(server),
+            node: self.me.clone(), name: self.name(), symbol: self.symbol(), lease: lease::read(server),
             latest: if copy { snapshots::latest(server) } else { None }, has_copy: copy,
             running: self.local.is_running(server),
             can_host: copy && share.member(&self.me).map(|m| m.can_host()).unwrap_or(false) && self.local.allow_hosting(server),
@@ -847,7 +1099,42 @@ impl Inner {
         self.local.changed(server);
     }
 
+    /// Vencen las solicitudes viejas, las que perdieron sentido (cambió el anfitrión) y las de
+    /// PCs que dejaron de responder. Si el anfitrión desaparece, actúa la recuperación de siempre.
+    fn expire_requests(&self, server: &str) {
+        let l = lease::read(server);
+        let ttl = self.timing.request_ttl;
+        let dead = self.timing.host_dead;
+        let mut notes = vec![];
+        self.with_state(server, |s| {
+            if let Some(r) = &s.incoming {
+                let gone = s.last_ok.get(&r.node).map(|t| t.elapsed() > dead).unwrap_or(true);
+                let stale = !l.as_ref().map(|l| l.held_by(&self.me) && l.epoch == r.epoch).unwrap_or(false);
+                if r.at.elapsed() > ttl || gone || stale {
+                    if r.at.elapsed() > ttl { notes.push(format!("La solicitud de {} venció sin respuesta.", r.name)); }
+                    s.incoming = None;
+                }
+            }
+            if let Some(o) = &s.outgoing {
+                let epoch_now = l.as_ref().map(|l| l.epoch).unwrap_or(0);
+                let host_gone = s.last_ok.get(&o.host).map(|t| t.elapsed() > dead).unwrap_or(true);
+                if epoch_now != o.epoch {
+                    if l.as_ref().map(|l| l.held_by(&self.me)).unwrap_or(false) { s.answer = Some((true, "Esta PC es ahora la anfitriona.".into(), Instant::now())); }
+                    s.outgoing = None;
+                } else if host_gone {
+                    s.answer = Some((false, format!("{} dejó de responder. Si no vuelve, el grupo recupera el servidor automáticamente.", nice(&o.host_name)), Instant::now()));
+                    s.outgoing = None;
+                } else if o.at.elapsed() > ttl {
+                    s.answer = Some((false, format!("{} no respondió a tiempo. Podés volver a pedirlo.", nice(&o.host_name)), Instant::now()));
+                    s.outgoing = None;
+                }
+            }
+        });
+        for n in notes { self.local.note(server, &n); }
+    }
+
     async fn after_lease_change(self: &Arc<Self>, server: &str) {
+        self.expire_requests(server);
         let l = lease::read(server);
         if let Some(l) = &l {
             if !l.held_by(&self.me) && self.local.is_running(server) && !(l.is_free() && l.host == self.me) {
@@ -867,8 +1154,17 @@ impl Inner {
             async move { (node.clone(), self.rpc_timeout(&node, &req, Duration::from_secs(4)).await) }
         })).await;
         let mut newest_share: Option<(u64, String)> = None;
+        let mut names: Vec<(String, String)> = vec![];
         for (node, r) in results {
-            let Ok(Resp::Info(info)) = r else { continue };
+            let Ok(Resp::Info(info)) = r else {
+                // Contar cortes: respondía hace poco y ahora no.
+                let window = self.timing.poll * 2;
+                self.with_state(server, |s| {
+                    if s.last_ok.get(&node).map(|t| t.elapsed() < window).unwrap_or(false) { *s.drops.entry(node.clone()).or_default() += 1; }
+                });
+                continue;
+            };
+            names.push((node.clone(), info.name.clone()));
             if let Some(a) = &info.addr { self.learn(a.clone()); }
             for p in &info.peers { self.learn(p.clone()); }
             if let Some(remote) = &info.lease {
@@ -879,6 +1175,18 @@ impl Inner {
             }
             self.with_state(server, |s| { s.last_ok.insert(node.clone(), Instant::now()); s.left.remove(&node); s.infos.insert(node, info); });
         }
+        // La PC propietaria guarda los nombres visibles actuales para quien esté desconectado.
+        let me_owner = share.member(&self.me).map(|m| m.role == "propietario").unwrap_or(false);
+        if me_owner && newest_share.is_none() {
+            let my_name = self.name();
+            let mut s2 = network::load_share(server);
+            let mut touched = false;
+            for m in s2.members.iter_mut() {
+                let want = if m.node_id == self.me { Some(my_name.clone()) } else { names.iter().find(|(n, _)| *n == m.node_id).map(|(_, v)| v.clone()) };
+                if let Some(w) = want.filter(|w| !w.trim().is_empty() && *w != m.name) { m.name = w; touched = true; }
+            }
+            if touched { bump_rev(&mut s2); let _ = network::save_share(server, &s2); self.local.changed(server); }
+        }
         if let Some((_, from)) = newest_share {
             if let Ok(Resp::Config { share: remote, .. }) = self.rpc(&from, &Req::Config { server: server.into() }).await {
                 let mut mine = network::load_share(server);
@@ -888,12 +1196,13 @@ impl Inner {
             }
         }
 
+        self.expire_requests(server);
         let l = lease::read(server);
         let copy = has_copy(server);
         let busy = self.with_state(server, |s| s.busy.is_some());
         if std::env::var("H939_DEBUG").is_ok() {
             let ages: Vec<String> = self.with_state(server, |s| s.last_ok.iter().map(|(k, t)| format!("{}:{:.1}", &k[..4], t.elapsed().as_secs_f32())).collect());
-            debug(&format!("{} tick lease={:?} busy={busy} ages={ages:?}", self.name, l.as_ref().map(|l| (l.epoch, &l.host[..4], l.state))));
+            debug(&format!("{} tick lease={:?} busy={busy} ages={ages:?}", self.name(), l.as_ref().map(|l| (l.epoch, &l.host[..4], l.state))));
         }
         if busy { return; }
         match &l {
@@ -962,13 +1271,13 @@ impl Inner {
         let since = self.with_state(server, |s| s.last_ok.get(&l.host).copied()).unwrap_or(self.started);
         if since.elapsed() < self.timing.host_dead { return; }
         let best = self.best_candidate(server, true);
-        debug(&format!("{}: anfitrión sin respuesta hace {:?}; mejor candidata {:?}", self.name, since.elapsed(), best.as_ref().map(|b| &b[..8])));
+        debug(&format!("{}: anfitrión sin respuesta hace {:?}; mejor candidata {:?}", self.name(), since.elapsed(), best.as_ref().map(|b| &b[..8])));
         let Some(best) = best else { return };
         if best != self.me { return; }
         let my_fresh = fresh(&snapshots::latest(server));
         let need = majority(share.members.len());
         let mut votes = 1;
-        let mut voters = vec![self.name.clone()];
+        let mut voters = vec![self.name()];
         for m in share.members.iter().filter(|m| m.node_id != self.me && m.node_id != l.host) {
             let req = Req::Vote { server: server.into(), epoch: l.epoch, candidate: self.me.clone(), fresh: my_fresh };
             if let Ok(Resp::Vote { agree: true }) = self.rpc_timeout(&m.node_id, &req, Duration::from_secs(4)).await {
@@ -976,10 +1285,10 @@ impl Inner {
                 voters.push(m.name.clone());
             }
         }
-        debug(&format!("{}: votos {votes}/{need} ({})", self.name, voters.join(", ")));
+        debug(&format!("{}: votos {votes}/{need} ({})", self.name(), voters.join(", ")));
         if votes < need { return; }
         // Puede que otra PC haya avanzado mientras tanto: `claim` falla si la época cambió.
-        if lease::claim(server, l.epoch, &self.name).is_err() { return; }
+        if lease::claim(server, l.epoch, &self.name()).is_err() { return; }
         self.local.note(server, &format!("{} no responde. Elegida esta PC por mayoría ({}): levantando el servidor acá.", nice(&l.host_name), voters.join(", ")));
         self.broadcast_lease(server).await;
         self.become_host(server, None, None).await;
@@ -990,7 +1299,8 @@ impl Inner {
         let l = lease::read(server);
         let name = server_name(server);
         let busy = self.with_state(server, |s| s.busy.clone());
-        if let Some(b) = busy {
+        let serving_here = l.as_ref().map(|l| l.held_by(&self.me)).unwrap_or(false) && self.local.is_running(server);
+        if let (Some(b), false) = (busy, serving_here) {
             return moving::respond(tcp, &name, &format!("{b}… volvé a entrar en unos segundos.")).await;
         }
         match &l {
@@ -1132,8 +1442,75 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             inner.with_state(&server, |s| { s.left.insert(remote.to_string()); s.last_ok.remove(remote); });
             Resp::Ok
         }
+        Req::HostRequest { server, name, symbol, profile } => {
+            let Some(l) = lease::read(&server).filter(|l| l.held_by(&inner.me)) else { return Resp::Err { msg: "Esta PC ya no aloja el servidor.".into() } };
+            if !network::load_share(&server).member(remote).map(|m| m.can_host()).unwrap_or(false) {
+                return Resp::Err { msg: "Solo las PCs coanfitrionas pueden alojar el servidor.".into() };
+            }
+            let name: String = pcname_or(&name);
+            let symbol = if host939_core::pcname::valid_symbol(&symbol) { symbol } else { String::new() };
+            let ttl = inner.timing.request_ttl;
+            let r = inner.with_state(&server, |s| {
+                if s.busy.is_some() { return Err("La anfitriona está en medio de un traspaso. Probá en un rato.".to_string()); }
+                if let Some(cur) = &s.incoming {
+                    if cur.node != remote && cur.at.elapsed() < ttl {
+                        return Err(format!("Ya hay una solicitud pendiente de {}. Probá en unos minutos.", cur.name));
+                    }
+                }
+                let fresh_req = s.incoming.as_ref().map(|c| c.node != remote).unwrap_or(true);
+                s.incoming = Some(Incoming { node: remote.to_string(), name: name.clone(), symbol, profile, at: Instant::now(), epoch: l.epoch });
+                Ok(fresh_req)
+            });
+            match r {
+                Ok(fresh_req) => {
+                    if fresh_req {
+                        inner.local.note(&server, &format!("{name} quiere alojar este servidor."));
+                        inner.local.host_request(&server, &name);
+                    }
+                    inner.local.changed(&server);
+                    Resp::Ok
+                }
+                Err(msg) => Resp::Err { msg },
+            }
+        }
+        Req::HostRequestCancel { server } => {
+            let name = inner.with_state(&server, |s| if s.incoming.as_ref().map(|c| c.node == remote).unwrap_or(false) { s.incoming.take().map(|c| c.name) } else { None });
+            if let Some(n) = name { inner.local.note(&server, &format!("{n} canceló su solicitud.")); inner.local.changed(&server); }
+            Resp::Ok
+        }
+        Req::HostAnswer { server, accepted, message } => {
+            let mine = inner.with_state(&server, |s| {
+                if s.outgoing.as_ref().map(|o| o.host == remote).unwrap_or(false) {
+                    if !accepted { s.outgoing = None; }
+                    s.answer = Some((accepted, message.clone(), Instant::now()));
+                    true
+                } else if !accepted && s.answer.as_ref().map(|a| a.0).unwrap_or(false) {
+                    // El traspaso aceptado falló después: se avisa igual.
+                    s.answer = Some((false, message.clone(), Instant::now()));
+                    true
+                } else { false }
+            });
+            if mine { inner.local.note(&server, &message); inner.local.changed(&server); }
+            Resp::Ok
+        }
+        Req::Prefetch { server, snapshot } => {
+            let cur = lease::read(&server);
+            if !cur.as_ref().map(|c| c.held_by(remote)).unwrap_or(false) { return Resp::Err { msg: "Quien pide copiar no es la anfitriona según esta PC.".into() }; }
+            if !has_copy(&server) || !inner.local.allow_hosting(&server) { return Resp::Err { msg: "Esta PC no puede hostear este servidor.".into() }; }
+            if std::env::var("H939_TEST_FAIL_PREFETCH").is_ok() { return Resp::Err { msg: "falla simulada al copiar".into() }; }
+            // Una sola copia a la vez (la sincronización periódica espera).
+            for _ in 0..600 {
+                if inner.with_state(&server, |s| if s.syncing { false } else { s.syncing = true; true }) { break; }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let r = inner.pull(&server, remote, &snapshot).await;
+            inner.with_state(&server, |s| s.syncing = false);
+            match r { Ok(_) => Resp::Ok, Err(e) => Resp::Err { msg: format!("no se pudo copiar el mundo: {e}") } }
+        }
     }
 }
+
+fn pcname_or(name: &str) -> String { host939_core::pcname::clean_name(name).unwrap_or_else(|| "Otra PC".into()) }
 
 #[derive(Clone)]
 struct SyncH(Arc<Inner>);

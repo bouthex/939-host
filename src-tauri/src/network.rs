@@ -86,12 +86,26 @@ impl LocalHost for AppLocal {
         let _ = self.0.emit("share-changed", serde_json::json!({ "id": server }));
         let _ = self.0.emit("server-changed", serde_json::json!({ "id": server }));
     }
+    fn profile(&self) -> host939_cluster::HostProfile {
+        let probe = self.0.state::<Probe>();
+        let hw = host939_core::hardware::snapshot(&probe);
+        let live = host939_core::hardware::live(&probe, 0);
+        host939_cluster::HostProfile {
+            cpu: hw.cpu_model.clone(), cores: hw.logical_cores as u32, ram_total_mb: live.ram_total_mb, ram_free_mb: live.ram_available_mb,
+            cpu_score: hw.benchmark.as_ref().map(|b| b.cpu_single_score),
+            disk_free_gb: hw.disks.iter().find(|d| d.is_data_disk).map(|d| d.free_gb),
+        }
+    }
+    fn host_request(&self, server: &str, from_name: &str) {
+        let _ = self.0.emit("host-request", serde_json::json!({ "id": server, "name": from_name }));
+        // Hace titilar el botón en la barra de tareas si la ventana está abierta pero sin foco.
+        if let Some(w) = self.0.get_webview_window("main") {
+            if !w.is_focused().unwrap_or(false) { let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational)); }
+        }
+    }
 }
 
-fn node_name() -> String {
-    let s = settings::load();
-    if s.node_name.trim().is_empty() { sysinfo::System::host_name().unwrap_or_else(|| "Mi PC".into()) } else { s.node_name }
-}
+fn node_name() -> String { settings::ensure_pc_identity().node_name }
 
 fn p2p_err(context: &str, e: anyhow::Error) -> AppError {
     AppError::new("p2p", format!("{context}: {e}")).with_detail(format!("{e:#}"))
@@ -126,6 +140,8 @@ pub fn start(app: AppHandle) {
         }.await;
         match r {
             Ok(node) => {
+                let s = settings::load();
+                node.set_identity(&s.node_name, &s.node_symbol);
                 for sid in network::shared_servers() {
                     let port = route_port(&sid);
                     if let Err(e) = node.open_route(&sid, port).await {
@@ -318,4 +334,64 @@ pub async fn remote_remove(id: String, cluster: State<'_, Cluster>) -> AppResult
         std::fs::rename(paths::server_dir(&id), paths::trash_slot(&format!("{id}-grupo"))).map_err(|e| AppError::io("No se pudo quitar", e))?;
     }
     Ok(())
+}
+
+/* ── Nombre visible de esta PC y solicitudes para alojar ── */
+
+/// Cambia el nombre visible y el símbolo de esta PC. Solo visual: la identidad, las claves y los
+/// permisos no cambian.
+#[tauri::command]
+pub fn pc_identity_set(name: String, symbol: String, cluster: State<'_, Cluster>) -> AppResult<settings::AppSettings> {
+    let name = host939_core::pcname::clean_name(&name).ok_or_else(|| AppError::invalid("Escribí un nombre (hasta 24 caracteres)."))?;
+    if !host939_core::pcname::valid_symbol(&symbol) { return Err(AppError::invalid("Símbolo desconocido.")); }
+    let mut s = settings::load();
+    s.node_name = name;
+    s.node_symbol = symbol;
+    settings::save(&s)?;
+    if let Some(n) = cluster.try_node() { n.set_identity(&s.node_name, &s.node_symbol); }
+    Ok(s)
+}
+
+/// Un nombre al azar distinto del actual (para el botón de dado).
+#[tauri::command]
+pub fn pc_name_random(current: String) -> String {
+    for _ in 0..8 { let n = host939_core::pcname::random_name(); if n != current { return n; } }
+    host939_core::pcname::random_name()
+}
+
+#[tauri::command]
+pub async fn host_request_send(id: String, cluster: State<'_, Cluster>) -> AppResult<String> {
+    let node = cluster.node().await?.clone();
+    node.request_host(&id).await.map_err(|e| AppError::new("request", e.to_string()))
+}
+
+#[tauri::command]
+pub async fn host_request_cancel(id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    let node = cluster.node().await?.clone();
+    node.cancel_host_request(&id).await.map_err(|e| AppError::new("request", e.to_string()))
+}
+
+#[tauri::command]
+pub async fn host_request_answer(id: String, accept: bool, cluster: State<'_, Cluster>) -> AppResult<String> {
+    let node = cluster.node().await?.clone();
+    node.answer_host_request(&id, accept).await.map_err(|e| AppError::new("handover", e.to_string()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRequest { pub id: String, pub server_name: String, pub request: host939_cluster::RequestView }
+
+/// Solicitudes que esperan respuesta de esta PC (en todos sus servidores).
+#[tauri::command]
+pub async fn host_requests_pending(cluster: State<'_, Cluster>) -> AppResult<Vec<PendingRequest>> {
+    let Some(node) = cluster.try_node() else { return Ok(vec![]) };
+    let mut out = vec![];
+    for sid in network::shared_servers() {
+        let st = node.status(&sid).await;
+        if let Some(r) = st.incoming_request {
+            let server_name = instance::load(&sid).map(|c| c.name).unwrap_or_else(|_| "Servidor".into());
+            out.push(PendingRequest { id: sid, server_name, request: r });
+        }
+    }
+    Ok(out)
 }

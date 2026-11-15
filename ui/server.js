@@ -8,6 +8,7 @@ const tabDraw = {};
 routes.server = async function renderServer() {
   const id = state.params.id;
   state.server = await invoke('get_server', { id });
+  state.share = await invoke('share_status', { id }).catch(() => null);
   if (!TABS.some(([k]) => k === state.tab)) state.tab = 'summary';
   main.innerHTML = `<div class="page wide">
     <div class="crumbs"><button data-a="nav" data-route="servers">Servidores</button><span>/</span><span class="ellipsis">${esc(state.server.config.name)}</span></div>
@@ -30,13 +31,16 @@ A.tab = async (el) => {
   while (leaveHooks.length) { try { leaveHooks.pop()(); } catch { /* nada */ } }
   state.tab = el.dataset.v;
   document.querySelectorAll('.tabs .tab').forEach((t) => { const on = t.dataset.v === state.tab; t.classList.toggle('on', on); t.setAttribute('aria-selected', on); });
-  drawTab();
+  await drawTab();
+  const box = $('#srv-tab');
+  if (box) { box.classList.remove('tab-enter'); void box.offsetWidth; box.classList.add('tab-enter'); }
 };
 function openTab(tab) { const b = document.querySelector(`.tabs .tab[data-v="${tab}"]`); if (b) A.tab(b); }
 
 async function refreshServer() {
   try {
     state.server = await invoke('get_server', { id: state.params.id });
+    state.share = await invoke('share_status', { id: state.params.id }).catch(() => state.share);
     drawHeader();
     const pl = document.querySelector('.tabs .tab[data-v="players"]');
     if (pl) pl.innerHTML = `Jugadores${state.server.status === 'running' && state.server.players.length ? `<span class="n">${state.server.players.length}</span>` : ''}`;
@@ -55,22 +59,36 @@ function drawHeader() {
   const busy = ['restarting', 'stopping'].includes(s.key) || v.installing || !c.installed;
   const btn = (a, ic, label, opts = {}) => `<button class="btn ${opts.pri ? 'pri' : ''}" data-a="${a}" data-id="${id}" ${opts.disabled ? 'disabled' : ''} ${opts.title ? `title="${esc(opts.title)}"` : ''}>${icon(ic, 16)}${label}</button>`;
   let ctl = '';
-  if (s.key === 'stopped' || s.key === 'error') {
+  const g = state.share?.enabled ? state.share.group : null;
+  const hostedElsewhere = g && !g.iAmHost && g.lease?.state === 'hosting' && !isActive(v);
+  if (hostedElsewhere) {
+    const host = g.members.find((m) => m.isHost);
+    const canReq = g.canRequest && g.canRequest.Ok !== undefined;
+    const coHost = g.members.find((m) => m.isMe)?.role !== 'jugador';
+    ctl = `<span class="host-chip row" style="gap:8px">${pcAvatar(host?.symbol, 26)}<span class="sm"><span class="t3">Lo aloja</span> <b>${esc(host?.name || g.lease.hostName || 'otra PC')}</b>${g.hostOnline ? '' : ' <span class="t3">· no responde</span>'}</span></span>`
+      + (g.outgoingRequest ? `<button class="btn" disabled>${SHAPES.ring}Solicitud enviada</button>`
+        : coHost ? `<button class="btn pri" data-a="req-send" data-id="${id}" ${canReq ? '' : `disabled title="${esc(g.canRequest?.Err || '')}"`}>${icon('host', 16)}Solicitar ser anfitrión</button>` : '');
+  } else if (s.key === 'stopped' || s.key === 'error') {
     ctl = `${s.key === 'error' && c.installed ? btn('repair', 'wrench', 'Reparar') : ''}${btn('start', 'play', 'Iniciar', { pri: true, disabled: busy })}`;
   } else {
     const pauseBtn = s.key === 'paused' ? btn('resume', 'play', 'Reanudar', { pri: true })
       : btn('pause', 'pause', 'Pausar', { disabled: s.key !== 'running' && s.key !== 'saving' || !v.pauseSupported, title: v.pauseSupported ? 'Congela el mundo con /tick freeze; nadie se desconecta' : 'Pausar necesita Minecraft 1.20.3 o posterior' });
     ctl = `${pauseBtn}${btn('restart', 'restart', 'Reiniciar', { disabled: busy || s.key === 'starting' || !!v.countdown })}${btn('stop', 'stop', s.key === 'stopping' ? 'Deteniendo…' : 'Detener', { disabled: busy || !!v.countdown })}`;
   }
+  const changed = state.lastState && state.lastState.id === c.id && state.lastState.key !== s.key;
+  state.lastState = { id: c.id, key: s.key };
   const meta = [`${loaderName(c.loader)} ${esc(c.mcVersion)}${c.javaMajor ? ` · Java ${c.javaMajor}` : ''}`, `<span class="mono">localhost:${c.port}</span>`];
   if (v.status === 'running') meta.push(`Encendido hace ${fmtUptime(v.startedAt)}`);
   if (s.detail) meta.push(esc(s.detail));
   el.innerHTML = `<div class="srv-head">
-      <div class="srv-title"><h1 class="ellipsis">${esc(c.name)}</h1><div class="srv-meta">${stateHTML(v, true)}${meta.map((m) => `<span>${m}</span>`).join('')}</div></div>
+      <div class="srv-title"><h1 class="ellipsis">${esc(c.name)}</h1><div class="srv-meta">${hostedElsewhere ? `<span class="statepill">${SHAPES.dot}En otra PC</span>` : stateHTML(v, true).replace('class="statepill"', `class="statepill${changed ? ' changed' : ''}"`)}${meta.map((m) => `<span>${m}</span>`).join('')}</div></div>
       <div class="ctl">${ctl}<button class="btn icon" data-a="folder" data-which="server" title="Abrir la carpeta del servidor" aria-label="Abrir la carpeta del servidor">${icon('folder', 16)}</button></div></div>
     ${v.countdown ? `<div class="countdown" role="status"><div class="row"><span class="num" id="cd-num">${cdLeft(v.countdown)}</span><div><b>${v.countdown.kind === 'restart' ? 'El servidor se reinicia' : 'El servidor se detiene'} en <span id="cd-txt">${cdLeft(v.countdown)}</span> segundos</b><div class="sm t2">Los jugadores ven la cuenta regresiva en el chat. El mundo se guarda antes de cerrar.</div></div></div>
       <div class="btns"><button class="btn s" data-a="cd-cancel" data-id="${id}">Cancelar</button><button class="btn s pri" data-a="cd-now" data-id="${id}" data-kind="${esc(v.countdown.kind)}">${v.countdown.kind === 'restart' ? 'Reiniciar ya' : 'Detener ya'}</button></div></div>` : ''}
-    ${v.installing || (prog && !prog.done) ? `<div class="card pad stack"><div class="spread"><b>${esc(prog?.message || 'Preparando la instalación')}</b><span class="mono sm">${Math.round((prog?.fraction || 0) * 100)} %</span></div><div class="bar"><i style="width:${Math.round((prog?.fraction || 0) * 100)}%"></i></div></div>` : ''}
+    ${v.installing || (prog && !prog.done) ? `<div class="card pad row" style="gap:14px"><span id="inst-ring">${pring(prog?.fraction || 0, 28, !prog)}</span><div class="grow stack" style="gap:6px"><div class="spread"><b>${esc(prog?.message || 'Preparando la instalación')}</b><span class="mono sm">${Math.round((prog?.fraction || 0) * 100)} %</span></div><div class="bar"><i style="width:${Math.round((prog?.fraction || 0) * 100)}%"></i></div></div></div>` : ''}
+    ${g?.outgoingRequest ? `<div class="note">${SHAPES.ring}<div class="grow"><b>Le pediste a ${esc(g.outgoingRequest.hostName)} alojar este servidor</b><span class="sm t2">Le apareció un aviso en su 939 Host. La solicitud vence en ${fmtDuration(g.outgoingRequest.expiresInSecs)}.</span></div><button class="btn s" data-a="req-cancel" data-id="${id}">Cancelar</button></div>` : ''}
+    ${g?.lastAnswer && !g.outgoingRequest ? `<div class="note ${g.lastAnswer.accepted ? '' : 'strong'}">${icon(g.lastAnswer.accepted ? 'check' : 'info')}<div class="grow"><b>${g.lastAnswer.accepted ? 'Solicitud aceptada' : 'Solicitud sin éxito'}</b><span class="sm t2">${esc(g.lastAnswer.message)}</span></div></div>` : ''}
+    ${g?.incomingRequest ? `<div class="note strong">${pcAvatar(g.incomingRequest.symbol, 32)}<div class="grow"><b>${esc(g.incomingRequest.name)} quiere alojar este servidor</b><span class="sm t2">${g.incomingRequest.warnings.length ? `${g.incomingRequest.warnings.length === 1 ? '1 aviso' : `${g.incomingRequest.warnings.length} avisos`} para revisar antes de decidir.` : 'No vemos limitaciones importantes.'}</span></div><div class="btns"><button class="btn s" data-a="req-no" data-id="${id}">Rechazar</button><button class="btn s pri" data-a="req-review" data-id="${id}">Revisar</button></div></div>` : ''}
     ${v.lastError && !v.installing && !isActive(v) ? `<div class="note strong">${icon('alert')}<div class="grow"><b>${!c.installed ? 'La instalación no se completó' : 'El servidor se detuvo con un error'}</b><span class="sm t2">${esc(v.lastError)}</span></div>
       <div class="btns">${!c.installed ? `<button class="btn s pri" data-a="reinstall">Reintentar</button>` : `<button class="btn s" data-a="tab" data-v="console">Ver consola</button><button class="btn s pri" data-a="repair" data-id="${id}">${icon('wrench', 14)}Reparar</button>`}</div></div>` : ''}
     ${v.needsRestart && isActive(v) ? `<div class="note">${icon('restart')}<div class="grow"><b>Hay cambios que se aplican al reiniciar</b><span class="sm t2">Ajustes o mods nuevos quedan activos después de reiniciar el servidor.</span></div><button class="btn s" data-a="restart" data-id="${id}">Reiniciar</button></div>` : ''}`;
@@ -107,6 +125,16 @@ async function stopFlow(id, kind) {
   invoke(cmd, { id, seconds }).then((ok) => { if (ok && seconds) toast(kind === 'restart' ? 'Reiniciando…' : 'Guardando y deteniendo…'); }).catch(fail);
   setTimeout(() => { if (state.route === 'server') refreshServer(); else if (state.route === 'servers') routes.servers(); }, 400);
 }
+A['req-send'] = async (el) => {
+  el.disabled = true;
+  try { const host = await invoke('host_request_send', { id: el.dataset.id }); toast(`Solicitud enviada a ${host}`); } catch (e) { fail(e); }
+  refreshServer();
+};
+A['req-cancel'] = async (el) => {
+  el.disabled = true;
+  try { await invoke('host_request_cancel', { id: el.dataset.id }); toast('Solicitud cancelada'); } catch (e) { fail(e); }
+  refreshServer();
+};
 A.restart = (el) => stopFlow(el.dataset.id || state.params.id, 'restart');
 A.pause = async (el) => { el.disabled = true; try { await invoke('pause_server', { id: el.dataset.id }); toast('Mundo en pausa. Los jugadores siguen conectados.'); } catch (e) { fail(e); } refreshServer(); };
 A.resume = async (el) => { el.disabled = true; try { await invoke('resume_server', { id: el.dataset.id }); toast('Mundo reanudado'); } catch (e) { fail(e); } refreshServer(); };
@@ -126,6 +154,8 @@ A.reinstall = async () => {
 tabDraw.summary = async (el) => {
   const v = state.server, c = v.config;
   const running = v.status === 'running';
+  const gg = state.share?.enabled ? state.share.group : null;
+  const remoteHost = gg && !gg.iAmHost && gg.lease?.state === 'hosting' && !isActive(v) ? (gg.members.find((m) => m.isHost)?.name || gg.lease.hostName) : null;
   el.innerHTML = `<div class="stack" style="gap:16px">
     <div class="kpis">
       <div class="card kpi"><span class="l">Jugadores</span><span class="v">${running ? v.players.length : '—'}<small>de ${c.maxPlayers}</small></span></div>
@@ -146,7 +176,7 @@ tabDraw.summary = async (el) => {
       <div class="stack" style="gap:16px">
         <div class="card"><div class="card-head"><h2>Conectados ahora</h2>${running ? '<span class="live"><span class="dot"></span>En vivo</span>' : ''}</div>
           ${running && v.players.length ? `<div class="list">${v.players.map((p) => `<button class="li" data-a="open-player" data-name="${esc(p)}"><span class="avatar" data-skin="${esc(p)}">${esc(initials(p))}</span><span class="grow b">${esc(p)}</span>${icon('chev', 16)}</button>`).join('')}</div>`
-            : `<div class="pad sm t2">${running ? 'No hay nadie conectado.' : 'El servidor está detenido.'}</div>`}</div>
+            : `<div class="pad sm t2">${remoteHost ? `Se está jugando en la PC de <b>${esc(remoteHost)}</b>. Entrá con la dirección del grupo (pestaña Grupo).` : running ? 'No hay nadie conectado.' : 'El servidor está detenido.'}</div>`}</div>
         <div class="card pad stack"><div class="spread"><h2>Configuración</h2><button class="btn s ghost" data-a="tab" data-v="settings">Editar${icon('chev', 14)}</button></div>
           <div><div class="kv"><span class="k">Distancias</span><span>${c.viewDistance} de visión · ${c.simulationDistance} de simulación</span></div>
           <div class="kv"><span class="k">Lista blanca</span><span>${c.whitelist ? 'Activada' : 'Desactivada'}</span></div>
@@ -286,10 +316,13 @@ tabDraw.group = async (el) => {
         <div class="card pad stack"><h2>Anfitrión</h2>
           ${g.busy ? `<div class="note">${SHAPES.ring}<div class="grow"><b>${esc(g.busy)}…</b></div></div>` : ''}
           ${g.fenced ? `<div class="note strong">${icon('alert')}<div class="grow"><b>Servidor detenido en esta PC por seguridad</b><span class="sm t2">Se perdió el contacto con el grupo u otra PC tomó el servidor. Tu copia quedó como punto de seguridad.</span></div></div>` : ''}
+          <p class="sm t2" style="margin:0">939 Host elige solo la mejor PC cuando hace falta. ${g.iAmHost ? 'Cualquier coanfitrión puede pedirte alojarlo: te va a llegar un aviso para aceptar o rechazar.' : 'Si querés alojarlo desde esta PC, pedíselo a la anfitriona: ella decide.'}</p>
           <div><div class="kv"><span class="k">Ahora</span><span><b>${esc(hostName)}</b>${l ? ` <span class="sm t3">· ${esc(hostState)} · época ${l.epoch}</span>` : ''}</span></div>
           ${g.myLatest ? `<div class="kv"><span class="k">Último estado en esta PC</span><span>${esc(ago(g.myLatest.createdAt))}</span></div>` : ''}</div>
           <div class="btns">
             ${g.iAmHost ? `<button class="btn" data-a="handover" ${eligible.length ? '' : 'disabled title="No hay otra PC coanfitriona conectada"'}>${icon('restart', 16)}Pasar a otra PC…</button><button class="btn" data-a="release">Guardar y soltar</button>` : ''}
+            ${!g.iAmHost && g.hasCopy && l && l.state === 'hosting' && g.hostOnline && !g.outgoingRequest ? `<button class="btn pri" data-a="req-send" data-id="${esc(state.params.id)}" ${g.canRequest?.Ok !== undefined ? '' : `disabled title="${esc(g.canRequest?.Err || '')}"`}>${icon('host', 16)}Solicitar ser anfitrión</button>` : ''}
+            ${g.outgoingRequest ? `<span class="row sm" style="gap:8px">${SHAPES.ring}Esperando a ${esc(g.outgoingRequest.hostName)}</span><button class="btn" data-a="req-cancel" data-id="${esc(state.params.id)}">Cancelar solicitud</button>` : ''}
             ${!g.iAmHost && g.hasCopy && l && l.state === 'hosting' && !g.hostOnline ? `<button class="btn" data-a="take-here">Recuperar aquí</button>` : ''}
             ${!g.iAmHost && g.hasCopy ? `<button class="btn ghost" data-a="group-sync">${icon('refresh', 16)}Sincronizar ahora</button>` : ''}
           </div>
@@ -300,9 +333,9 @@ tabDraw.group = async (el) => {
       </div>
       <div class="stack" style="gap:16px">
         <div class="card"><div class="card-head"><h2>PCs del grupo</h2><span class="sm t3">${online} de ${g.members.length} conectadas</span></div><div class="list">
-          ${g.members.map((m) => `<div class="li"><span class="avatar">${icon('pc', 16)}</span><div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(m.name)}</b>${m.isMe ? '<span class="sm t3">(vos)</span>' : ''}${m.isHost ? '<span class="chip s fill">Anfitrión</span>' : ''}<span class="chip s">${ROLE[m.role] || esc(m.role)}</span></div>
+          ${g.members.map((m) => `<div class="li">${pcAvatar(m.symbol, 32, m.isHost ? 'inv' : '')}<div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(m.name)}</b>${m.isMe ? '<span class="sm t3">(vos)</span>' : ''}${m.isHost ? '<span class="chip s fill">Anfitrión</span>' : ''}<span class="chip s">${ROLE[m.role] || esc(m.role)}</span></div>
             <div class="sm t3">${m.online ? `${SHAPES.dot.replace('class="dot"', 'class="dot" style="display:inline-block;width:6px;height:6px;margin-right:4px"')}Conectada${m.path ? ` · ${m.path === 'relay' ? 'por relay' : 'directa'}${m.rttMs != null ? ` · ${m.rttMs} ms` : ''}` : ''}` : 'Desconectada'}${m.canHost ? ` · estado ${esc(ago(m.latestAt))}` : ''}</div></div>
-            ${!m.isMe && m.role !== 'propietario' && !m.isHost ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}">Quitar</button>` : ''}</div>`).join('')}</div></div>
+            ${m.isMe ? `<button class="btn s icon ghost" data-a="identity" title="Cambiar el nombre de esta PC" aria-label="Cambiar el nombre de esta PC">${icon('edit', 15)}</button>` : ''}${!m.isMe && m.role !== 'propietario' && !m.isHost ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}">Quitar</button>` : ''}</div>`).join('')}</div></div>
         <div class="card pad stack"><h2>Invitar</h2>${inviteBtns}
           ${st.invites.length ? `<div><div class="sec" style="margin:6px 0">Invitaciones sin usar</div>${st.invites.map((i) => `<div class="kv"><span>${ROLE[i.role] || 'Jugador'} <span class="sm t3">${esc(fmtDate(i.createdAt))}</span></span><button class="btn s ghost" data-a="invite-revoke" data-secret="${esc(i.secret)}">Revocar</button></div>`).join('')}</div>` : ''}</div>
       </div></div></div>`;
@@ -432,7 +465,7 @@ const updateJvmPreview = debounce(async () => {
   if (!el || !srvEdit.cfg) return;
   try { el.textContent = `java ${await invoke('jvm_preview', { config: srvEdit.cfg })} -jar … nogui`; } catch { /* nada */ }
 }, 150);
-A['ss-toc'] = (el) => { el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); document.getElementById(`ss-${el.dataset.v}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+A['ss-toc'] = (el) => { el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); document.getElementById(`ss-${el.dataset.v}`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); };
 A['ss-discard'] = () => { srvEdit.cfg = null; drawTab(); };
 A['ss-save'] = async () => {
   const e = clone(srvEdit.cfg);
