@@ -86,6 +86,14 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // La ventana se crea acá (no desde la configuración) para poder habilitar, solo en las
+            // pruebas automáticas de Windows, el puerto de depuración de WebView2.
+            let wcfg = app.config().app.windows.iter().find(|w| w.label == "main").cloned().expect("ventana main");
+            let mut wb = tauri::WebviewWindowBuilder::from_config(app.handle(), &wcfg)?;
+            if let Some(port) = std::env::var("H939_E2E_DEVTOOLS_PORT").ok().and_then(|p| p.parse::<u16>().ok()) {
+                wb = wb.additional_browser_args(&format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port}"));
+            }
+            wb.build()?;
             paths::init(data_root()).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             let node = identity::load_or_create_node().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             app.manage(node);

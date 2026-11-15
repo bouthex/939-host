@@ -97,8 +97,11 @@ async fn full_server_lifecycle() {
     // 5. Backup en caliente (save-off → save-all flush → copia → save-on)
     let info = backup::create(&mgr, &cfg.id, "en caliente", "manual", &cfg.mc_version).expect("backup");
     let zip = paths::server_backups_dir(&cfg.id).join(&info.file);
-    let mut z = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
-    assert!(z.by_name("world/level.dat").is_ok());
+    {
+        // Se cierra enseguida: en Windows un archivo abierto impide mover la carpeta después.
+        let mut z = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+        assert!(z.by_name("world/level.dat").is_ok());
+    }
     let log = mgr.console(&cfg.id).join("\n");
     assert!(log.contains("> save-off") && log.contains("> save-on") && log.contains("Saved the game"));
     println!("✔ backup en caliente {} ({:.1} MB) con save-off/save-on", info.file, info.size_mb);

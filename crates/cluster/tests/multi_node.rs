@@ -342,7 +342,14 @@ fn real_minecraft_handover() {
     println!("✔ A encendió un servidor 26.2 real");
     a.ok(&format!("cmd {sid} scoreboard objectives add traspaso dummy"));
     a.ok(&format!("cmd {sid} scoreboard players set marcador traspaso 939"));
-    let st = slp(route);
+    // Como el juego, se reintenta: la primera consulta puede llegar mientras la ruta se arma.
+    let mut st = String::new();
+    for i in 0..10 {
+        st = slp(route);
+        if st.contains("\"protocol\"") { if i > 0 { println!("  (la ruta respondió al intento {})", i + 1); } break; }
+        println!("  intento {}: {st}", i + 1);
+        std::thread::sleep(Duration::from_secs(1));
+    }
     assert!(st.contains("\"protocol\""), "estado por la ruta de B: {st}");
     println!("✔ B ve el servidor de A por 127.0.0.1:{route}");
     let t0 = Instant::now();

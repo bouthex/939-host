@@ -11,6 +11,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "939 Host",
         "width": 1280,
         "height": 820,

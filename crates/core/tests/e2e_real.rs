@@ -78,8 +78,12 @@ fn slp_once(port: u16) -> Result<String, String> {
 
 fn slp_status(port: u16) -> String {
     let mut last = String::new();
-    for _ in 0..10 {
-        match slp_once(port) { Ok(s) if s.contains("\"version\"") => return s, Ok(s) => last = s, Err(e) => last = e }
+    for i in 0..10 {
+        match slp_once(port) {
+            Ok(s) if s.contains("\"version\"") => { if i > 0 { println!("  (estado respondió al intento {}; antes: {last})", i + 1); } return s }
+            Ok(s) => last = s,
+            Err(e) => last = e,
+        }
         std::thread::sleep(Duration::from_secs(1));
     }
     format!("sin respuesta en el puerto {port}: {last}")
