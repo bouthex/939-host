@@ -176,3 +176,23 @@ traspaso.
 Nota: la máquina Linux de una prueba intermedia no pudo preparar Java para Linux (la app solo
 se distribuye para Windows); el traspaso se canceló de forma segura y el servidor siguió en la
 PC anfitriona. Por eso la prueba definitiva usa dos Windows.
+
+## 11. «Error de protocolo de red» y cliente real de Minecraft (15/11/2026)
+
+**Diagnóstico con datos reales:** registros del servidor «Eventos» (Fabric 26.2, sin mods) en la
+PC del usuario, leídos sin modificar nada. Minecraft autentica a Bouthex y 1–2 s después
+`lost connection: Disconnected`, sin «joined the game» y sin errores del servidor: corta el
+propio juego. El usuario confirmó que entró con el perfil del modpack 939 Z. Causa: mods en el
+cliente que el servidor no tiene. No es una falla de red de 939 Host.
+
+**Prueba con cliente real** (GitHub Actions, Linux con pantalla virtual y OpenGL por software;
+cliente oficial descargado de Mojang y verificado por SHA-1, cuenta sin conexión):
+
+| Servidor creado por 939 Host | Comprobación de conexión de 939 Host | Cliente oficial 26.2 |
+|---|---|---|
+| Vanilla 26.2 | ✔ protocolo 776, 8 ms | ✔ entró («Jugador939 joined the game») |
+| Fabric 26.2 sin mods (igual a «Eventos») | ✔ protocolo 776, 20 ms | ✔ entró |
+
+La detección de entrada fallida se probó con las líneas reales del servidor del usuario
+(prueba `explains_client_side_rejection_from_real_log`). No se reprodujo el error con un cliente
+modificado en CI.
