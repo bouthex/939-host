@@ -225,6 +225,8 @@ fn main() {
             network::host_requests_pending,
             network::servers_hosting,
             v3::pause_server,
+            v3::server_check_connection,
+            v3::server_clear_join_issue,
             v3::resume_server,
             v3::stop_server_warned,
             v3::restart_server_warned,

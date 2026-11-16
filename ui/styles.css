@@ -18,12 +18,17 @@
   --ease-out: cubic-bezier(.2, .8, .2, 1);
   --spring: cubic-bezier(.34, 1.4, .5, 1);
   --console-size: 13px;
+  /* Colores funcionales: muy desaturados, solo en detalles (íconos, puntos, bordes, fondos tenues). */
+  --go: #5B7A66; --go-bg: #EFF3F0; --hold: #8C7752; --hold-bg: #F6F2EA; --cycle: #5C6C80; --cycle-bg: #EEF1F5;
+  --halt: #9A5E58; --halt-bg: #F7EFEE; --danger: #A34E47; --danger-bg: #F8EDEC;
   color-scheme: light;
 }
 :root[data-theme="dark"] {
   --page: #090909; --bg: #111111; --side: #0D0D0D; --surface: #191919; --line: #222222; --line2: #2F2F2F;
   --text: #EDEDED; --text2: #A8A8A8; --text3: #8A8A8A; --inv: #EDEDED; --invtext: #0A0A0A; --hover: #1C1C1C;
   --term: #060606; --termline: #1C1C1C; --termtext: #E2E2E2; --termdim: #6E6E6E; --overlay: rgba(0,0,0,.6);
+  --go: #8DAF98; --go-bg: rgba(141,175,152,.09); --hold: #C8B48C; --hold-bg: rgba(200,180,140,.09); --cycle: #9AAAC0; --cycle-bg: rgba(154,170,192,.09);
+  --halt: #CF918A; --halt-bg: rgba(207,145,138,.09); --danger: #E0948C; --danger-bg: rgba(224,148,140,.10);
   color-scheme: dark;
 }
 :root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
@@ -502,3 +507,53 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 .next-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; counter-reset: ns; }
 .next-steps li { display: grid; grid-template-columns: 24px 1fr; column-gap: 12px; row-gap: 2px; counter-increment: ns; }
 .next-steps li::before { content: counter(ns); grid-row: span 2; width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+
+/* ═════════════ Jerarquía y colores funcionales ═════════════
+   Cada acción tiene un tono (data-tone). El color aparece en el ícono y, al pasar el mouse, en
+   un borde y un fondo muy tenues. La acción principal conserva el relleno sólido monocromo. */
+.btn[data-tone="go"] { --tone: var(--go); --tone-bg: var(--go-bg); }
+.btn[data-tone="hold"] { --tone: var(--hold); --tone-bg: var(--hold-bg); }
+.btn[data-tone="cycle"] { --tone: var(--cycle); --tone-bg: var(--cycle-bg); }
+.btn[data-tone="halt"] { --tone: var(--halt); --tone-bg: var(--halt-bg); }
+.btn[data-tone="danger"] { --tone: var(--danger); --tone-bg: var(--danger-bg); }
+.btn[data-tone]:not(.pri) svg { color: var(--tone); }
+.btn[data-tone]:not(.pri):hover { background: var(--tone-bg); border-color: color-mix(in srgb, var(--tone) 38%, var(--line2)); }
+.btn[data-tone]:not(.pri):active { background: color-mix(in srgb, var(--tone) 14%, var(--bg)); }
+.btn[data-tone="danger"]:not(.pri) { color: var(--danger); }
+.btn.pri[data-tone] svg { color: color-mix(in srgb, var(--tone) 55%, var(--invtext)); }
+.btn.pri[data-tone]:hover { opacity: 1; background: color-mix(in srgb, var(--inv) 88%, var(--tone)); }
+/* Secundarias de verdad: sin borde hasta el hover. */
+.btn.quiet { border-color: transparent; background: none; color: var(--text2); }
+.btn.quiet:hover { background: var(--hover); color: var(--text); }
+/* Cargando: el ícono se reemplaza por el indicador en escalón y el botón no cambia de ancho. */
+.btn[aria-busy="true"] { pointer-events: none; }
+.btn[aria-busy="true"] svg { visibility: hidden; }
+.btn[aria-busy="true"]::before { content: ""; position: absolute; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+.btn { position: relative; }
+.btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--text) 60%, transparent); outline-offset: 2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn[aria-busy="true"]::before { animation-duration: 2.4s; } }
+
+/* Estado del servidor: el punto toma el tono; el texto sigue monocromo para leerse bien. */
+[data-k="running"] .dot { background: var(--go); box-shadow: 0 0 0 3px var(--go-bg); }
+[data-k="paused"] .pausei i { background: var(--hold); }
+[data-k="checking"] .vload i, [data-k="starting"] .vload i, [data-k="restarting"] .vload i, [data-k="saving"] .vload i { background: var(--cycle); }
+[data-k="error"] .tri, [data-k="unreachable"] .tri { border-bottom-color: var(--halt); }
+.statepill[data-k="unreachable"], .statepill[data-k="error"] { border-color: color-mix(in srgb, var(--halt) 40%, var(--line2)); background: var(--halt-bg); }
+.statepill[data-k="running"] { border-color: color-mix(in srgb, var(--go) 32%, var(--line2)); }
+
+/* Indicadores de comprobación (conexión local, grupo, sincronización). */
+.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text2); white-space: nowrap; }
+.chk::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text3); flex: none; }
+.chk.ok::before { background: var(--go); }
+.chk.wait::before { background: var(--cycle); animation: pulse 1.4s ease-in-out infinite; }
+.chk.bad::before { background: var(--halt); }
+.chk.bad { color: var(--halt); }
+
+/* Aviso de entrada fallida: tarjeta con borde tenue de advertencia. */
+.issue { border: 1px solid color-mix(in srgb, var(--halt) 30%, var(--line)); background: var(--halt-bg); border-radius: var(--r-card); padding: 16px 18px; display: grid; grid-template-columns: 22px 1fr auto; gap: 4px 12px; align-items: start; }
+.issue > svg { color: var(--halt); margin-top: 2px; }
+.issue b { font-weight: 600; }
+.issue .mono { font-size: 11.5px; color: var(--text3); word-break: break-all; }
+.ta-r { text-align: right; }

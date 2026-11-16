@@ -55,6 +55,11 @@ pub fn view(mgr: &Manager, probe: &Probe, cfg: ServerConfig, with_size: bool) ->
         phase: r.phase.clone(),
         countdown: r.countdown.clone(),
         pause_supported: crate::process::supports_tick(&cfg.mc_version),
+        reach: r.reach.clone(),
+        reach_info: r.reach_info.clone(),
+        reach_error: r.reach_error.clone(),
+        join_issue: r.join_issue.clone(),
+        mods_count: std::fs::read_dir(paths::server_run_dir(&cfg.id).join("mods")).map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".jar")).count()).unwrap_or(0),
         config: cfg,
     }
 }

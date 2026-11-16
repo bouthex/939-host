@@ -44,9 +44,9 @@ function quickAction(s) {
   const id = esc(s.config.id);
   if (!s.config.installed || s.installing) return '';
   if (s.restarting || s.status === 'stopping' || s.status === 'starting') return '<span class="xs t3">Esperá…</span>';
-  if (s.status === 'running') return `<button class="btn s" data-a="stop" data-id="${id}">${icon('stop', 14)}Detener</button>`;
+  if (s.status === 'running') return `<button class="btn s" data-a="stop" data-tone="halt" data-id="${id}">${icon('stop', 14)}Detener</button>`;
   if (s.status === 'crashed') return `<button class="btn s" data-a="repair" data-id="${id}">${icon('wrench', 14)}Reparar</button>`;
-  return `<button class="btn s" data-a="start" data-id="${id}">${icon('play', 14)}Iniciar</button>`;
+  return `<button class="btn s" data-a="start" data-tone="go" data-id="${id}">${icon('play', 14)}Iniciar</button>`;
 }
 main.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.li.click[data-a]')) { e.preventDefault(); e.target.click(); } });
 

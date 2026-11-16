@@ -209,3 +209,53 @@ async fn e2e_modrinth() {
     mods::remove(&cfg, &hit.project_id).expect("quitar");
     println!("✔ mod quitado");
 }
+
+/// Un cliente oficial de Minecraft (descargado de Mojang) entra a servidores creados por 939 Host.
+/// Necesita `CLIENTE_REAL` (ruta a ci/cliente-real/cliente.py), Python y una pantalla (xvfb en CI).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_cliente_real() {
+    init();
+    let script = std::env::var("CLIENTE_REAL").expect("CLIENTE_REAL");
+    let mc = std::env::var("E2E_MC").unwrap_or_else(|_| "26.2".into());
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let mut port = 25850;
+    for loader in [Loader::Vanilla, Loader::Fabric] {
+        port += 1;
+        let mut inp = input(&format!("Cliente {loader:?}"), &mc, loader, port);
+        inp.online_mode = false; // cuenta sin conexión del cliente de prueba
+        let cfg = instance::create(inp, 8192).await.expect("crear");
+        instance::install(&mgr, cfg.id.clone()).await;
+        let cfg = instance::load(&cfg.id).unwrap();
+        assert!(cfg.installed, "{:?}", cfg.install_error);
+        mgr.start(&probe, &cfg).expect("iniciar");
+        let rt = mgr.runtime(&cfg.id);
+        assert!(wait_for(Duration::from_secs(400), || rt.lock().unwrap().status() == RunStatus::Running), "no arrancó");
+        // El estado «listo» sale de una consulta real, no de la línea «Done».
+        assert!(wait_for(Duration::from_secs(30), || rt.lock().unwrap().reach.as_deref() == Some("ok")), "la comprobación de conexión no dio ok: {:?}", rt.lock().unwrap().reach_error);
+        let info = rt.lock().unwrap().reach_info.clone().unwrap();
+        println!("✔ {loader:?} {mc}: 939 Host comprobó la conexión (Minecraft {} protocolo {}, {} ms)", info.version, info.protocol, info.latency_ms);
+        let dir = paths::root().join(format!("cliente-{loader:?}"));
+        let name = "Jugador939";
+        let mut child = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
+            .args([&script, &mc, &format!("127.0.0.1:{port}"), dir.to_str().unwrap(), name, "150"])
+            .spawn().expect("abrir el cliente");
+        let joined = wait_for(Duration::from_secs(420), || mgr.console(&cfg.id).iter().any(|l| l.contains(&format!("{name} joined the game"))));
+        let console: Vec<String> = mgr.console(&cfg.id).iter().rev().take(25).rev().cloned().collect();
+        let client_log = std::fs::read_to_string(dir.join("game/logs/latest.log")).or_else(|_| std::fs::read_to_string(dir.join("salida.txt"))).unwrap_or_default();
+        if joined {
+            println!("✔ un cliente real de Minecraft {mc} entró al servidor {loader:?} («{name} joined the game»)");
+            mgr.send_command(&cfg.id, &format!("kick {name} prueba terminada")).ok();
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        if !joined {
+            panic!("el cliente no entró.\n── consola del servidor ──\n{}\n── juego (últimas líneas) ──\n{}", console.join("\n"), client_log.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"));
+        }
+        assert!(rt.lock().unwrap().join_issue.is_none(), "no debería haber un problema de entrada: {:?}", rt.lock().unwrap().join_issue);
+        mgr.stop(&cfg.id).unwrap();
+        assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
+    }
+}

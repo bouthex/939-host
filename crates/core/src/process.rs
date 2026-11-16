@@ -52,6 +52,15 @@ pub struct Runtime {
     pub countdown: Option<Countdown>,
     countdown_gen: u64,
     queries: Vec<Query>,
+    /// Comprobación real de conexión: "checking" | "ok" | "fail" (None = sin comprobar).
+    pub reach: Option<String>,
+    pub reach_info: Option<crate::reach::StatusInfo>,
+    pub reach_error: Option<String>,
+    /// Último intento fallido de entrar, explicado.
+    pub join_issue: Option<crate::reach::JoinIssue>,
+    join_watch: crate::reach::JoinWatch,
+    /// Contexto para explicar entradas fallidas: versión, loader, mods.
+    join_ctx: (String, String, usize),
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -78,6 +87,10 @@ impl Runtime {
         writeln!(stdin, "{cmd}").and_then(|_| stdin.flush()).map_err(|e| AppError::io("No se pudo enviar el comando", e))
     }
     fn reset_live(&mut self) {
+        self.reach = None;
+        self.reach_info = None;
+        self.reach_error = None;
+        self.join_watch = Default::default();
         self.paused = false;
         self.saving = false;
         self.phase = None;
@@ -299,6 +312,8 @@ impl Manager {
             rt.metrics_supported = true;
             rt.reset_live();
             rt.phase = Some("Abriendo Java".into());
+            let mods = std::fs::read_dir(run_dir.join("mods")).map(|r| r.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".jar")).count()).unwrap_or(0);
+            rt.join_ctx = (cfg.mc_version.clone(), cfg.loader.name().to_lowercase(), mods);
             rt.push_log(format!("── 939 Host: iniciando {} ({} {}) con Java {} ──", cfg.name, loader_name(cfg.loader), cfg.mc_version, cfg.java_major));
         }
         self.changed(&cfg.id);
@@ -314,7 +329,7 @@ impl Manager {
                 for line in reader.split(b'\n').map_while(Result::ok) {
                     let line = String::from_utf8_lossy(&line).trim_end().to_string();
                     if line.is_empty() { continue; }
-                    handle_line(&*ev, &rt, &id, line, is_err, port);
+                    handle_line(&ev, &rt, &id, line, is_err, port);
                 }
             });
         }
@@ -428,6 +443,17 @@ impl Manager {
     }
 
     /// Espera a que el servidor quede detenido (o caído). Devuelve false si venció el tiempo.
+    /// Vuelve a comprobar la conexión real de un servidor encendido.
+    pub fn check_connection(&self, id: &str, port: u16) -> AppResult<()> {
+        let rt = self.runtime(id);
+        if rt.lock().unwrap().status() != RunStatus::Running { return Err(AppError::busy("El servidor no está funcionando.")); }
+        spawn_reach_check(self.events.clone(), rt, id.to_string(), port);
+        Ok(())
+    }
+
+    /// Olvida el último problema de entrada (después de que el usuario lo leyó).
+    pub fn clear_join_issue(&self, id: &str) { self.runtime(id).lock().unwrap().join_issue = None; self.changed(id); }
+
     pub fn wait_inactive(&self, id: &str, timeout: Duration) -> bool {
         let rt = self.runtime(id);
         let deadline = Instant::now() + timeout;
@@ -465,9 +491,10 @@ impl Manager {
     }
 }
 
-fn handle_line(ev: &dyn Events, rt: &Arc<Mutex<Runtime>>, id: &str, line: String, is_err: bool, port: u16) {
+fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: String, is_err: bool, port: u16) {
     let mut changed = false;
     let mut hide = false;
+    let mut probe_after_start = false;
     {
         let mut r = rt.lock().unwrap();
         // Respuestas de consultas internas: se entregan y no se muestran.
@@ -501,7 +528,18 @@ fn handle_line(ev: &dyn Events, rt: &Arc<Mutex<Runtime>>, id: &str, line: String
             r.status = Some(RunStatus::Running);
             r.phase = None;
             r.restarting = false;
+            // «Done» no alcanza: se comprueba de verdad que el puerto atiende a Minecraft.
+            r.reach = Some("checking".into());
+            probe_after_start = true;
             changed = true;
+        }
+        {
+            let (v, l, m) = r.join_ctx.clone();
+            if let Some(issue) = r.join_watch.line(&line, &v, &l, m) {
+                r.push_log(format!("── 939 Host: {} — {} ──", issue.title, issue.detail));
+                r.join_issue = Some(issue);
+                changed = true;
+            }
         }
         if let Some(c) = RE_JOIN.captures(&line) { r.players.insert(c[1].to_string()); changed = true; }
         if let Some(c) = RE_LEAVE.captures(&line) { r.players.remove(&c[1]); changed = true; }
@@ -524,6 +562,31 @@ fn handle_line(ev: &dyn Events, rt: &Arc<Mutex<Runtime>>, id: &str, line: String
         ev.console_line(id, &line);
     }
     if changed { ev.server_changed(id); }
+    if probe_after_start { spawn_reach_check(ev.clone(), rt.clone(), id.to_string(), port); }
+}
+
+/// Comprueba en segundo plano que el servidor responda como Minecraft en 127.0.0.1:puerto.
+pub fn spawn_reach_check(ev: Arc<dyn Events>, rt: Arc<Mutex<Runtime>>, id: String, port: u16) {
+    std::thread::spawn(move || {
+        { let mut r = rt.lock().unwrap(); r.reach = Some("checking".into()); r.reach_error = None; }
+        ev.server_changed(&id);
+        let res = crate::reach::status_retry("127.0.0.1", port, 8);
+        {
+            let mut r = rt.lock().unwrap();
+            if r.status() != RunStatus::Running { return; }
+            match res {
+                Ok(info) => {
+                    r.push_log(format!("── 939 Host: conexión comprobada · Minecraft {} (protocolo {}) responde en 127.0.0.1:{port} en {} ms ──", info.version, info.protocol, info.latency_ms));
+                    r.reach = Some("ok".into()); r.reach_info = Some(info); r.reach_error = None;
+                }
+                Err(e) => {
+                    r.push_log(format!("── 939 Host: el servidor dice estar listo pero no atiende conexiones en el puerto {port}: {e} ──"));
+                    r.reach = Some("fail".into()); r.reach_error = Some(e);
+                }
+            }
+        }
+        ev.server_changed(&id);
+    });
 }
 
 fn loader_name(l: Loader) -> &'static str { l.name() }

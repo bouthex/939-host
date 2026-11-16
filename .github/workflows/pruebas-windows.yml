@@ -234,3 +234,31 @@ jobs:
           for i in $(seq 1 30); do [ -f resultado-invitada.json ] && break; sleep 2; done
           tail -40 invitada.log
           python -c "import json,sys; r=json.load(open('resultado-invitada.json',encoding='utf-8')); sys.exit(0 if r and all(x['ok'] for x in r) else 1)"
+
+  # Un cliente oficial de Minecraft (Mojang) entra a servidores creados por 939 Host.
+  cliente-real:
+    name: Cliente real de Minecraft entra al servidor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Pantalla virtual y OpenGL por software
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libgl1 libgl1-mesa-dri libglx-mesa0 libegl1 libxrandr2 libxcursor1 libxi6 libxxf86vm1 libxtst6 libasound2t64 libpulse0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-cliente
+      - name: Entrar con el cliente real (Vanilla y Fabric)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          CLIENTE_REAL: ${{ github.workspace }}/ci/cliente-real/cliente.py
+          E2E_MC: "26.2"
+        run: |
+          export HOST939_TEST_JAVA25="$JAVA_HOME" JAVA_BIN="$JAVA_HOME/bin/java"
+          xvfb-run -a -s "-screen 0 1280x720x24" cargo test --locked -p host939-core --test e2e_real e2e_cliente_real -- --ignored --nocapture

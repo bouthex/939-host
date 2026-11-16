@@ -338,6 +338,10 @@ function serverState(v) {
     case 'running':
       if (v.paused) return { key: 'paused', label: 'Pausado', shape: 'pause' };
       if (v.saving) return { key: 'saving', label: 'Guardando', shape: 'ring' };
+      // «Done» en la consola no alcanza: el estado final sale de una consulta real de Minecraft.
+      if (v.reach === 'checking') return { key: 'checking', label: 'Comprobando conexión', shape: 'ring' };
+      if (v.reach === 'fail') return { key: 'unreachable', label: 'Sin conexión', shape: 'tri', detail: v.reachError };
+      if (v.reach === 'ok') return { key: 'running', label: 'Listo para jugar', shape: 'dot' };
       return { key: 'running', label: 'Funcionando', shape: 'dot' };
     case 'starting': return { key: 'starting', label: 'Iniciando', shape: 'ring', detail: v.phase };
     case 'stopping': return { key: 'stopping', label: 'Deteniéndose', shape: 'ring' };
@@ -346,7 +350,7 @@ function serverState(v) {
   }
 }
 const SHAPES = { dot: '<span class="dot"></span>', off: '<span class="dot off"></span>', ring: '<span class="vload" aria-hidden="true"><i></i><i></i><i></i></span>', pause: '<span class="pausei"><i></i><i></i></span>', tri: '<span class="tri"></span>', sq: '<span class="sq"></span>' };
-const stateHTML = (v, pill = false) => { const s = serverState(v); return `<span class="${pill ? 'statepill' : 'st'}">${SHAPES[s.shape]}${esc(s.label)}</span>`; };
+const stateHTML = (v, pill = false) => { const s = serverState(v); return `<span class="${pill ? 'statepill' : 'st'}" data-k="${s.key}">${SHAPES[s.shape]}${esc(s.label)}</span>`; };
 const isActive = (v) => v && ['running', 'starting', 'stopping'].includes(v.status);
 
 

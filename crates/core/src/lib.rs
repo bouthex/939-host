@@ -20,6 +20,7 @@ pub mod nbt;
 pub mod network;
 pub mod paths;
 pub mod playerdata;
+pub mod reach;
 pub mod players;
 pub mod process;
 pub mod properties;

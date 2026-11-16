@@ -33,6 +33,18 @@ pub async fn resume_server(app: AppHandle, id: String) -> AppResult<()> {
     blocking(move || app.state::<Manager>().resume(&id)).await
 }
 
+/// Vuelve a comprobar que el servidor recibe jugadores (consulta real de Minecraft).
+#[tauri::command]
+pub async fn server_check_connection(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || { let cfg = instance::load(&id)?; app.state::<Manager>().check_connection(&id, cfg.port) }).await
+}
+
+/// Marca como leído el último problema de entrada.
+#[tauri::command]
+pub async fn server_clear_join_issue(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || { app.state::<Manager>().clear_join_issue(&id); Ok(()) }).await
+}
+
 /// Detiene con aviso: `seconds` = 0 detiene ya. Si se cancela la cuenta, devuelve false.
 #[tauri::command]
 pub async fn stop_server_warned(app: AppHandle, id: String, seconds: u32) -> AppResult<bool> {

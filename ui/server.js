@@ -57,7 +57,8 @@ function drawHeader() {
   const prog = state.progress[c.id];
   const id = esc(c.id);
   const busy = ['restarting', 'stopping'].includes(s.key) || v.installing || !c.installed;
-  const btn = (a, ic, label, opts = {}) => `<button class="btn ${opts.pri ? 'pri' : ''}" data-a="${a}" data-id="${id}" ${opts.disabled ? 'disabled' : ''} ${opts.title ? `title="${esc(opts.title)}"` : ''}>${icon(ic, 16)}${label}</button>`;
+  const TONES = { start: 'go', resume: 'go', pause: 'hold', restart: 'cycle', stop: 'halt', repair: 'cycle' };
+  const btn = (a, ic, label, opts = {}) => `<button class="btn ${opts.pri ? 'pri' : ''}" data-a="${a}" data-id="${id}" ${TONES[a] ? `data-tone="${TONES[a]}"` : ''} ${opts.disabled ? 'disabled' : ''} ${opts.title ? `title="${esc(opts.title)}"` : ''}>${icon(ic, 16)}${label}</button>`;
   let ctl = '';
   const g = state.share?.enabled ? state.share.group : null;
   const hostedElsewhere = g && !g.iAmHost && g.lease?.state === 'hosting' && !isActive(v);
@@ -150,13 +151,23 @@ A.reinstall = async () => {
   try { await invoke('reinstall_server', { id: state.params.id }); toast('Reinstalando…'); refreshServer(); } catch (e) { fail(e); }
 };
 
+A['reach-check'] = async (el) => {
+  el.setAttribute('aria-busy', 'true');
+  try { await invoke('server_check_connection', { id: state.params.id }); } catch (e) { fail(e); }
+  setTimeout(() => el.removeAttribute('aria-busy'), 800);
+};
+A['issue-ok'] = async () => { try { await invoke('server_clear_join_issue', { id: state.params.id }); refreshServer(); } catch (e) { fail(e); } };
+
 /* ───────── Resumen ───────── */
 tabDraw.summary = async (el) => {
   const v = state.server, c = v.config;
   const running = v.status === 'running';
   const gg = state.share?.enabled ? state.share.group : null;
   const remoteHost = gg && !gg.iAmHost && gg.lease?.state === 'hosting' && !isActive(v) ? (gg.members.find((m) => m.isHost)?.name || gg.lease.hostName) : null;
+  const ji = v.joinIssue;
   el.innerHTML = `<div class="stack" style="gap:16px">
+    ${ji ? `<div class="issue" role="status">${icon('alert', 18)}<div class="stack" style="gap:4px"><b>${esc(ji.title)}</b><span class="sm t2">${esc(ji.detail)}</span><span class="mono" title="Línea de la consola del servidor">${esc(ji.logLine)}</span></div>
+      <div class="btns">${c.loader !== 'vanilla' ? `<button class="btn s" data-a="tab" data-v="mods">${icon('box', 14)}Mods del servidor</button>` : ''}<button class="btn s quiet" data-a="issue-ok">Entendido</button></div></div>` : ''}
     <div class="kpis">
       <div class="card kpi"><span class="l">Jugadores</span><span class="v">${running ? v.players.length : '—'}<small>de ${c.maxPlayers}</small></span></div>
       <div class="card kpi"><span class="l">Tiempo por tick</span><span class="v">${v.mspt != null ? v.mspt.toFixed(1).replace('.', ',') : '—'}<small>ms${v.msptP95 != null ? ` · p95 ${v.msptP95.toFixed(1).replace('.', ',')}` : ''}</small></span><span class="xs t3">${v.mspt == null ? 'Disponible con el servidor encendido' : v.mspt < 40 ? 'Fluido (menos de 50 ms)' : v.mspt < 50 ? 'Al límite' : 'Con demoras'}</span></div>
@@ -165,10 +176,21 @@ tabDraw.summary = async (el) => {
     </div>
     <div class="grid2">
       <div class="stack" style="gap:16px">
-        <div class="card pad stack"><h2>Cómo entrar</h2>
-          <div><div class="kv"><span class="k">Desde esta PC</span><span class="row" style="gap:6px"><span class="mono">localhost:${c.port}</span><button class="btn s icon ghost" data-a="copy" data-text="localhost:${c.port}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button></span></div>
-          <div class="kv"><span class="k">Desde tu casa</span><span>IP de esta PC + puerto ${c.port}</span></div>
-          <div class="kv"><span class="k">Desde otras casas</span><button class="btn s ghost" data-a="tab" data-v="group">Invitar con un código${icon('chev', 14)}</button></div></div></div>
+        <div class="card pad stack"><div class="spread"><h2>Conexión</h2>${running ? `<button class="btn s quiet" data-a="reach-check" data-tone="cycle">${icon('sync', 14)}Comprobar</button>` : ''}</div>
+          <div>
+          <div class="kv"><span class="k">Servidor</span>${!running ? `<span class="chk">${isActive(v) ? 'Arrancando' : 'Detenido'}</span>`
+            : v.reach === 'ok' ? `<span class="chk ok">Listo · Minecraft ${esc(v.reachInfo?.version || c.mcVersion)} responde en ${v.reachInfo?.latencyMs ?? '–'} ms</span>`
+            : v.reach === 'fail' ? `<span class="chk bad" title="${esc(v.reachError || '')}">No atiende conexiones</span>`
+            : '<span class="chk wait">Comprobando que reciba jugadores…</span>'}</div>
+          <div class="kv"><span class="k">Para entrar hace falta</span><span class="ta-r">Minecraft <b>${esc(c.mcVersion)}</b>${c.loader === 'vanilla' ? ' sin mods' : ` con ${loaderName(c.loader)}${v.modsCount ? ` y los mismos ${v.modsCount} mods` : ' (el servidor no tiene mods)'}`}</span></div>
+          <div class="kv"><span class="k">Desde esta PC</span><span class="row" style="gap:6px"><span class="mono">localhost:${c.port}</span><button class="btn s icon ghost" data-a="copy" data-text="localhost:${c.port}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button></span></div>
+          ${gg ? (() => {
+            const others = gg.members.filter((m) => !m.isMe);
+            const on = others.filter((m) => m.online);
+            const paths = [...new Set(on.map((m) => m.path).filter(Boolean))].join(' · ');
+            return `<div class="kv"><span class="k">Grupo</span><span class="row" style="gap:8px">${state.share.routePort ? `<span class="mono">127.0.0.1:${state.share.routePort}</span>` : ''}<span class="chk ${on.length ? 'ok' : others.length ? 'bad' : ''}">${others.length ? `${on.length} de ${others.length} PCs conectadas${paths ? ` · ${esc(paths)}` : ''}` : 'Nadie más en el grupo'}</span></span></div>`;
+          })() : `<div class="kv"><span class="k">Desde otras casas</span><button class="btn s ghost" data-a="tab" data-v="group">Invitar con un código${icon('chev', 14)}</button></div>`}
+          <div class="kv"><span class="k">Desde tu red</span><span class="t2">IP de esta PC + puerto ${c.port}</span></div></div></div>
         <div class="card pad stack"><h2>Identidad del servidor</h2>
           <p class="sm t2" style="margin:0">Identifica a este servidor en todas las PCs del grupo. No depende de la IP: sigue siendo el mismo aunque cambie la PC anfitriona.</p>
           <div class="addr"><span>${esc(c.identity.accessCode)}</span><button class="btn s" data-a="copy" data-text="${esc(c.identity.accessCode)}">${icon('copy', 14)}Copiar</button></div></div>
@@ -248,12 +270,12 @@ tabDraw.backups = async (el) => {
     <div class="card">${snaps.items.length ? Object.entries(groups).map(([day, items]) => `<div class="sec" style="padding:14px 20px 6px">${esc(day)}</div><div class="list">
       ${items.map((s) => `<div class="li"><span class="mono" style="width:52px;white-space:nowrap">${new Date(s.createdAt).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
         <div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(s.label)}</b><span class="chip s">${KIND[s.kind] || esc(s.kind)}</span></div><div class="sm t3">+${fmtMB(s.newBytes / 1048576)} nuevos · mundo de ${fmtMB(s.totalBytes / 1048576)} · ${s.fileCount} archivos</div></div>
-        <div class="btns"><button class="btn s" data-a="snap-restore" data-snap="${esc(s.id)}">Restaurar</button><button class="btn s icon ghost" data-a="snap-delete" data-snap="${esc(s.id)}" aria-label="Borrar punto">${icon('trash', 15)}</button></div></div>`).join('')}</div>`).join('')
+        <div class="btns"><button class="btn s" data-a="snap-restore" data-snap="${esc(s.id)}">Restaurar</button><button class="btn s icon ghost" data-tone="danger" data-a="snap-delete" data-snap="${esc(s.id)}" aria-label="Borrar punto">${icon('trash', 15)}</button></div></div>`).join('')}</div>`).join('')
       : `<div class="pad sm t2">Todavía no hay puntos. Con el servidor encendido se crea uno cada ${c.restoreIntervalMin} minutos; también podés crear uno ahora.</div>`}</div>
     <p class="xs t3" style="margin:0">Se conservan todos los de las últimas 6 h, uno por hora durante 2 días, uno por día durante 14 días y uno por semana durante 8 semanas. Los manuales no se borran solos.</p>
     <div class="card pad stack"><div class="spread"><div><h2>Copias completas (.zip)</h2><p class="sm t2" style="margin:2px 0 0">Un archivo independiente con el mundo y la configuración, para guardarlo afuera o compartirlo.</p></div>
       <div class="btns"><button class="btn" data-a="backup">${icon('download', 16)}Crear copia .zip</button><button class="btn icon ghost" data-a="folder" data-which="backups" aria-label="Abrir carpeta de copias">${icon('folder', 16)}</button></div></div>
-      ${zips.length ? `<div>${zips.map((b) => `<div class="kv"><span class="ellipsis">${esc(fmtDate(b.createdAt))} · ${esc(b.label)} <span class="mono sm t3">${fmtMB(b.sizeMb)}</span></span><span class="btns"><button class="btn s" data-a="restore" data-file="${esc(b.file)}">Restaurar</button><button class="btn s icon ghost" data-a="del-backup" data-file="${esc(b.file)}" aria-label="Borrar copia">${icon('trash', 15)}</button></span></div>`).join('')}</div>` : ''}
+      ${zips.length ? `<div>${zips.map((b) => `<div class="kv"><span class="ellipsis">${esc(fmtDate(b.createdAt))} · ${esc(b.label)} <span class="mono sm t3">${fmtMB(b.sizeMb)}</span></span><span class="btns"><button class="btn s" data-a="restore" data-file="${esc(b.file)}">Restaurar</button><button class="btn s icon ghost" data-tone="danger" data-a="del-backup" data-file="${esc(b.file)}" aria-label="Borrar copia">${icon('trash', 15)}</button></span></div>`).join('')}</div>` : ''}
     </div></div>`;
 };
 A['snap-take'] = async (el) => {
@@ -444,7 +466,7 @@ tabDraw.settings = async (el) => {
         <div class="spread"><div><b>Reinstalar archivos del servidor</b><div class="sm t2">Vuelve a descargar y verificar el servidor y Java. No toca el mundo.</div></div><button class="btn" data-a="reinstall">Reinstalar</button></div>`)}
       <section class="section" id="ss-danger"><h2>Zona de peligro</h2><div class="card list">
         <div class="li"><div class="grow"><b>Informe de diagnóstico</b><div class="sm t2">Un .zip con registros, errores, mods y configuración (sin el mundo ni claves) para pedir ayuda.</div></div><button class="btn s" data-a="diag">Generar informe</button></div>
-        <div class="li"><div class="grow"><b>Borrar servidor</b><div class="sm t2">Se mueve a la Papelera de 939 Host; no se elimina del disco.</div></div><button class="btn s" data-a="delete">Borrar…</button></div></div></section>
+        <div class="li"><div class="grow"><b>Borrar servidor</b><div class="sm t2">Se mueve a la Papelera de 939 Host; no se elimina del disco.</div></div><button class="btn s" data-a="delete" data-tone="danger">${icon('trash', 14)}Borrar…</button></div></div></section>
       <div class="savebar" id="savebar"></div>
     </div></div>`;
   updateSavebar();

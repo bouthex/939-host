@@ -171,4 +171,12 @@ pub struct ServerView {
     pub countdown: Option<crate::process::Countdown>,
     /// La versión permite pausar (/tick freeze, 1.20.3+).
     pub pause_supported: bool,
+    /// Conexión real comprobada: "checking" | "ok" | "fail".
+    pub reach: Option<String>,
+    pub reach_info: Option<crate::reach::StatusInfo>,
+    pub reach_error: Option<String>,
+    /// Último intento fallido de entrar, explicado.
+    pub join_issue: Option<crate::reach::JoinIssue>,
+    /// Cantidad de .jar en la carpeta de mods (el juego de cada jugador tiene que coincidir).
+    pub mods_count: usize,
 }
