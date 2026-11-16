@@ -125,9 +125,10 @@ async def main():
 
         async def start():
             await p.click('.ctl [data-a=start]')
-            return await wait_state(["Funcionando"], 600)
+            # «Listo para jugar» solo aparece después de que 939 Host consultó de verdad al servidor.
+            return await wait_state(["Listo para jugar"], 600)
 
-        ok = await step("encender y llegar a «Funcionando»", start())
+        ok = await step("encender y llegar a «Listo para jugar» (conexión comprobada)", start())
         await shot("claro-resumen-funcionando", 4000)
         if ok:
             async def console():
