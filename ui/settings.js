@@ -87,11 +87,10 @@ routes.settings = async function renderSettings() {
           <p class="xs t3" style="margin:0">939 Host no modifica tu instalación de Minecraft: los mundos importados se copian. La única excepción es la reconexión automática, y solo en el perfil que actives.</p></div></section>
 
         <section class="section" id="set-about"><h2>Acerca de 939 Host</h2><div class="card about">
-          ${CINTA(112)}
-          <div class="stack" style="gap:4px"><span style="font-size:22px;font-weight:650;letter-spacing:-0.02em">939 Host</span><span class="t2" style="font-size:15px">Advanced hosting. Simplified.</span><span class="sm t3">Versión ${esc(state.info.version)} · licencia MIT</span></div>
-          <div style="width:40px;height:1px;background:var(--line2)"></div>
-          <span class="sm">Creado por <b>Archimak</b> · <b>Bout</b></span>
-          <span class="xs t3" style="max-width:560px">939 Host no es un producto oficial de Minecraft. No está aprobado por Mojang ni Microsoft, ni asociado con ellos. Minecraft es una marca de Mojang AB.</span></div>
+          <div class="about-head"><span class="about-mark">${CINTA(58)}</span>
+            <div class="about-id"><span class="about-name">939 Host</span><span class="about-tag">Advanced hosting. Simplified.</span><span class="about-ver">Versión ${esc(state.info.version)} · Licencia MIT</span></div></div>
+          <div class="about-foot"><span class="sm">Creado por <b>Archimak</b> y <b>Bout</b></span>
+            <span class="xs t3">939 Host no es un producto oficial de Minecraft. No está aprobado por Mojang ni Microsoft, ni asociado con ellos. Minecraft es una marca de Mojang AB.</span></div></div>
           <div class="card list">${[['Buscar actualizaciones', 'Página de versiones en GitHub', `${REPO}/releases`], ['Código fuente', 'GitHub', REPO], ['Licencias de terceros', '', `${REPO}/blob/main/THIRD_PARTY_LICENSES.html`], ['Política de privacidad', '', `${REPO}/blob/main/PRIVACY.md`], ['Política de firma de código', '', `${REPO}/blob/main/CODE_SIGNING_POLICY.md`]]
             .map(([t, d, u]) => `<button class="li" data-a="link" data-url="${u}"><span class="grow">${t}</span><span class="sm t3">${d}</span>${icon('external', 15)}</button>`).join('')}</div></section>
       </div></div></div>`;

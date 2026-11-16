@@ -84,7 +84,7 @@ routes.create = async function renderCreate() {
       step: 1, name: '', description: '', mcVersion: '', loader: 'vanilla', support: null,
       worldMode: 'new', seed: '', difficulty: 'normal', gamemode: 'survival', importPath: '', importOk: false,
       memoryMb: hw.assessment.recommendedServerRamMb, maxMem: hw.assessment.maxServerRamMb, maxPlayers: 8,
-      viewDistance: 10, simulationDistance: 8, port: await invoke('suggest_port'), onlineMode: true, whitelist: true,
+      viewDistance: 10, simulationDistance: 8, port: await invoke('suggest_port'), onlineMode: true, whitelist: false,
       eula: false, creating: false, snapshots: false,
     };
   }

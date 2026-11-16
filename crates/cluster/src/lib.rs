@@ -212,6 +212,10 @@ struct SrvState {
     answer: Option<(bool, String, Instant)>,
     /// Veces que una PC dejó de responder desde que se abrió 939 Host (estabilidad).
     drops: HashMap<String, u32>,
+    /// PCs con una consulta en curso (no se les manda otra hasta que respondan o venza).
+    inflight: HashSet<String>,
+    /// Respuestas recibidas que todavía no se procesaron (permiso, grupo, nombres).
+    inbox: Vec<(String, Info)>,
 }
 
 #[derive(Clone)]
@@ -865,6 +869,10 @@ impl GroupNode {
         if let Some(o) = inner.with_state(server, |s| s.outgoing.clone()) {
             bail!("Ya le pediste a {} alojar este servidor. Esperá su respuesta o cancelá la solicitud.", nice(&o.host_name));
         }
+        // Antes de decir «no responde», se le pregunta de verdad a la anfitriona.
+        if let Some(l) = lease::read(server) {
+            if l.state == LeaseState::Hosting && !l.held_by(&inner.me) { inner.confirm_alive(server, &l.host).await; }
+        }
         self.can_request_check(server).map_err(|e| anyhow!(e))?;
         let l = lease::read(server).ok_or_else(|| anyhow!("Este servidor no está compartido."))?;
         let host_name = self.status(server).await.lease.map(|l| l.host_name).unwrap_or_else(|| l.host_name.clone());
@@ -954,6 +962,18 @@ impl Inner {
     }
 
     fn set_busy(&self, server: &str, b: Option<String>) { self.with_state(server, |s| s.busy = b); self.local.changed(server); }
+
+    /// Si no hay una respuesta reciente de `node`, lo consulta en el momento (hasta 3 s).
+    async fn confirm_alive(self: &Arc<Self>, server: &str, node: &str) -> bool {
+        if self.recently_ok(server, node, self.timing.poll * 3) { return true; }
+        match self.rpc_timeout(node, &Req::Info { server: server.into() }, Duration::from_secs(3)).await {
+            Ok(Resp::Info(info)) => {
+                self.with_state(server, |s| { s.last_ok.insert(node.to_string(), Instant::now()); s.infos.insert(node.to_string(), info); });
+                true
+            }
+            _ => false,
+        }
+    }
 
     fn recently_ok(&self, server: &str, node: &str, within: Duration) -> bool {
         self.with_state(server, |s| s.last_ok.get(node).map(|t| t.elapsed() < within).unwrap_or(false))
@@ -1171,22 +1191,40 @@ impl Inner {
         let share = network::load_share(server);
         if !share.enabled { return; }
         let others: Vec<Member> = share.members.iter().filter(|m| m.node_id != self.me).cloned().collect();
-        let results = futures_util::future::join_all(others.iter().map(|m| {
-            let req = Req::Info { server: server.into() };
+        // Cada PC se consulta por separado y su respuesta cuenta en cuanto llega: una PC lenta
+        // (por ejemplo, la anfitriona vieja apagando su servidor) no puede hacer que las demás
+        // parezcan caídas. No se manda otra consulta a una PC que todavía no respondió la anterior.
+        let mut handles = vec![];
+        for m in &others {
             let node = m.node_id.clone();
-            async move { (node.clone(), self.rpc_timeout(&node, &req, Duration::from_secs(4)).await) }
-        })).await;
+            if !self.with_state(server, |s| s.inflight.insert(node.clone())) { continue; }
+            let me = self.clone();
+            let srv = server.to_string();
+            handles.push(tokio::spawn(async move {
+                let r = me.rpc_timeout(&node, &Req::Info { server: srv.clone() }, Duration::from_secs(4)).await;
+                me.with_state(&srv, |s| {
+                    s.inflight.remove(&node);
+                    match r {
+                        Ok(Resp::Info(info)) => {
+                            s.last_ok.insert(node.clone(), Instant::now());
+                            s.left.remove(&node);
+                            s.inbox.push((node.clone(), info.clone()));
+                            s.infos.insert(node, info);
+                        }
+                        _ => {
+                            // Contar cortes: respondía hace poco y ahora no.
+                            if s.last_ok.get(&node).map(|t| t.elapsed() < me.timing.poll * 2).unwrap_or(false) { *s.drops.entry(node).or_default() += 1; }
+                        }
+                    }
+                });
+            }));
+        }
+        // Se espera un momento a las respuestas rápidas; las lentas siguen y se procesan después.
+        let _ = tokio::time::timeout(self.timing.poll * 2, futures_util::future::join_all(handles)).await;
+        let inbox = self.with_state(server, |s| std::mem::take(&mut s.inbox));
         let mut newest_share: Option<(u64, String)> = None;
         let mut names: Vec<(String, String)> = vec![];
-        for (node, r) in results {
-            let Ok(Resp::Info(info)) = r else {
-                // Contar cortes: respondía hace poco y ahora no.
-                let window = self.timing.poll * 2;
-                self.with_state(server, |s| {
-                    if s.last_ok.get(&node).map(|t| t.elapsed() < window).unwrap_or(false) { *s.drops.entry(node.clone()).or_default() += 1; }
-                });
-                continue;
-            };
+        for (node, info) in inbox {
             names.push((node.clone(), info.name.clone()));
             if let Some(a) = &info.addr { self.learn(a.clone()); }
             for p in &info.peers { self.learn(p.clone()); }
@@ -1196,7 +1234,6 @@ impl Inner {
             if info.share_rev > rev(&share).unwrap_or(0) && newest_share.as_ref().map(|(r, _)| info.share_rev > *r).unwrap_or(true) {
                 newest_share = Some((info.share_rev, node.clone()));
             }
-            self.with_state(server, |s| { s.last_ok.insert(node.clone(), Instant::now()); s.left.remove(&node); s.infos.insert(node, info); });
         }
         // La PC propietaria guarda los nombres visibles actuales para quien esté desconectado.
         let me_owner = share.member(&self.me).map(|m| m.role == "propietario").unwrap_or(false);
@@ -1418,7 +1455,11 @@ impl ProtocolHandler for Handler {
 
 async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
     match req {
-        Req::Info { server } => Resp::Info(inner.my_info(&server)),
+        Req::Info { server } => {
+            // Solo pruebas: simula una PC que responde lento (por ejemplo, ocupada apagando).
+            if let Some(ms) = std::env::var("H939_TEST_SLOW_INFO_MS").ok().and_then(|v| v.parse::<u64>().ok()) { tokio::time::sleep(Duration::from_millis(ms)).await; }
+            Resp::Info(inner.my_info(&server))
+        }
         Req::Config { server } => {
             let mut share = network::load_share(&server);
             share.invites.clear();

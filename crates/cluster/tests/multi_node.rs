@@ -58,10 +58,17 @@ impl Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        // En Linux los procesos hijos (Java) no mueren con el padre: se cierran antes.
-        let _ = Command::new("pkill").arg("-CONT").arg("-P").arg(self.child.id().to_string()).status();
-        let _ = Command::new("kill").arg("-CONT").arg(self.child.id().to_string()).status();
-        let _ = Command::new("pkill").arg("-KILL").arg("-P").arg(self.child.id().to_string()).status();
+        // En Linux los procesos hijos (Java) no mueren con el padre: se cierran antes. Si el nodo
+        // ya terminó solo (orden «exit»), no hay nada que limpiar: antes esto imprimía
+        // «kill: No such process», que era ruido de limpieza y no un error.
+        #[cfg(unix)]
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let id = self.child.id().to_string();
+            let quiet = |c: &mut Command| { let _ = c.stdout(Stdio::null()).stderr(Stdio::null()).status(); };
+            quiet(Command::new("pkill").args(["-CONT", "-P", &id]));
+            quiet(Command::new("kill").args(["-CONT", &id]));
+            quiet(Command::new("pkill").args(["-KILL", "-P", &id]));
+        }
         #[cfg(windows)]
         {
             let id = self.child.id();
@@ -499,4 +506,41 @@ fn slow_two_phase_handover_keeps_playing() {
     assert_eq!(b.ok(&format!("read {sid} marca.txt")).as_str(), Some("lento"));
     wait("C llega a B", Duration::from_secs(15), || slp(port_c).contains("hosteado por B"));
     println!("✔ copia lenta: se siguió jugando en A durante la fase 1; después B tomó el servidor con el mundo intacto y la misma dirección llevó a B");
+}
+
+/// Regresión (CI 15/11/2026): después de un traspaso A→C, B pedía alojar y recibía «C no
+/// responde» aunque C estaba bien. Causa: B consultaba a todas las PCs juntas y solo marcaba la
+/// respuesta de C cuando terminaba también la de A, que respondía lento (ocupada apagando). Acá A
+/// responde siempre con 3,5 s de demora: B tiene que poder pedir a C una y otra vez.
+#[test]
+fn request_reaches_new_host_while_old_host_is_slow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_TEST_SLOW_INFO_MS", "3500")]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let sid = a.ok("create Lento 25881").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t1 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    let t2 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t1}"));
+    c.ok(&format!("join {t2}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("snapshot {sid} prueba"));
+    wait("B y C copian", Duration::from_secs(40), || b.status(&sid)["myLatest"].is_object() && c.status(&sid)["myLatest"].is_object());
+    // C pide alojar (se reintenta hasta que C conoce el permiso de A).
+    wait("C pide alojar", Duration::from_secs(30), || c.cmd(&format!("request {sid}"))["ok"] == true);
+    wait("A ve la solicitud de C", Duration::from_secs(15), || a.status(&sid)["incomingRequest"]["name"] == "C");
+    a.ok(&format!("answer {sid} si"));
+    wait("C aloja", Duration::from_secs(60), || c.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("B sabe que C aloja", Duration::from_secs(20), || b.status(&sid)["lease"]["hostName"] == "C");
+    println!("✔ traspaso A→C hecho; A sigue respondiendo con 3,5 s de demora");
+    for i in 1..=6 {
+        let r = b.cmd(&format!("request {sid}"));
+        assert_eq!(r["ok"], true, "intento {i}: B no pudo pedir a C: {r}");
+        b.ok(&format!("cancelreq {sid}"));
+        std::thread::sleep(Duration::from_millis(900));
+    }
+    println!("✔ B pidió alojar a C 6 veces seguidas sin «C no responde», con A lenta");
+    let online = b.status(&sid)["members"].as_array().unwrap().iter().find(|m| m["name"] == "C").map(|m| m["online"] == true).unwrap_or(false);
+    assert!(online, "B debe ver a C conectada");
 }
