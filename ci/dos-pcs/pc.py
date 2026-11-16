@@ -132,6 +132,8 @@ def anfitriona():
     put_file("encendido.txt", "1")
     # Solicitud real de la otra PC → se acepta (reutiliza el traspaso en dos fases).
     wait_until("llega la solicitud", 900, lambda: n.ok(f"status {sid}").get("incomingRequest"))
+    names = n.ok(f"lsdir {sid} config/desde-invitada")
+    log("subida.bin" in names and not any("cortado" in x or ".939-subida" in x for x in names), f"en esta PC quedó lo subido y nada a medias: {names}")
     stt = n.ok(f"status {sid}")
     inc = stt["incomingRequest"]
     mem = next((m for m in stt.get("members", []) if m.get("nodeId") == inc.get("nodeId")), {})
@@ -162,6 +164,25 @@ def invitada():
     stt = n.ok(f"status {sid}")
     via = [m for m in stt.get("members", []) if m.get("online")]
     print("    miembros:", json.dumps(via)[:400])
+    # Administración remota de archivos entre dos PCs reales (la anfitriona está en otra región).
+    import hashlib
+    blob = os.path.join(ROOT, "subida.bin")
+    os.makedirs(ROOT, exist_ok=True)
+    with open(blob, "wb") as f: f.write(bytes((i * 7) % 251 for i in range(8 * 1024 * 1024 + 77)))
+    h = hashlib.sha1(open(blob, "rb").read()).hexdigest()
+    ls = n.ok(f"fls {sid}")
+    log(any(e["name"] == "world" and e["locked"] for e in ls), f"lista los archivos de la otra PC ({len(ls)} entradas; el mundo protegido porque está encendido)")
+    n.ok(f"fmkdir {sid} config/desde-invitada")
+    t0 = time.time(); n.ok(f"fput {sid} {blob} config/desde-invitada/subida.bin", timeout=600)
+    up = time.time() - t0
+    back = os.path.join(ROOT, "bajada.bin")
+    t0 = time.time(); n.ok(f"fget {sid} config/desde-invitada/subida.bin {back}", timeout=600)
+    down = time.time() - t0
+    log(hashlib.sha1(open(back, "rb").read()).hexdigest() == h, f"8 MB subidos en {up:.1f} s y bajados en {down:.1f} s con el mismo SHA-1")
+    r = n.cmd(f"frm {sid} world/level.dat")
+    log(not r.get("ok") and "encendido" in (r.get("err") or ""), f"no deja borrar el mundo con el servidor encendido: {str(r.get('err'))[:90]}")
+    r = n.cmd(f"fputcancel {sid} {blob} config/desde-invitada/cortado.bin", timeout=600)
+    log(not r.get("ok"), "subida cancelada a mitad de camino")
     t0 = time.time()
     n.ok(f"request {sid}")
     log(True, "pidió ser anfitriona")

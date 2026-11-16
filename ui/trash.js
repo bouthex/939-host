@@ -1,10 +1,10 @@
 /* 939 Host — Papelera: servidores borrados que se conservan 30 días. */
 
-const fmtBytes = (b) => fmtMB((b || 0) / 1048576);
+const fmtBytes = (b) => { b = b || 0; if (b < 1024) return `${b} B`; if (b < 1048576) return `${Math.round(b / 1024)} KB`; return fmtMB(b / 1048576); };
 const daysText = (d) => (d <= 0 ? 'Se borra hoy' : d === 1 ? 'Queda 1 día' : `Quedan ${d} días`);
 
 routes.trash = async function renderTrash() {
-  main.innerHTML = `<div class="page"><div class="head"><div><h1>Papelera</h1><p class="sub">Los servidores borrados se guardan 30 días. Podés restaurarlos completos o borrarlos para siempre.</p></div></div><div id="trash-body">${vloadBlock('Leyendo la Papelera')}</div></div>`;
+  main.innerHTML = `<div class="page"><div class="head"><div><h1>Papelera</h1><p class="sub">Los servidores y archivos borrados se guardan 30 días. Podés restaurarlos completos o borrarlos para siempre.</p></div></div><div id="trash-body">${vloadBlock('Leyendo la Papelera')}</div></div>`;
   await paintTrash();
 };
 
@@ -25,10 +25,10 @@ async function paintTrash() {
     <div class="spread"><span class="sm t2">${items.length === 1 ? '1 servidor' : `${items.length} servidores`} · ${fmtBytes(total)}</span>
       <button class="btn s" data-a="trash-empty" data-tone="danger">${icon('trash', 14)}Vaciar papelera</button></div>
     <div class="card list">${items.map((it) => `<div class="li trash-it">
-      ${srvLogo(it.meta.logo)}
-      <div class="grow" style="min-width:0"><b class="ellipsis" style="display:block">${esc(it.meta.name)}</b>
-        <span class="sm t2">${esc([it.meta.loader && it.meta.loader !== 'Vanilla' ? it.meta.loader : 'Vanilla', it.meta.mcVersion].filter(Boolean).join(' '))} · borrado el ${esc(fmtDate(it.meta.deletedAt))} · ${fmtBytes(it.sizeBytes)}</span>
-        ${it.conflict ? '<span class="xs t3" style="display:block">Ya hay un servidor con ese nombre: se va a restaurar como «(restaurado)», sin tocar el otro.</span>' : ''}</div>
+      ${it.meta.kind === 'archivos' ? `<span class="srv-ic">${icon('file', 18)}</span>` : srvLogo(it.meta.logo)}
+      <div class="grow" style="min-width:0"><b class="ellipsis" style="display:block">${esc(it.meta.kind === 'archivos' ? it.meta.name.split('/').pop() : it.meta.name)}</b>
+        <span class="sm t2">${it.meta.kind === 'archivos' ? `Archivo de «${esc(it.meta.mcVersion)}» · ${esc(it.meta.name)}` : esc([it.meta.loader && it.meta.loader !== 'Vanilla' ? it.meta.loader : 'Vanilla', it.meta.mcVersion].filter(Boolean).join(' '))} · borrado el ${esc(fmtDate(it.meta.deletedAt))} · ${fmtBytes(it.sizeBytes)}</span>
+        ${it.conflict ? `<span class="xs t3" style="display:block">${it.meta.kind === 'archivos' ? 'En su lugar ya hay otro archivo: se va a restaurar como «(restaurado)», sin tocarlo.' : 'Ya hay un servidor con ese nombre: se va a restaurar como «(restaurado)», sin tocar el otro.'}</span>` : ''}</div>
       <span class="days ${it.daysLeft <= 3 ? 'soon' : ''}" title="Se borra para siempre 30 días después de borrarlo">${daysText(it.daysLeft)}</span>
       <div class="btns"><button class="btn s" data-a="trash-restore" data-tone="go" data-key="${esc(it.key)}" data-name="${esc(it.meta.name)}">${icon('restart', 14)}Restaurar</button>
         <button class="btn s icon ghost" data-a="trash-purge" data-tone="danger" data-key="${esc(it.key)}" data-name="${esc(it.meta.name)}" data-size="${it.sizeBytes}" aria-label="Borrar para siempre">${icon('trash', 15)}</button></div>

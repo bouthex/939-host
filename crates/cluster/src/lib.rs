@@ -17,6 +17,7 @@
 //!   otra PC del grupo si no hay camino directo). Si nadie está hosteando, el puerto responde con
 //!   un mensaje claro en la lista de servidores de Minecraft.
 
+pub mod files;
 pub mod moving;
 pub mod signed;
 pub mod wire;
@@ -380,7 +381,7 @@ pub struct GroupNode { inner: Arc<Inner>, router: Arc<Router> }
 impl GroupNode {
     /// Abre el nodo de esta PC y empieza a atender al grupo.
     pub async fn start(secret: [u8; 32], name: &str, relays: Relays, local: Arc<dyn LocalHost>, timing: Timing) -> Result<GroupNode> {
-        let alpns = vec![ALPN_CTRL.to_vec(), ALPN_SYNC.to_vec(), ALPN_MC.to_vec(), ALPN_BRIDGE.to_vec(), ALPN_JOIN.to_vec()];
+        let alpns = vec![ALPN_CTRL.to_vec(), ALPN_SYNC.to_vec(), ALPN_MC.to_vec(), ALPN_BRIDGE.to_vec(), ALPN_JOIN.to_vec(), files::ALPN_FILES.to_vec()];
         let ep = host939_p2p::endpoint(secret, relays, alpns).await?;
         let me = ep.id().to_string();
         lease::set_local_node(&me);
@@ -396,7 +397,7 @@ impl GroupNode {
         let h = Handler(inner.clone());
         let router = Router::builder(ep)
             .accept(ALPN_CTRL, h.clone()).accept(ALPN_SYNC, SyncH(inner.clone())).accept(ALPN_MC, McH(inner.clone()))
-            .accept(ALPN_BRIDGE, BridgeH(inner.clone())).accept(ALPN_JOIN, JoinH(inner.clone()))
+            .accept(ALPN_BRIDGE, BridgeH(inner.clone())).accept(ALPN_JOIN, JoinH(inner.clone())).accept(files::ALPN_FILES, files::FilesH(inner.clone()))
             .spawn();
         let node = GroupNode { inner: inner.clone(), router: Arc::new(router) };
         let n2 = node.clone();

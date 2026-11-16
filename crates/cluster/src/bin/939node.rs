@@ -205,6 +205,18 @@ async fn main() {
                 "request" => node.request_host(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
                 "cancelreq" => node.cancel_host_request(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "answer" => node.answer_host_request(&p(1), p(2) == "si").await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
+                // Administración remota de archivos (en la PC anfitriona).
+                "fls" => node.files_list(&p(1), parts.get(2).map(|s| s.as_str()).unwrap_or("")).await.map(|v| serde_json::to_value(v).unwrap()).map_err(|e| e.to_string()),
+                "fmkdir" => node.files_mkdir(&p(1), &p(2)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "frm" => node.files_delete(&p(1), &p(2)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fmv" => node.files_transfer(&p(1), &p(2), &p(3), true, parts.get(4).map(|s| s == "reemplazar").unwrap_or(false)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fcp" => node.files_transfer(&p(1), &p(2), &p(3), false, parts.get(4).map(|s| s == "reemplazar").unwrap_or(false)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fget" => node.files_download(&p(1), &p(2), std::path::Path::new(&p(3)), |_, _| true).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fput" => node.files_upload(&p(1), std::path::Path::new(&p(2)), &p(3), parts.get(4).map(|s| s == "reemplazar").unwrap_or(false), |_, _| true).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fputcancel" => node.files_upload(&p(1), std::path::Path::new(&p(2)), &p(3), false, |sent, _| sent < 1024 * 1024).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "exists" => Ok(serde_json::json!(paths::server_run_dir(&p(1)).join(p(2)).exists())),
+                "sha1" => Ok(serde_json::json!(host939_core::net::sha1_file(&paths::server_run_dir(&p(1)).join(p(2))).ok())),
+                "lsdir" => Ok(serde_json::json!(std::fs::read_dir(paths::server_run_dir(&p(1)).join(p(2))).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>()).unwrap_or_default())),
                 "exit" => { node.shutdown().await; say("@@", "{\"ok\":true,\"v\":\"bye\"}"); std::process::exit(0) }
                 other => Err(format!("orden desconocida: {other}")),
             }

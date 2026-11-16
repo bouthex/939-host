@@ -87,6 +87,11 @@ pub fn list() -> Vec<TrashItem> {
         .filter_map(|e| {
             let dir = e.path();
             let mut meta = read_meta(&dir)?;
+            if meta.kind == "archivos" {
+                // Archivos borrados desde el administrador: vuelven a su lugar dentro del servidor.
+                let conflict = paths::server_run_dir(&meta.original_id).join(&meta.name).exists() || !paths::server_dir(&meta.original_id).exists();
+                return Some(TrashItem { key: e.file_name().to_string_lossy().to_string(), days_left: days_left(&meta.deleted_at, now).max(0), size_bytes: paths::dir_size(&dir), conflict, meta });
+            }
             meta.logo = crate::logo::data_url_in(&dir);
             if meta.kind != "server" { return None; }
             let conflict = paths::server_dir(&meta.original_id).exists() || name_taken(&meta.name);
@@ -104,11 +109,33 @@ fn item_dir(key: &str) -> AppResult<PathBuf> {
     Ok(dir)
 }
 
+/// Devuelve un archivo o carpeta a su lugar. Si ahí ya hay algo, queda como «nombre (restaurado)».
+fn restore_files(key: &str, dir: &Path, meta: &TrashMeta) -> AppResult<String> {
+    let _lock = Guard::try_new(&format!("papelera-{key}")).ok_or_else(|| AppError::busy("Ya se está restaurando o borrando."))?;
+    if !paths::server_dir(&meta.original_id).exists() { return Err(AppError::invalid("El servidor de ese archivo ya no existe. Restaurá primero el servidor.")); }
+    let rel = crate::files::clean(&meta.name)?;
+    let src = std::fs::read_dir(dir.join("contenido")).map_err(|e| AppError::io("Falta el contenido", e))?.flatten().next().ok_or_else(|| AppError::invalid("Elemento vacío."))?.path();
+    let run = paths::server_run_dir(&meta.original_id);
+    let mut target = run.join(&rel);
+    let mut n = 1;
+    while target.exists() {
+        let name = rel.file_name().unwrap().to_string_lossy().to_string();
+        let (stem, ext) = match name.rfind('.') { Some(i) if i > 0 => (name[..i].to_string(), name[i..].to_string()), _ => (name.clone(), String::new()) };
+        target = run.join(&rel).with_file_name(format!("{stem} (restaurado{}){ext}", if n > 1 { format!(" {n}") } else { String::new() }));
+        n += 1;
+    }
+    if let Some(p) = target.parent() { std::fs::create_dir_all(p).ok(); }
+    paths::rename_retry(&src, &target).map_err(|e| AppError::io("No se pudo restaurar", e))?;
+    remove_dir(dir)?;
+    Ok(meta.original_id.clone())
+}
+
 /// Restaura un servidor. Si su id o su nombre ya están en uso, se restaura como uno nuevo
 /// («Nombre (restaurado)») sin pisar nada. Devuelve el id con el que quedó.
 pub fn restore(key: &str) -> AppResult<String> {
     let dir = item_dir(key)?;
     let meta = read_meta(&dir).ok_or_else(|| AppError::invalid("No es un servidor."))?;
+    if meta.kind == "archivos" { return restore_files(key, &dir, &meta); }
     let lock = Guard::try_new(&format!("papelera-{key}")).ok_or_else(|| AppError::busy("Ese servidor ya se está restaurando o borrando."))?;
     let mut cfg: crate::model::ServerConfig = paths::read_json(&dir.join("instance.json")).map_err(|_| AppError::invalid("Falta la configuración del servidor."))?;
     let mut id = meta.original_id.clone();

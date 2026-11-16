@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod aliases;
+mod files;
 mod commands;
 mod network;
 mod v3;
@@ -262,6 +263,16 @@ fn main() {
             network::servers_hosting,
             v3::pause_server,
             v3::trash_list,
+            files::files_list,
+            files::files_search,
+            files::files_mkdir,
+            files::files_delete,
+            files::files_transfer,
+            files::files_cancel,
+            files::files_import,
+            files::files_export,
+            files::files_check_jar,
+            files::files_open_local,
             v3::optimize_options,
             v3::optimize_set_pending,
             v3::optimize_install,

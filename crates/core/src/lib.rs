@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod events;
 pub mod gameassets;
+pub mod files;
 pub mod hardware;
 pub mod identity;
 pub mod instance;

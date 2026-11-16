@@ -544,3 +544,88 @@ fn request_reaches_new_host_while_old_host_is_slow() {
     let online = b.status(&sid)["members"].as_array().unwrap().iter().find(|m| m["name"] == "C").map(|m| m["online"] == true).unwrap_or(false);
     assert!(online, "B debe ver a C conectada");
 }
+
+/// Administración remota de archivos entre PCs del grupo: listar, crear, subir y bajar con
+/// verificación por SHA-1, sin sobrescribir sin pedirlo, mundo protegido con el servidor
+/// encendido, cancelación sin archivos a medias, permisos por rol y que siga a la anfitriona.
+#[test]
+fn remote_files_follow_host_and_protect_world() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let sid = a.ok("create Archivos 25841").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25842"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    c.ok(&format!("join {t}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} marca.txt hola"));
+    wait("B ve a A como anfitriona", Duration::from_secs(20), || b.status(&sid)["lease"]["state"] == "hosting");
+
+    // Listar y crear carpeta desde B: pasa en A.
+    let ls = b.ok(&format!("fls {sid}"));
+    assert!(ls.as_array().unwrap().iter().any(|e| e["name"] == "world" && e["locked"] == true), "{ls}");
+    b.ok(&format!("fmkdir {sid} config/remoto"));
+    assert!(a.ok(&format!("exists {sid} config/remoto")).as_bool().unwrap());
+    println!("✔ B lista y crea carpetas en la anfitriona A; el mundo figura protegido (encendido)");
+
+    // Subir 3 MB y bajarlos: idénticos.
+    let big = tmp.path().join("grande.bin");
+    let mut data = vec![0u8; 3 * 1024 * 1024 + 123];
+    for (i, x) in data.iter_mut().enumerate() { *x = (i * 7 % 251) as u8; }
+    std::fs::write(&big, &data).unwrap();
+    let local = host939_core::net::sha1_file(&big).unwrap();
+    b.ok(&format!("fput {sid} {} config/remoto/grande.bin", big.display()));
+    assert_eq!(a.ok(&format!("sha1 {sid} config/remoto/grande.bin")).as_str().unwrap(), local);
+    let back = tmp.path().join("bajado.bin");
+    b.ok(&format!("fget {sid} config/remoto/grande.bin {}", back.display()));
+    assert_eq!(host939_core::net::sha1_file(&back).unwrap(), local);
+    println!("✔ subida y descarga de 3 MB por P2P con el mismo SHA-1 en las dos puntas");
+
+    // Sin reemplazo explícito no se pisa; con reemplazo sí.
+    let e = b.err(&format!("fput {sid} {} config/remoto/grande.bin", big.display()));
+    assert!(e.contains("exists"), "{e}");
+    b.ok(&format!("fput {sid} {} config/remoto/grande.bin reemplazar", big.display()));
+    println!("✔ no sobrescribe sin pedirlo («{e}»)");
+
+    // Cancelar a mitad de camino: no queda nada a medias.
+    let e = b.err(&format!("fputcancel {sid} {} config/remoto/cortado.bin", big.display()));
+    assert!(e.contains("cancelada"), "{e}");
+    std::thread::sleep(Duration::from_millis(800));
+    let names = a.ok(&format!("lsdir {sid} config/remoto"));
+    assert!(!names.as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("cortado") || n.as_str().unwrap().contains(".939-subida")), "{names}");
+    println!("✔ subida cancelada: ni el archivo ni el temporal quedan en la anfitriona");
+
+    // Mundo protegido mientras está encendido.
+    let e = b.err(&format!("frm {sid} world/marca.txt"));
+    assert!(e.contains("encendido"), "{e}");
+    let e = b.err(&format!("fget {sid} world/marca.txt {}", tmp.path().join("m.txt").display()));
+    assert!(e.contains("encendido"), "{e}");
+    println!("✔ con el servidor encendido el mundo no se modifica ni se descarga");
+
+    // Una PC que solo juega no administra archivos.
+    let e = c.err(&format!("fls {sid}"));
+    assert!(e.contains("propietaria y las coanfitrionas"), "{e}");
+    println!("✔ la PC jugadora no puede administrar archivos");
+
+    // Apagado: ahora sí se puede tocar el mundo (lo borrado va a la Papelera de A).
+    a.ok(&format!("stop {sid}"));
+    wait("A apagado", Duration::from_secs(20), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
+    b.ok(&format!("frm {sid} world/marca.txt"));
+    assert!(!a.ok(&format!("exists {sid} world/marca.txt")).as_bool().unwrap());
+    println!("✔ apagado: B manda un archivo del mundo a la Papelera de A");
+
+    // Traspaso a B: ahora A administra los archivos de B.
+    a.ok(&format!("start {sid}"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    a.ok(&format!("handover {sid} {}", b.ok("id").as_str().unwrap()));
+    wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("A ve a B como anfitriona", Duration::from_secs(20), || a.status(&sid)["lease"]["host"] == b.ok("id"));
+    a.ok(&format!("fmkdir {sid} config/desde-a"));
+    assert!(b.ok(&format!("exists {sid} config/desde-a")).as_bool().unwrap());
+    println!("✔ tras el traspaso, los archivos se administran en la nueva anfitriona B");
+}
