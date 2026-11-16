@@ -196,3 +196,22 @@ cliente oficial descargado de Mojang y verificado por SHA-1, cuenta sin conexió
 La detección de entrada fallida se probó con las líneas reales del servidor del usuario
 (prueba `explains_client_side_rejection_from_real_log`). No se reprodujo el error con un cliente
 modificado en CI.
+
+
+## 12. Fase final (rama rediseno-v3)
+
+Todo en GitHub Actions, en Windows reales. Resultado: todo aprobado en la última ejecución completa.
+
+| Prueba | Dónde | Resultado |
+|---|---|---|
+| Administrador de archivos local (`archivos`) | Windows | rutas confinadas, mundo protegido, sin sobrescrituras, Papelera y restauración, importar/exportar, subida en partes, validación de .jar |
+| Archivos remotos entre 3 nodos (`remote_files_follow_host_and_protect_world`) | Windows y Linux | SHA-1 igual en las dos puntas (3 MB), sin sobrescritura, cancelación sin restos, mundo protegido, la PC jugadora no puede, sigue a la nueva anfitriona |
+| Archivos entre dos PCs reales | dos Windows en máquinas distintas | listar, 8 MB subidos y bajados con el mismo SHA-1, mundo protegido, cancelación, traspaso posterior correcto |
+| Servidor desde un `.mrpack` (`e2e_modpack_mrpack`) | Windows | Fabric 26.3 con los mods verificados, arranca |
+| Mods de rendimiento (`e2e_optimizacion`) | Windows | Fabric y NeoForge 26.3 arrancan con la selección; ModernFix y Noisium quedan afuera por no tener versión; Chunky termina |
+| Logo firmado (`server_logo_reaches_players_and_survives_handover`) | Windows y Linux | la PC jugadora lo recibe y sigue tras el traspaso |
+| Cambio de versión, perfil `.mrpack`, direcciones `.939host`, Papelera | Windows | aprobadas |
+| App instalada y portable (interfaz real) | Windows | sin errores de JavaScript; recorre todas las pantallas, crea y borra archivos |
+| Cliente real de Minecraft | Windows | entra a Vanilla y Fabric |
+
+**No probado en vivo:** CurseForge (falta una clave aprobada por CurseForge).

@@ -1,5 +1,15 @@
 # Registro de cambios
 
+### Rediseño v3 — fase final (rama rediseno-v3, sin release)
+- Administrador de archivos local y remoto (protocolo P2P propio en la PC anfitriona): rutas confinadas, mundo protegido con el servidor encendido, sin sobrescribir sin pedirlo, Papelera, transferencias en partes con cancelación. Probado entre dos PCs Windows reales.
+- CurseForge por su API oficial (requiere clave; respeta el permiso de distribución de cada autor). Sin clave no se pudo probar en vivo.
+- Servidores desde modpacks: `.mrpack` (solo archivos de servidor) y CurseForge.
+- Logo del servidor en Servidores de amigos e invitaciones, firmado y estable entre anfitrionas.
+- Mods de rendimiento guiados (Lithium, FerriteCore, ModernFix, Krypton…), presets y pregeneración con Chunky.
+- Diseño: pasada completa, microinteracciones, controles monocromáticos, arreglos vistos en Windows.
+- WebView2 más liviano. Medido en Windows (mismas condiciones, antes → después): reposo 125/344 → 116/330 MB (propia/en RAM), minimizada 126/313 → 117/306 MB, tras usarla 205/416 → 179/388 MB; arranque 3,6–4,6 s.
+- Portada de GitHub con recursos propios y capturas reales.
+
 ### Rediseño v3 — etapa «evolución integral» (rama rediseno-v3, sin release)
 - Papelera real: 30 días desde el borrado, restaurar completo (con conflicto → «(restaurado)» con identidad propia), borrar definitivo, vaciar.
 - Operaciones visibles: franja de estado con explicación, giro y barra; píldora de estado más presente.
