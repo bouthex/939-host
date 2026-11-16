@@ -124,8 +124,15 @@ pub async fn update_server(app: AppHandle, config: ServerConfig) -> AppResult<Se
     blocking(move || {
         let total = total_ram(&app.state::<Probe>());
         let mgr = app.state::<Manager>();
+        let before = instance::load(&config.id)?.java_choice;
         let cfg = instance::update(&mgr, config, total)?;
         mgr.changed(&cfg.id);
+        // Cambió el Java elegido: se prepara ya (descarga verificada) para el próximo encendido.
+        if before != cfg.java_choice && cfg.installed {
+            let app2 = app.clone();
+            let id = cfg.id.clone();
+            tauri::async_runtime::spawn(async move { instance::install(&app2.state::<Manager>(), id).await; });
+        }
         Ok(cfg)
     }).await
 }

@@ -436,6 +436,8 @@ tabDraw.settings = async (el) => {
       ${sec('perf', 'Memoria y Java', `<div class="field"><div class="range-head"><span>Memoria (RAM)</span><span class="mono" id="mem-label">${fmtMB(e.memoryMb)}</span></div>
           <input type="range" min="1024" max="${Math.max(maxMem, e.memoryMb)}" step="512" value="${e.memoryMb}" data-bind="memoryMb" data-type="int" data-label="mem-label">
           ${hw ? `<span class="hint">Recomendado para esta PC: ${fmtMB(hw.assessment.recommendedServerRamMb)} · máximo seguro ${fmtMB(maxMem)}.</span>` : ''}</div>
+        <label class="field">Versión de Java<select class="input" data-bind="javaChoice" data-type="java">${[[null, `Automática — Java ${c.javaRequired === 16 ? 17 : (c.javaRequired || c.javaMajor || '?')} (recomendada)`], ...[8, 11, 17, 21, 25].filter((j) => j >= Math.max(8, c.javaRequired || 0) && j !== (c.javaRequired === 16 ? 17 : c.javaRequired)).map((j) => [j, `Java ${j}`])].map(([k, l]) => `<option value="${k ?? ''}" ${(e.javaChoice ?? null) === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <span class="hint">939 Host descarga cada Java desde Eclipse Temurin y lo verifica. Cada servidor puede usar uno distinto; solo se ofrecen versiones compatibles con Minecraft ${esc(c.mcVersion)}.${c.javaMajor ? ` Ahora usa Java ${c.javaMajor}.` : ''}</span></label>
         <label class="field">Perfil de Java<select class="input" data-bind="jvmProfile">${opt({ balanced: 'Equilibrado (G1) — recomendado', lowlatency: 'Baja latencia (ZGC) — para mucha memoria', custom: 'Personalizado — solo mis argumentos' }, e.jvmProfile)}</select></label>
         <label class="field">Argumentos extra de Java<input class="input mono" data-bind="extraJvmArgs" value="${esc(e.extraJvmArgs)}" placeholder="-Dejemplo=1"><span class="hint">Se agregan al final. Con el perfil Personalizado son los únicos (además de la memoria).</span></label>
         <div class="field">Línea de Java resultante<div class="addr"><span id="jvm-preview" class="xs">…</span></div></div>`, '<span class="chip">Se aplica al reiniciar</span>')}
@@ -513,7 +515,7 @@ main.addEventListener('input', (ev) => {
   const el = ev.target;
   if (el.id === 'extra-props') { srvEdit.extra = el.value; updateSavebar(); return; }
   if (!el.dataset.bind || !srvEdit.cfg) return;
-  const val = el.type === 'checkbox' ? el.checked : el.dataset.type === 'int' ? parseInt(el.value, 10) || 0 : el.value;
+  const val = el.type === 'checkbox' ? el.checked : el.dataset.type === 'int' ? parseInt(el.value, 10) || 0 : el.dataset.type === 'java' ? (el.value ? parseInt(el.value, 10) : null) : el.value;
   srvEdit.cfg[el.dataset.bind] = val;
   if (el.dataset.label) document.getElementById(el.dataset.label).textContent = el.dataset.bind === 'memoryMb' ? fmtMB(val) : `${val}${el.dataset.suffix || ''}`;
   updateSavebar(); updateJvmPreview();

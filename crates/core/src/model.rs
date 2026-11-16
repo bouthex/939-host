@@ -54,6 +54,12 @@ pub struct ServerConfig {
     pub loader_version: Option<String>,
     #[serde(default)]
     pub java_major: u32,
+    /// Java que pide esta versión de Minecraft (según Mojang).
+    #[serde(default)]
+    pub java_required: u32,
+    /// Java elegido a mano (None = automático, el recomendado).
+    #[serde(default)]
+    pub java_choice: Option<u32>,
 
     // Rendimiento
     pub memory_mb: u32,

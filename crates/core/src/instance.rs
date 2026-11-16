@@ -136,7 +136,7 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
         mc_version: input.mc_version.clone(),
         loader: input.loader,
         loader_version,
-        java_major: 0,
+        java_major: 0, java_required: 0, java_choice: None,
         memory_mb: input.memory_mb,
         jvm_profile: JvmProfile::Balanced,
         extra_jvm_args: String::new(),
@@ -198,9 +198,12 @@ pub async fn install(mgr: &Manager, id: String) {
         let mut cfg = load(&id)?;
         report("Consultando la versión en Mojang", 0.02);
         let dl = meta::server_download(&cfg.mc_version).await?;
-        cfg.java_major = dl.java_major;
+        cfg.java_required = dl.java_major;
+        let (jv, warn) = java::pick(dl.java_major, cfg.java_choice, &cfg.mc_version, cfg.loader);
+        if let Some(w) = warn { report(&w, 0.04); }
+        cfg.java_major = jv;
         save(&cfg)?;
-        java::ensure(dl.java_major, |msg, f| report(msg, 0.05 + f * 0.55)).await?;
+        java::ensure(jv, |msg, f| report(msg, 0.05 + f * 0.55)).await?;
 
         let run = paths::server_run_dir(&id);
         // En un traspaso, la PC nueva instala antes de recibir el mundo: la carpeta puede no existir.
@@ -225,7 +228,7 @@ pub async fn install(mgr: &Manager, id: String) {
                 net::download(&url, &installer, net::Hash::None, |_, _| {}).await?;
             }
             report(&format!("Instalando {name} (descarga sus librerías; puede tardar unos minutos)"), 0.7);
-            let java = java::installed_java(dl.java_major).ok_or_else(|| AppError::new("java", "Falta Java para el instalador."))?;
+            let java = java::installed_java(jv).ok_or_else(|| AppError::new("java", "Falta Java para el instalador."))?;
             let log_path = run.join("logs").join("instalador.log");
             std::fs::create_dir_all(log_path.parent().unwrap()).ok();
             let installer2 = installer.clone();
@@ -295,6 +298,7 @@ pub fn update(mgr: &Manager, mut patch: ServerConfig, total_ram_mb: u64) -> AppR
     patch.loader = current.loader;
     patch.loader_version = current.loader_version.clone();
     patch.java_major = current.java_major;
+    patch.java_required = current.java_required;
     patch.installed = current.installed;
     patch.install_error = current.install_error.clone();
     patch.created_at = current.created_at.clone();
