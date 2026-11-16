@@ -18,17 +18,34 @@
 - **Reconexión automática**: necesita un perfil Fabric o NeoForge (en Vanilla puro no hay mods). Depende de que el mod AutoReconnect (Reforged) tenga versión para tu Minecraft. Sin el mod, el jugador vuelve a entrar a mano con la misma dirección (la lista de servidores muestra «se está mudando» mientras tanto).
 - **Modo offline y lista blanca**: si el servidor está en modo offline, banear u operar a alguien que nunca entró puede quedar registrado con el nombre en minúsculas (comportamiento de Minecraft). La lista blanca no tiene ese problema.
 - **Zombie Horde 1.3.1** no arranca en un servidor dedicado con un mundo nuevo (error del mod). Con un mundo donde ya se jugó con el mod, sí.
-- **Forge y NeoForge** están implementados con el instalador oficial pero no se pudieron probar en vivo.
-- **Cambiar la versión de Minecraft** de un servidor existente no está disponible: se crea uno nuevo importando una copia del mundo.
-- El ejecutable **no está firmado**. SmartScreen avisa y **Smart App Control (Windows 11) lo bloquea** sin opción de continuar. Se solicitó la firma gratuita de SignPath Foundation (ver `docs/firma/SIGNPATH.md`).
+- **Forge y NeoForge**: en 0.9.0 no se habían probado en vivo. En la rama en desarrollo ya arrancan en las pruebas reales de Windows.
+- **Cambiar la versión de Minecraft** no está en 0.9.0 (en desarrollo, ver abajo). Volver a una versión anterior con el mismo mundo nunca se hace sobre el servidor original: Minecraft no convierte mundos hacia atrás.
+- El ejecutable **no está firmado**. SmartScreen avisa y **Smart App Control (Windows 11) lo bloquea** sin opción de continuar.
 - No hay **actualizaciones automáticas** de 939 Host: se instala la versión nueva encima (el instalador conserva los datos).
 - El mundo completo se copia a cada coanfitriona la primera vez (por ejemplo, 2,5 GB en nuestro modpack de prueba); después solo viajan los cambios.
 
+## En desarrollo (rama `rediseno-v3`, todavía sin versión publicada)
+
+Probado en Windows reales: cambio de versión con copia verificada y vuelta atrás, Papelera de 30 días,
+mods de rendimiento elegidos por versión y loader, pregeneración con Chunky, perfil `.mrpack` para
+los jugadores, logo por servidor, direcciones internas `.939host` y cambios del grupo firmados.
+
+Límites conocidos de esas funciones:
+
+- Las direcciones `.939host` son **internas**: cada PC las crea en su 939 Host (pide permiso de
+  administrador una vez) y no sirven para quien no tenga la app. No son direcciones públicas.
+- El logo todavía no se muestra en «Servidores de amigos» ni en las invitaciones.
+- La app no detecta si tu Minecraft ya tiene la versión y los mods: el perfil `.mrpack` se importa en
+  un launcher compatible (Modrinth App, Prism Launcher, ATLauncher).
+- Con la ventana minimizada la memoria baja poco (de unos 344 a 313 MB en RAM en las mediciones);
+  la mayor parte la usa WebView2, el motor de la ventana.
+
 ## Pendiente para una próxima versión
 
+- Administrador de archivos integrado (local y en PCs del grupo).
+- CurseForge (requiere una clave de API de su consola para desarrolladores) y modpacks completos.
 - Firma de código del ejecutable.
 - Actualizador integrado.
-- Cambio de versión de Minecraft con punto de restauración previo.
 - Descubrimiento de PCs del grupo en la red local (mDNS) para no depender de direcciones guardadas cuando cambia la IP y no hay relays.
 - Compresión de los bloques de sincronización que no sean regiones (las regiones ya vienen comprimidas).
 - Panel de historial del grupo (quién hosteó, traspasos, recuperaciones).
