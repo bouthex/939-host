@@ -97,6 +97,11 @@ firmados por la PC propietaria.
 | **Modpacks** | Crear un servidor desde un `.mrpack` o un modpack de Modrinth. |
 | **Jugadores** | Perfil de mods (`.mrpack`) para que cada uno prepare su Minecraft. |
 
+<p align="center">
+  <img src="docs/img/app-papelera.png" width="49%" alt="Papelera: servidores borrados, días que quedan para restaurarlos">
+  <img src="docs/img/app-modpack.png" width="49%" alt="Crear un servidor desde un modpack de Modrinth, CurseForge o un archivo">
+</p>
+
 <br>
 
 ## Estado del proyecto
