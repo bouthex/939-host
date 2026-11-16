@@ -1,5 +1,15 @@
 # Registro de cambios
 
+### Rediseño v3 — etapa «evolución integral» (rama rediseno-v3, sin release)
+- Papelera real: 30 días desde el borrado, restaurar completo (con conflicto → «(restaurado)» con identidad propia), borrar definitivo, vaciar.
+- Operaciones visibles: franja de estado con explicación, giro y barra; píldora de estado más presente.
+- Cambiar versión desde Ajustes: análisis concreto, actualizar con copia verificada + arranque de prueba + volver atrás, copia con la versión nueva, o empezar de cero. Volver a una versión anterior con mundo, bloqueado sobre el mismo servidor.
+- Logo por servidor (diseños de 939 o imagen propia con recorte); también como server-icon.png de Minecraft.
+- Direcciones `nombre.939host` internas (archivo hosts + IP de loopback propia; permiso de Windows). No son públicas.
+- Perfil para jugar `.mrpack` verificado por hash.
+- Integrantes firmados por la propietaria; transferir propiedad; salir del grupo.
+- Mediciones reales en Windows (CI): arranque 4,6 s; reposo 122 MB privados / 339 MB en RAM (7 procesos con WebView2); minimizada sin reducción; instalado 12,7 MB.
+
 ## Sin publicar — Diseño v3 (rama `rediseno-v3`)
 
 ### Interfaz
