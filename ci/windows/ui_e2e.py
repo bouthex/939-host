@@ -160,7 +160,7 @@ async def main():
                 return "comando visto en la consola"
             await step("consola: enviar comando", console())
             await shot("claro-consola")
-            for tab in ["players", "mods", "world", "backups", "group", "settings"]:
+            for tab in ["players", "mods", "world", "files", "backups", "group", "settings"]:
                 await step(f"pestaña {tab}", p.click(f'.tab[data-v={tab}]'))
                 await shot(f"claro-{tab}", 900)
 
@@ -187,9 +187,32 @@ async def main():
         await p.click('[data-a=nav][data-route=servers]')
         await shot("oscuro-servidores")
         await p.click('.li[data-id]')
-        for tab in ["summary", "console", "players", "mods", "world", "backups", "group", "settings"]:
+        for tab in ["summary", "console", "players", "mods", "world", "files", "backups", "group", "settings"]:
             await p.click(f'.tab[data-v={tab}]')
             await shot(f"oscuro-{tab}", 900)
+
+        async def archivos():
+            # Administrador de archivos real: crear una carpeta, verla, mandarla a la Papelera.
+            await p.click('.tab[data-v=files]')
+            await p.wait_for_selector('.fm-row', timeout=15000)
+            p.once("dialog", lambda d: None)
+            await p.click('[data-a=fm-mkdir]')
+            await p.fill('#fm-n', 'carpeta-de-prueba')
+            await p.click('.dialog .btn.pri')
+            await p.wait_for_selector('.fm-row[data-p="carpeta-de-prueba"]', timeout=15000)
+            await p.click('.fm-row[data-p="carpeta-de-prueba"] .fm-chk')
+            await shot("oscuro-archivos-elegido", 400)
+            await p.click('[data-a=fm-delete]')
+            await p.click('.dialog .btn.pri')
+            await p.wait_for_selector('.fm-row[data-p="carpeta-de-prueba"]', state='detached', timeout=15000)
+            locked = await p.query_selector('.fm-row.locked')
+            return "carpeta creada y enviada a la Papelera" + ("; mundo protegido con el servidor encendido" if locked else "")
+        await step("administrador de archivos (crear y borrar a la Papelera)", archivos())
+        await p.click('[data-a=nav][data-route=trash]')
+        await shot("oscuro-papelera", 700)
+        await p.click('[data-a=nav][data-route=servers]')
+        await p.click('[data-a=nav][data-route=modpack]')
+        await shot("oscuro-modpack", 700)
         await p.click('[data-a=nav][data-route=friends]')
         if await p.query_selector('.dialog .btn.pri'):
             await p.keyboard.press('Escape')

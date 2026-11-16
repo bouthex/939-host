@@ -64,6 +64,16 @@ fn webview_memory(window: &tauri::Window) {
     });
 }
 
+/// Argumentos de WebView2. Además de los que Tauri usa por defecto, se apagan servicios de
+/// Edge que una app de escritorio local no usa y que generan trabajo y tráfico en segundo plano
+/// (actualización de componentes, red en segundo plano, traducción, sugerencias). La interfaz es
+/// una sola página: un único proceso de render alcanza.
+fn browser_args() -> String {
+    let mut a = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,OptimizationHints,MediaRouter,msEdgeTranslate,AutofillServerCommunication         --disable-background-networking --disable-component-update --disable-sync --no-pings --renderer-process-limit=1");
+    if let Some(port) = std::env::var("H939_E2E_DEVTOOLS_PORT").ok().and_then(|p| p.parse::<u16>().ok()) { a.push_str(&format!(" --remote-debugging-port={port}")); }
+    a
+}
+
 pub fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
@@ -72,6 +82,7 @@ pub fn show_main(app: &AppHandle) {
         return;
     }
     let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .additional_browser_args(&browser_args())
         .title("939 Host")
         .inner_size(1280.0, 820.0)
         .min_inner_size(1024.0, 680.0)
@@ -116,11 +127,7 @@ fn main() {
             // La ventana se crea acá (no desde la configuración) para poder habilitar, solo en las
             // pruebas automáticas de Windows, el puerto de depuración de WebView2.
             let wcfg = app.config().app.windows.iter().find(|w| w.label == "main").cloned().expect("ventana main");
-            let mut wb = tauri::WebviewWindowBuilder::from_config(app.handle(), &wcfg)?;
-            if let Some(port) = std::env::var("H939_E2E_DEVTOOLS_PORT").ok().and_then(|p| p.parse::<u16>().ok()) {
-                wb = wb.additional_browser_args(&format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port}"));
-            }
-            wb.build()?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &wcfg)?.additional_browser_args(&browser_args()).build()?;
             paths::init(data_root()).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             // Papelera: lo que lleva más de 30 días se borra al abrir y después cada 6 horas.
             std::thread::spawn(|| loop {
