@@ -13,7 +13,8 @@ use host939_core::events::{Events, InstallProgress};
 use host939_core::hardware::Probe;
 use host939_core::model::*;
 use host939_core::process::Manager;
-use host939_core::{instance, meta, modrinth, mods, paths};
+use host939_core::{instance, meta, modrinth, mods, net, paths};
+use host939_core::modrinth::Source;
 use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 
@@ -338,4 +339,50 @@ async fn e2e_cambio_version() {
     mgr.stop(&cfg.id).unwrap();
     assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
     println!("✔ vuelta atrás a {old}: mundo anterior restaurado y arranca");
+}
+
+/// Perfil para jugar (.mrpack) real: mods de Modrinth por URL y hash, mod manual excluido o en
+/// overrides, y la descarga de cada URL coincide con su sha512.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_perfil_mrpack() {
+    use sha2::Digest;
+    init();
+    let src = modrinth::Modrinth;
+    let cands = release_candidates().await;
+    let mut mc = None;
+    for v in &cands {
+        if meta::loader_support(Loader::Fabric, v).await.map(|s| s.supported).unwrap_or(false)
+            && src.search("lithium", v, "fabric", true, 0).await.map(|r| r.hits.iter().any(|h| h.slug == "lithium")).unwrap_or(false) { mc = Some(v.clone()); break; }
+    }
+    let mc = mc.expect("sin versión con Fabric y Lithium");
+    let mut cfg = instance::create(input("Perfil", &mc, Loader::Fabric, 25961), 8192).await.unwrap();
+    cfg.loader_version = meta::loader_support(Loader::Fabric, &mc).await.unwrap().loader_version;
+    instance::save(&cfg).unwrap();
+    let hit = src.search("lithium", &mc, "fabric", true, 0).await.unwrap().hits.into_iter().find(|h| h.slug == "lithium").unwrap();
+    let plan = mods::plan_install(&src, &cfg, &hit.project_id, None).await.unwrap();
+    mods::apply_plan(&cfg, &plan, |_, _| {}).await.unwrap();
+    std::fs::write(mods::mods_dir(&cfg.id).join("hecho-a-mano.jar"), b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
+    let out = std::env::temp_dir().join(format!("perfil-{}.mrpack", cfg.id));
+    let r = host939_core::profile::export_mrpack(&src, &cfg.id, &out, false).await.unwrap();
+    println!("  {r:?}");
+    assert!(r.from_modrinth.iter().any(|t| t.to_lowercase().contains("lithium")));
+    assert_eq!(r.manual_excluded, vec!["hecho-a-mano.jar".to_string()]);
+    let mut z = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+    let idx: serde_json::Value = serde_json::from_reader(z.by_name("modrinth.index.json").unwrap()).unwrap();
+    assert_eq!(idx["formatVersion"], 1);
+    assert_eq!(idx["dependencies"]["minecraft"], mc.as_str());
+    assert!(idx["dependencies"]["fabric-loader"].is_string());
+    for f in idx["files"].as_array().unwrap() {
+        let url = f["downloads"][0].as_str().unwrap();
+        assert!(url.starts_with("https://cdn.modrinth.com/"), "{url}");
+        let tmp = std::env::temp_dir().join("mrpack-check.jar");
+        net::download(url, &tmp, net::Hash::None, |_, _| {}).await.unwrap();
+        assert_eq!(hex::encode(sha2::Sha512::digest(std::fs::read(&tmp).unwrap())), f["hashes"]["sha512"].as_str().unwrap(), "sha512 no coincide: {url}");
+    }
+    let r2 = host939_core::profile::export_mrpack(&src, &cfg.id, &out, true).await.unwrap();
+    assert_eq!(r2.manual_included, vec!["hecho-a-mano.jar".to_string()]);
+    let mut z = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
+    assert!(z.by_name("overrides/mods/hecho-a-mano.jar").is_ok());
+    println!("✔ .mrpack válido ({} mods de Modrinth verificados por sha512; manual excluido/incluido según se pida)", idx["files"].as_array().unwrap().len());
 }

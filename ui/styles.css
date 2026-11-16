@@ -633,3 +633,8 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 .pv { display: grid; place-items: center; border-radius: 22%; overflow: hidden; border: 1px solid var(--line); background: var(--bg); color: var(--text3); flex: none; }
 .pv.mc { border-radius: 0; image-rendering: pixelated; }
 @media (max-width: 1080px) { .logo-ed { grid-template-columns: minmax(0, 1fr); } }
+
+/* Dirección propia */
+.affix { display: flex; align-items: center; gap: 0; border: 1px solid var(--line2); border-radius: var(--r-input, 10px); background: var(--bg); padding-right: 12px; }
+.affix .input { border: 0; background: none; flex: 1; }
+.affix:focus-within { border-color: var(--text3); }

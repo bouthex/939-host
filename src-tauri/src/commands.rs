@@ -259,7 +259,7 @@ pub fn open_link(url: String) -> AppResult<()> {
     open_path(&url)
 }
 
-fn open_path(target: &str) -> AppResult<()> {
+pub fn open_path(target: &str) -> AppResult<()> {
     #[cfg(windows)]
     {
         std::process::Command::new("explorer").arg(target).spawn().map_err(|e| AppError::io("No se pudo abrir", e))?;

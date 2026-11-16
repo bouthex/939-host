@@ -60,9 +60,17 @@ jobs:
       - name: Cambio de versión real (actualizar, mods, vuelta atrás)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_cambio_version -- --ignored --nocapture
+      - name: Perfil para jugar (.mrpack verificado contra Modrinth)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_perfil_mrpack -- --ignored --nocapture
+      - name: Direcciones .939host (archivo hosts real, nombre, 127.93.x.y)
+        if: ${{ !cancelled() }}
+        env:
+          H939_TEST_HOSTS: "1"
+        run: cargo test --locked -p host939-core --test direcciones -- --nocapture
       - name: Papelera y copias de servidores
         if: ${{ !cancelled() }}
-        run: cargo test --locked -p host939-core --test papelera -- --nocapture
+        run: cargo test --locked -p host939-core --test papelera --test copia_servidor -- --nocapture
       - name: Ciclo completo, copias y restauración
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test server_lifecycle full_server_lifecycle -- --ignored --nocapture

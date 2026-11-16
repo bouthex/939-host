@@ -1,6 +1,7 @@
 // 939 Host — plataforma propia para crear, administrar y hostear servidores de Minecraft Java.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod aliases;
 mod commands;
 mod network;
 mod v3;
@@ -82,6 +83,10 @@ fn data_root() -> std::path::PathBuf {
 }
 
 fn main() {
+    // Ayudante con permisos de administrador para el archivo hosts: hace solo eso y termina,
+    // antes de abrir ventanas o de la comprobación de instancia única.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = aliases::helper_main(&args) { std::process::exit(code); }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_dialog::init())
@@ -104,6 +109,11 @@ fn main() {
             app.manage(node);
             app.manage(process::Manager::new(Arc::new(TauriEvents(app.handle().clone()))));
             app.manage(hardware::Probe::new());
+            app.manage(aliases::Aliases::default());
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(3)).await; aliases::sync(&h).await; });
+            }
             app.manage(network::Cluster::default());
 
             let open = MenuItem::with_id(app, "open", "Abrir 939 Host", true, None::<&str>)?;
@@ -231,6 +241,11 @@ fn main() {
             network::servers_hosting,
             v3::pause_server,
             v3::trash_list,
+            v3::profile_export,
+            v3::profile_open,
+            aliases::alias_status,
+            aliases::alias_set,
+            aliases::alias_apply_hosts,
             v3::server_logo_set,
             v3::server_logo_clear,
             v3::version_analyze,

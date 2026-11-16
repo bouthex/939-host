@@ -178,6 +178,7 @@ A['issue-ok'] = async () => { try { await invoke('server_clear_join_issue', { id
 
 /* ───────── Resumen ───────── */
 tabDraw.summary = async (el) => {
+  if (!state.aliases) await loadAliases();
   const v = state.server, c = v.config;
   const running = v.status === 'running';
   const gg = state.share?.enabled ? state.share.group : null;
@@ -200,7 +201,8 @@ tabDraw.summary = async (el) => {
             : v.reach === 'ok' ? `<span class="chk ok">Listo · Minecraft ${esc(v.reachInfo?.version || c.mcVersion)} responde en ${v.reachInfo?.latencyMs ?? '–'} ms</span>`
             : v.reach === 'fail' ? `<span class="chk bad" title="${esc(v.reachError || '')}">No atiende conexiones</span>`
             : '<span class="chk wait">Comprobando que reciba jugadores…</span>'}</div>
-          <div class="kv"><span class="k">Para entrar hace falta</span><span class="ta-r">Minecraft <b>${esc(c.mcVersion)}</b>${c.loader === 'vanilla' ? ' sin mods' : ` con ${loaderName(c.loader)}${v.modsCount ? ` y los mismos ${v.modsCount} mods` : ' (el servidor no tiene mods)'}`}</span></div>
+          <div class="kv"><span class="k">Para entrar hace falta</span><span class="stack" style="gap:6px;align-items:flex-end"><span class="ta-r">Minecraft <b>${esc(c.mcVersion)}</b>${c.loader === 'vanilla' ? ' sin mods' : ` con ${loaderName(c.loader)}${v.modsCount ? ` y los mismos ${v.modsCount} mods` : ' (el servidor no tiene mods)'}`}</span>${profileButton(c, v)}</span></div>
+          ${aliasRow(c.id)}
           <div class="kv"><span class="k">Desde esta PC</span><span class="row" style="gap:6px"><span class="mono">localhost:${c.port}</span><button class="btn s icon ghost" data-a="copy" data-text="localhost:${c.port}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button></span></div>
           ${gg ? (() => {
             const others = gg.members.filter((m) => !m.isMe);

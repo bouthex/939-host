@@ -409,3 +409,36 @@ pub async fn server_logo_clear(app: AppHandle, id: String) -> AppResult<()> {
     let _ = app.emit("servers-changed", ());
     Ok(())
 }
+
+/* ───────── Perfil para jugar (.mrpack) ───────── */
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileExport { report: host939_core::profile::ExportReport, launchers: Vec<&'static str> }
+
+/// Genera el perfil en la carpeta Descargas del usuario. No toca ninguna instalación de Minecraft.
+#[tauri::command]
+pub async fn profile_export(id: String, include_manual: bool) -> AppResult<ProfileExport> {
+    let cfg = instance::load(&id)?;
+    let base = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).map(|h| h.join("Downloads")).filter(|d| d.is_dir())
+        .unwrap_or_else(|| host939_core::paths::root().join("Perfiles"));
+    std::fs::create_dir_all(&base).map_err(|e| AppError::io("No se pudo crear la carpeta", e))?;
+    let safe: String = cfg.name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+    let dest = base.join(format!("{} ({} {}).mrpack", safe.trim(), cfg.loader.name(), cfg.mc_version));
+    let report = host939_core::profile::export_mrpack(&Modrinth, &id, &dest, include_manual).await?;
+    Ok(ProfileExport { report, launchers: host939_core::profile::launchers() })
+}
+
+/// Abre el `.mrpack` con el programa asociado (Modrinth App, Prism…) o muestra la carpeta.
+#[tauri::command]
+pub fn profile_open(path: String, reveal: bool) -> AppResult<()> {
+    let p = std::path::PathBuf::from(&path);
+    if p.extension().and_then(|x| x.to_str()) != Some("mrpack") || !p.is_file() { return Err(AppError::invalid("Archivo de perfil inválido.")); }
+    if reveal {
+        #[cfg(windows)]
+        { std::process::Command::new("explorer").arg(format!("/select,{}", p.display())).spawn().map_err(|e| AppError::io("No se pudo abrir la carpeta", e))?; return Ok(()); }
+        #[cfg(not(windows))]
+        { return crate::commands::open_path(&p.parent().unwrap().display().to_string()); }
+    }
+    crate::commands::open_path(&path)
+}

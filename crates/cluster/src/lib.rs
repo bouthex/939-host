@@ -543,6 +543,32 @@ impl GroupNode {
         Ok(port)
     }
 
+    /// Igual que `open_route`, pero en la IP propia del servidor (`127.93.x.y:25565`), para su
+    /// dirección `nombre.939host`. Convive con la ruta de siempre.
+    pub async fn open_alias(&self, server: &str, ip: std::net::Ipv4Addr) -> Result<()> {
+        let key = format!("alias:{server}");
+        let mut routes = self.inner.routes.lock().await;
+        if let Some(t) = routes.remove(&key) { t.abort(); }
+        let l = TcpListener::bind((ip, 25565)).await.with_context(|| format!("no se pudo usar {ip}:25565"))?;
+        let inner = self.inner.clone();
+        let sid = server.to_string();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((tcp, _)) = l.accept().await else { break };
+                let _ = tcp.set_nodelay(true);
+                let inner = inner.clone();
+                let sid = sid.clone();
+                tokio::spawn(async move { let _ = inner.route_one(&sid, tcp).await; });
+            }
+        });
+        routes.insert(key, task);
+        Ok(())
+    }
+
+    pub async fn close_alias(&self, server: &str) {
+        if let Some(t) = self.inner.routes.lock().await.remove(&format!("alias:{server}")) { t.abort(); }
+    }
+
     pub async fn close_route(&self, server: &str) {
         if let Some(t) = self.inner.routes.lock().await.remove(server) { t.abort(); }
     }
