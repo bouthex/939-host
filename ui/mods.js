@@ -2,7 +2,7 @@
 /* Mods: Instalados, Explorar Modrinth (categorías y lado), Actualizaciones, Archivos agregados a
    mano, página de detalle e importación arrastrando o eligiendo .jar. */
 
-const MSUB = [['installed', 'Instalados'], ['explore', 'Explorar Modrinth'], ['updates', 'Actualizaciones'], ['files', 'Archivos']];
+const MSUB = [['installed', 'Instalados'], ['explore', 'Explorar Modrinth'], ['curseforge', 'CurseForge'], ['updates', 'Actualizaciones'], ['files', 'Archivos']];
 const CATS = [['', 'Todas'], ['optimization', 'Optimización'], ['utility', 'Utilidades'], ['library', 'Bibliotecas'], ['game-mechanics', 'Mecánicas'], ['adventure', 'Aventura'],
   ['worldgen', 'Generación de mundo'], ['mobs', 'Criaturas'], ['magic', 'Magia'], ['technology', 'Tecnología'], ['storage', 'Almacenamiento'], ['equipment', 'Equipamiento'],
   ['decoration', 'Decoración'], ['food', 'Comida'], ['transportation', 'Transporte'], ['management', 'Administración'], ['social', 'Social'], ['economy', 'Economía'], ['minigame', 'Minijuegos']];
@@ -44,6 +44,7 @@ function paintMods() {
   const sub = $('#mods-sub');
   if (md.sub === 'installed') paintInstalled(sub);
   else if (md.sub === 'explore') paintExplore(sub);
+  else if (md.sub === 'curseforge') paintCurseForge(sub);
   else if (md.sub === 'updates') paintUpdates(sub);
   else paintFiles(sub, files);
 }

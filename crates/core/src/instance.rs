@@ -278,6 +278,14 @@ pub async fn install(mgr: &Manager, id: String) {
         cfg.installed = true;
         cfg.install_error = None;
         save(&cfg)?;
+        // Contenido del modpack elegido al crear el servidor.
+        if let Some(pack) = crate::modpack::take_pending(&id) {
+            report("Instalando el modpack", 0.98);
+            match crate::modpack::apply(&id, &pack, |m, _| report(m, 0.98)).await {
+                Ok(r) => { let _ = std::fs::remove_file(&pack); for w in r.warnings { ev.console_line(&id, &format!("[939 Host] {w}")); } }
+                Err(e) => { let _ = std::fs::remove_file(&pack); return Err(AppError::new("modpack", "El servidor quedó instalado, pero no se pudo agregar el modpack.").with_detail(e.message)); }
+            }
+        }
         // Mods de rendimiento elegidos al crear el servidor.
         let pending = crate::optimize::take_pending(&id);
         if !pending.is_empty() && cfg.loader != Loader::Vanilla {

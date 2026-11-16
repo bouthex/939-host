@@ -50,6 +50,8 @@ jobs:
       # Sin caché en las versiones publicadas: compilación limpia y reproducible.
       - name: Compilar
         run: scripts/compilar-windows.sh
+        env:
+          H939_CURSEFORGE_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
       - name: Instalador, portable y SHA-256
         run: scripts/empaquetar.sh "${{ steps.version.outputs.version }}"
       - uses: actions/upload-artifact@v7

@@ -440,3 +440,58 @@ async fn e2e_optimizacion() {
         println!("✔ {} quitado individualmente", first.title);
     }
 }
+
+/// Servidor desde un modpack (.mrpack) real: se exporta el perfil de un servidor Fabric con
+/// Lithium y Chunky, se crea otro servidor desde ese pack como lo hace la app (versión y loader
+/// del pack, contenido al terminar la instalación) y arranca con los mods descargados por hash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_modpack_mrpack() {
+    use host939_core::{modpack, profile};
+    init();
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let src = modrinth::Modrinth;
+    let cands = release_candidates().await;
+    let mut mc = None;
+    for v in &cands {
+        if meta::loader_support(Loader::Fabric, v).await.map(|s| s.supported).unwrap_or(false)
+            && src.search("lithium", v, "fabric", true, 0).await.map(|r| r.hits.iter().any(|h| h.slug == "lithium")).unwrap_or(false) { mc = Some(v.clone()); break; }
+    }
+    let mc = mc.unwrap();
+    let mut base = instance::create(input("Origen pack", &mc, Loader::Fabric, 25964), 8192).await.unwrap();
+    base.loader_version = meta::loader_support(Loader::Fabric, &mc).await.unwrap().loader_version;
+    instance::save(&base).unwrap();
+    for slug in ["lithium", "chunky"] {
+        let hit = src.search(slug, &mc, "fabric", true, 0).await.unwrap().hits.into_iter().find(|h| h.slug == slug).unwrap();
+        let plan = mods::plan_install(&src, &base, &hit.project_id, None).await.unwrap();
+        mods::apply_plan(&base, &plan, |_, _| {}).await.unwrap();
+    }
+    let pack = std::env::temp_dir().join("prueba-939.mrpack");
+    profile::export_mrpack(&src, &base.id, &pack, false).await.unwrap();
+    let info = modpack::inspect(&pack).unwrap();
+    println!("  pack: {} · {:?} {} · {} archivos de servidor", info.name, info.loader, info.mc_version, info.server_files);
+    assert_eq!(info.mc_version, mc);
+    let mut inp = input("Desde pack", &info.mc_version, info.loader, 25965);
+    inp.name = "Desde pack".into();
+    let mut cfg = instance::create(inp, 8192).await.unwrap();
+    cfg.loader_version = info.loader_version.clone();
+    instance::save(&cfg).unwrap();
+    modpack::set_pending(&cfg.id, &pack).unwrap();
+    instance::install(&mgr, cfg.id.clone()).await;
+    let cfg = instance::load(&cfg.id).unwrap();
+    assert!(cfg.installed, "{:?}", cfg.install_error);
+    let man = mods::load_manifest(&cfg.id);
+    let names: Vec<&str> = man.mods.iter().filter(|m| m.origin.as_deref() == Some("modpack")).map(|m| m.file_name.as_str()).collect();
+    println!("  instalados desde el pack: {names:?}");
+    assert!(names.iter().any(|n| n.to_lowercase().contains("lithium")) && names.iter().any(|n| n.to_lowercase().contains("chunky")));
+    assert!(modpack::take_pending(&cfg.id).is_none(), "el pack pendiente se consume");
+    mgr.start(&probe, &cfg).unwrap();
+    let rt = mgr.runtime(&cfg.id);
+    assert!(wait_for(Duration::from_secs(600), || rt.lock().unwrap().status() == RunStatus::Running), "no arrancó: {:?}", rt.lock().unwrap().last_error);
+    mgr.stop(&cfg.id).unwrap();
+    assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
+    println!("✔ servidor creado desde un .mrpack: {} {} con {} mods verificados, arranca", loader_label(info.loader), mc, names.len());
+}
+fn loader_label(l: Loader) -> &'static str { l.name() }

@@ -37,6 +37,8 @@ pub struct AppSettings {
     pub game_assets_enabled: bool,
     /// Mostrar los íconos e imágenes de los mods de Modrinth.
     pub mod_images_enabled: bool,
+    /// Clave de la API de CurseForge guardada en esta PC (opcional; si no, la de la compilación).
+    pub curseforge_key: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -60,6 +62,7 @@ impl Default for AppSettings {
             skins_enabled: true,
             game_assets_enabled: true,
             mod_images_enabled: true,
+            curseforge_key: None,
         }
     }
 }

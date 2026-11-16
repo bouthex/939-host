@@ -29,6 +29,10 @@ jobs:
         with:
           key: windows-gnu
       - run: scripts/compilar-windows.sh
+        env:
+          # Clave de la API de CurseForge (secreto del repositorio; si no existe, queda vacía y la
+          # app explica cómo configurarla). Nunca va en el código.
+          H939_CURSEFORGE_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
       - run: scripts/empaquetar.sh "$(scripts/version.sh)"
       - uses: actions/upload-artifact@v7
         with:
@@ -63,6 +67,12 @@ jobs:
       - name: Mods de rendimiento (Fabric y NeoForge reales + Chunky)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_optimizacion -- --ignored --nocapture
+      - name: Servidor desde un modpack (.mrpack real)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_modpack_mrpack -- --ignored --nocapture
+      - name: Administrador de archivos local
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test archivos -- --nocapture
       - name: Perfil para jugar (.mrpack verificado contra Modrinth)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_perfil_mrpack -- --ignored --nocapture

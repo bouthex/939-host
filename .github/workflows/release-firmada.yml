@@ -43,6 +43,8 @@ jobs:
         run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster
       - name: Compilar
         run: scripts/compilar-windows.sh
+        env:
+          H939_CURSEFORGE_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
       - name: Preparar archivos de la app
         run: scripts/empaquetar.sh "${{ steps.version.outputs.version }}"
       - uses: actions/upload-artifact@v7

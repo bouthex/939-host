@@ -235,6 +235,17 @@ impl Modrinth {
         net::get_json(&url, "Modrinth").await
     }
 
+    /// Modpacks de Modrinth que se pueden alojar (el servidor está soportado u opcional).
+    pub async fn search_modpacks(&self, query: &str, offset: u32) -> AppResult<SearchResult> {
+        let facets = serde_json::to_string(&vec![vec!["project_type:modpack".to_string()], vec!["server_side:required".into(), "server_side:optional".into()]])?;
+        let url = format!("{API}/search?query={}&facets={}&limit=20&offset={offset}&index=relevance", enc(query), enc(&facets));
+        net::get_json(&url, "Modrinth").await
+    }
+    /// Versiones de un modpack (la más nueva primero).
+    pub async fn modpack_versions(&self, project: &str) -> AppResult<Vec<Version>> {
+        net::get_json(&format!("{API}/project/{}/version", enc(project)), "Modrinth").await
+    }
+
     /// Ficha completa de un proyecto para la página de detalle.
     pub async fn project_detail(&self, id_or_slug: &str) -> AppResult<ProjectDetail> {
         net::get_json(&format!("{API}/project/{}", enc(id_or_slug)), "Modrinth").await

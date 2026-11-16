@@ -12,7 +12,7 @@ routes.servers = async function renderServers() {
   const players = servers.reduce((n, s) => n + (s.status === 'running' ? s.players.length : 0), 0);
   main.innerHTML = `<div class="page">
     <div class="head"><div><h1>Servidores</h1><p class="sub">${online ? `${online} funcionando · ${players} ${players === 1 ? 'jugador conectado' : 'jugadores conectados'}` : 'Ninguno está funcionando ahora.'}</p></div>
-      <div class="btns"><button class="btn" data-a="nav" data-route="friends">${icon('link')}Unirme con un código</button><button class="btn pri" data-a="new">${icon('plus')}Crear servidor</button></div></div>
+      <div class="btns"><button class="btn" data-a="nav" data-route="friends">${icon('link')}Unirme con un código</button><button class="btn" data-a="nav" data-route="modpack">${icon('layers')}Desde un modpack</button><button class="btn pri" data-a="new">${icon('plus')}Crear servidor</button></div></div>
     <div class="card list srv-list">${servers.map(serverRow).join('')}</div>
     <div class="grid2">
       <div class="card pad stack"><div class="spread"><h2>Esta PC</h2><button class="btn s ghost" data-a="settings-section" data-sec="pc">Ver detalle${icon('chev', 14)}</button></div>

@@ -478,3 +478,101 @@ pub async fn optimize_install(app: AppHandle, id: String, slugs: Vec<String>) ->
     mgr.changed(&id);
     r
 }
+
+/* ───────── CurseForge y modpacks ───────── */
+
+use host939_core::{curseforge as cf, modpack};
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfStatus { available: bool, from_build: bool, local: bool }
+
+#[tauri::command]
+pub fn cf_status() -> CfStatus {
+    let local = host939_core::settings::load().curseforge_key.map(|k| !k.trim().is_empty()).unwrap_or(false);
+    CfStatus { available: cf::available(), from_build: option_env!("H939_CURSEFORGE_KEY").is_some(), local }
+}
+
+/// Guarda (o borra) la clave en esta PC después de comprobarla contra la API.
+#[tauri::command]
+pub async fn cf_set_key(key: Option<String>) -> AppResult<CfStatus> {
+    let mut s = host939_core::settings::load();
+    let prev = s.curseforge_key.clone();
+    s.curseforge_key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    host939_core::settings::save(&s)?;
+    if s.curseforge_key.is_some() {
+        if let Err(e) = cf::search("jei", None, None, cf::CLASS_MODS, 0).await {
+            let mut back = host939_core::settings::load(); back.curseforge_key = prev; host939_core::settings::save(&back)?;
+            return Err(e);
+        }
+    }
+    Ok(cf_status())
+}
+
+#[tauri::command]
+pub async fn cf_search(query: String, mc: Option<String>, loader: Option<host939_core::model::Loader>, kind: String, index: u32) -> AppResult<Vec<cf::CfMod>> {
+    cf::search(&query, mc.as_deref(), loader, if kind == "modpacks" { cf::CLASS_MODPACKS } else { cf::CLASS_MODS }, index).await
+}
+
+#[tauri::command]
+pub async fn cf_plan(id: String, mod_id: u64) -> AppResult<cf::CfPlan> { cf::plan(&instance::load(&id)?, mod_id).await }
+
+#[tauri::command]
+pub async fn cf_install(app: AppHandle, id: String, mod_id: u64) -> AppResult<Vec<String>> {
+    let cfg = instance::load(&id)?;
+    if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor para instalar mods: se cargan al arrancar.")); }
+    let p = cf::plan(&cfg, mod_id).await?;
+    let r = cf::apply(&cfg, &p).await;
+    app.state::<Manager>().changed(&id);
+    r
+}
+
+#[tauri::command]
+pub async fn cf_updates(id: String) -> AppResult<Vec<(String, String)>> { cf::updates(&instance::load(&id)?).await }
+
+#[tauri::command]
+pub async fn modrinth_modpacks(query: String, offset: u32) -> AppResult<host939_core::modrinth::SearchResult> { Modrinth.search_modpacks(&query, offset).await }
+
+/// Descarga el pack (si viene de Modrinth o CurseForge) y dice qué es, sin instalar nada.
+#[tauri::command]
+pub async fn modpack_prepare(path: Option<String>, modrinth_project: Option<String>, cf_mod: Option<u64>) -> AppResult<(String, modpack::PackInfo)> {
+    let file = if let Some(p) = path { std::path::PathBuf::from(p) }
+    else if let Some(proj) = modrinth_project {
+        let v = Modrinth.modpack_versions(&proj).await?;
+        let first = v.into_iter().find(|v| v.files.iter().any(|f| f.filename.ends_with(".mrpack"))).ok_or_else(|| AppError::invalid("Ese modpack no tiene versiones descargables."))?;
+        modpack::download_modrinth(&first.id).await?
+    } else if let Some(mid) = cf_mod {
+        let p = cf::project(mid).await?;
+        let mut fs: Vec<cf::CfFile> = cf::search_files_any(mid).await?;
+        fs.retain(|f| f.is_server_pack != Some(true));
+        fs.sort_by(|a, b| a.release_type.cmp(&b.release_type).then(b.file_date.cmp(&a.file_date)));
+        let f = fs.into_iter().next().ok_or_else(|| AppError::invalid("Ese modpack no tiene archivos."))?;
+        let url = f.download_url.clone().filter(|_| p.allow_mod_distribution != Some(false)).ok_or_else(|| AppError::new("cf_blocked", "El autor de este modpack no permite descargarlo desde otras apps. Bajalo desde CurseForge y elegí el archivo con «Desde un archivo»."))?;
+        let dst = host939_core::paths::cache().join("modpacks").join(&f.file_name);
+        host939_core::net::download(&url, &dst, f.sha1().map(host939_core::net::Hash::Sha1).unwrap_or(host939_core::net::Hash::None), |_, _| {}).await?;
+        dst
+    } else { return Err(AppError::invalid("Elegí un modpack.")); };
+    let info = modpack::inspect(&file)?;
+    Ok((file.display().to_string(), info))
+}
+
+/// Crea el servidor con la versión y el loader del pack; el contenido se agrega al terminar la instalación.
+#[tauri::command]
+pub async fn modpack_create(app: AppHandle, path: String, name: String, memory_mb: u32, port: u16, accept_eula: bool) -> AppResult<host939_core::model::ServerConfig> {
+    let file = std::path::PathBuf::from(&path);
+    let info = modpack::inspect(&file)?;
+    let total = hardware::live(&app.state::<Probe>(), 0).ram_total_mb;
+    let input = host939_core::model::CreateServerInput {
+        name, description: format!("Modpack {} {}", info.name, info.version), mc_version: info.mc_version.clone(), loader: info.loader, memory_mb,
+        difficulty: "normal".into(), gamemode: "survival".into(), max_players: 8, port, online_mode: true, whitelist: false, view_distance: 10, simulation_distance: 8,
+        level_seed: String::new(), accept_eula, import_world_path: None, optimize: vec![],
+    };
+    let mut cfg = instance::create(input, total).await?;
+    if info.loader_version.is_some() { cfg.loader_version = info.loader_version.clone(); instance::save(&cfg)?; }
+    modpack::set_pending(&cfg.id, &file)?;
+    let mgr_app = app.clone();
+    let id = cfg.id.clone();
+    tauri::async_runtime::spawn(async move { instance::install(&mgr_app.state::<Manager>(), id).await; });
+    let _ = app.emit("servers-changed", ());
+    Ok(cfg)
+}
