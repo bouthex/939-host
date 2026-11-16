@@ -390,3 +390,22 @@ pub async fn server_duplicate(app: AppHandle, id: String, name: String, parts: v
 }
 
 fn paths_has_world(id: &str) -> bool { host939_core::paths::server_run_dir(id).join("world").join("level.dat").exists() }
+
+
+/* ───────── Logo del servidor ───────── */
+
+#[tauri::command]
+pub async fn server_logo_set(app: AppHandle, id: String, kind: String, big: Vec<u8>, icon: Vec<u8>) -> AppResult<()> {
+    host939_core::logo::set(&id, &kind, &big, &icon)?;
+    app.state::<Manager>().changed(&id);
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn server_logo_clear(app: AppHandle, id: String) -> AppResult<()> {
+    host939_core::logo::clear(&id)?;
+    app.state::<Manager>().changed(&id);
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}

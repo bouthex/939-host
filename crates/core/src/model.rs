@@ -46,6 +46,10 @@ pub struct ServerIdentity {
 pub struct ServerConfig {
     pub id: String,
     pub name: String,
+    /// Logo propio del servidor: `preset:<n>` (diseños de 939 Host) o `custom` (imagen subida,
+    /// guardada como `logo.png`). `None` = el ícono genérico.
+    #[serde(default)]
+    pub logo: Option<String>,
     #[serde(default)]
     pub description: String,
     pub mc_version: String,
@@ -155,6 +159,8 @@ pub enum RunStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ServerView {
     pub config: ServerConfig,
+    /// `data:` del logo propio (256×256), si tiene.
+    pub logo_url: Option<String>,
     pub status: RunStatus,
     pub players: Vec<String>,
     pub started_at: Option<String>,

@@ -11,6 +11,7 @@ pub mod identity;
 pub mod instance;
 pub mod java;
 pub mod lease;
+pub mod logo;
 pub mod meta;
 pub mod model;
 pub mod modrinth;

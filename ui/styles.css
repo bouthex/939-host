@@ -613,3 +613,23 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 .steps-done { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13.5px; }
 .steps-done li { display: flex; gap: 8px; align-items: flex-start; } .steps-done svg { color: var(--go); margin-top: 3px; flex: none; }
 @media (max-width: 1080px) { .optcards { grid-template-columns: minmax(0, 1fr); } }
+
+/* Logo del servidor */
+.srv-ic.logo { padding: 0; overflow: hidden; background: none; }
+.srv-ic.logo img, .pv img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.logo-btn { padding: 0; border: 0; background: none; border-radius: 12px; cursor: pointer; position: relative; transition: transform var(--d-fast) var(--ease-out); }
+.logo-btn:hover { transform: scale(1.04); } .logo-btn:active { transform: scale(.97); }
+.logo-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.logo-ed { display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 24px; align-items: start; }
+.logo-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.lp { padding: 4px; border: 1px solid transparent; border-radius: 16px; background: none; cursor: pointer; display: grid; place-items: center; transition: border-color var(--d-fast) var(--ease-out); }
+.lp:hover { border-color: var(--line2); } .lp.on { border-color: var(--text); }
+.drop { display: grid; place-items: center; gap: 6px; padding: 32px 16px; border: 1px dashed var(--line2); border-radius: var(--r-card); cursor: pointer; text-align: center; color: var(--text2); }
+.drop.over, .drop:hover { border-color: var(--text3); background: var(--hover); }
+.crop { position: relative; width: 256px; height: 256px; border-radius: 14px; overflow: hidden; background: repeating-conic-gradient(var(--surface) 0 25%, var(--bg) 0 50%) 0 0 / 16px 16px; touch-action: none; }
+.crop canvas { cursor: grab; display: block; } .crop canvas:active { cursor: grabbing; }
+.crop-mask { position: absolute; inset: 0; pointer-events: none; border-radius: 14px; box-shadow: inset 0 0 0 1px var(--line2); }
+.logo-prev { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+.pv { display: grid; place-items: center; border-radius: 22%; overflow: hidden; border: 1px solid var(--line); background: var(--bg); color: var(--text3); flex: none; }
+.pv.mc { border-radius: 0; image-rendering: pixelated; }
+@media (max-width: 1080px) { .logo-ed { grid-template-columns: minmax(0, 1fr); } }

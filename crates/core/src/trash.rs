@@ -86,7 +86,8 @@ pub fn list() -> Vec<TrashItem> {
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
             let dir = e.path();
-            let meta = read_meta(&dir)?;
+            let mut meta = read_meta(&dir)?;
+            meta.logo = crate::logo::data_url_in(&dir);
             if meta.kind != "server" { return None; }
             let conflict = paths::server_dir(&meta.original_id).exists() || name_taken(&meta.name);
             Some(TrashItem { key: e.file_name().to_string_lossy().to_string(), days_left: days_left(&meta.deleted_at, now).max(0), size_bytes: paths::dir_size(&dir), conflict, meta })

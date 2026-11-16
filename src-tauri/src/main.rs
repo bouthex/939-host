@@ -231,6 +231,8 @@ fn main() {
             network::servers_hosting,
             v3::pause_server,
             v3::trash_list,
+            v3::server_logo_set,
+            v3::server_logo_clear,
             v3::version_analyze,
             v3::version_last_change,
             v3::version_update,

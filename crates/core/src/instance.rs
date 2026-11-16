@@ -39,6 +39,7 @@ pub fn view(mgr: &Manager, probe: &Probe, cfg: ServerConfig, with_size: bool) ->
     let memory_used_mb = r.pid.and_then(|pid| crate::hardware::process_memory_mb(probe, pid));
     let world_size_mb = if with_size { paths::dir_size(&paths::server_run_dir(&cfg.id).join("world")) as f64 / 1_048_576.0 } else { 0.0 };
     ServerView {
+        logo_url: if cfg.logo.is_some() { crate::logo::data_url(&cfg.id) } else { None },
         status: r.status(),
         players: r.players.iter().cloned().collect(),
         started_at: r.started_at.map(|t| t.to_rfc3339()),
@@ -132,6 +133,7 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
     let mut cfg = ServerConfig {
         id: id.clone(),
         name: input.name.trim().to_string(),
+        logo: None,
         description: input.description.trim().to_string(),
         mc_version: input.mc_version.clone(),
         loader: input.loader,

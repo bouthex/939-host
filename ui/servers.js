@@ -31,7 +31,7 @@ function serverRow(s) {
   const st = serverState(s);
   const away = elsewhere(s);
   return `<div class="li click" data-a="open" data-id="${esc(c.id)}" role="button" tabindex="0">
-    <span class="srv-ic">${icon('cube')}</span>
+    ${srvLogo(s.logoUrl)}
     <div class="grow"><div class="b ellipsis">${esc(c.name)}</div><div class="sm t3 ellipsis">${loaderName(c.loader)} ${esc(c.mcVersion)}${c.description ? ` · ${esc(c.description)}` : ''}</div></div>
     <div class="cols">
       <div class="c" style="min-width:132px">${away ? `<span class="st">${away.hostOnline ? SHAPES.dot : SHAPES.off}En otra PC</span><span class="xs t3 ellipsis">Lo aloja ${esc(away.hostName || 'otra PC')}</span>` : `${stateHTML(s)}${st.detail ? `<span class="xs t3 ellipsis">${esc(st.detail)}</span>` : ''}`}</div>

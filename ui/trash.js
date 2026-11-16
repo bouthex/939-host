@@ -25,7 +25,7 @@ async function paintTrash() {
     <div class="spread"><span class="sm t2">${items.length === 1 ? '1 servidor' : `${items.length} servidores`} · ${fmtBytes(total)}</span>
       <button class="btn s" data-a="trash-empty" data-tone="danger">${icon('trash', 14)}Vaciar papelera</button></div>
     <div class="card list">${items.map((it) => `<div class="li trash-it">
-      <span class="srv-ic">${icon('servers', 18)}</span>
+      ${srvLogo(it.meta.logo)}
       <div class="grow" style="min-width:0"><b class="ellipsis" style="display:block">${esc(it.meta.name)}</b>
         <span class="sm t2">${esc([it.meta.loader && it.meta.loader !== 'Vanilla' ? it.meta.loader : 'Vanilla', it.meta.mcVersion].filter(Boolean).join(' '))} · borrado el ${esc(fmtDate(it.meta.deletedAt))} · ${fmtBytes(it.sizeBytes)}</span>
         ${it.conflict ? '<span class="xs t3" style="display:block">Ya hay un servidor con ese nombre: se va a restaurar como «(restaurado)», sin tocar el otro.</span>' : ''}</div>

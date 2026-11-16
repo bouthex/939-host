@@ -46,6 +46,7 @@ const ICONS = {
   pc: '<path d="M2.5 3.5h15v10h-15z"/><path d="M6.5 16.5h7M10 13.5v3"/>',
   gauge: '<path d="M3.5 14.5a6.5 6.5 0 1 1 13 0"/><path d="m10 14.5 3-4.5"/><path d="M3.5 14.5h13"/>',
   download: '<path d="M10 3v9.5M6 8.5l4 4 4-4"/><path d="M3.5 13v3.5h13V13"/>',
+  image: '<rect x="3" y="3.5" width="14" height="13" rx="2.5"/><circle cx="7.5" cy="8" r="1.5"/><path d="m3.5 14.5 4-4 3 3 2-2 4 4"/>',
   upload: '<path d="M10 13V3.5M6 7.5l4-4 4 4"/><path d="M3.5 13v3.5h13V13"/>',
   trash: '<path d="M3.5 5.5h13M8 5.5v-2h4v2"/><path d="M5 5.5 6 16.5h8l1-11"/><path d="M8.5 8.5v5M11.5 8.5v5"/>',
   logout: '<path d="M8.5 3.5h-5v13h5"/><path d="M12 6.5 15.5 10 12 13.5M15.5 10H7.5"/>',
