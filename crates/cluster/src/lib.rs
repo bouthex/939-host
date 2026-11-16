@@ -434,7 +434,7 @@ impl GroupNode {
             s.members.insert(0, Member { node_id: self.inner.me.clone(), name: self.inner.name(), joined_at: chrono::Local::now().to_rfc3339(), role: "propietario".into() });
         }
         let prev_rev = rev(&s).unwrap_or(0);
-        s.card = Some(serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "rev": prev_rev }));
+        s.card = Some(card_for(&cfg, prev_rev));
         self.inner.commit(server, &mut s)?;
         lease::ensure(server, &self.inner.name()).map_err(|e| anyhow!(e.message))?;
         Ok(s)
@@ -468,6 +468,21 @@ impl GroupNode {
         let mut s = network::load_share(server);
         s.members.retain(|m| m.node_id != node || m.role == "propietario");
         self.inner.commit(server, &mut s)
+    }
+
+    /// La propietaria vuelve a publicar los datos públicos (por ejemplo, tras cambiar el logo, el
+    /// nombre o la versión). Las demás PCs lo toman en la próxima consulta.
+    pub fn refresh_card(&self, server: &str) -> Result<bool> {
+        if !self.inner.is_owner(server) { return Ok(false); }
+        let cfg = host939_core::instance::load(server).map_err(|e| anyhow!(e.message))?;
+        let mut s = network::load_share(server);
+        if !s.enabled { return Ok(false); }
+        let card = card_for(&cfg, rev(&s).unwrap_or(0));
+        let same = s.card.as_ref().map(|c| { let mut a = c.clone(); let mut b = card.clone(); a["rev"] = 0.into(); b["rev"] = 0.into(); a == b }).unwrap_or(false);
+        if same { return Ok(false); }
+        s.card = Some(card);
+        self.inner.commit(server, &mut s)?;
+        Ok(true)
     }
 
     /// Pasa la propiedad a otra PC del grupo. La firma la propietaria actual; desde ese momento
@@ -1014,6 +1029,17 @@ fn debug(msg: &str) { if std::env::var("H939_DEBUG").is_ok() { eprintln!("[debug
 
 fn nice(name: &str) -> String { if name.trim().is_empty() { "otra PC del grupo".into() } else { name.to_string() } }
 
+/// Datos públicos del servidor que viajan firmados al grupo (nombre, versión y logo de 64×64
+/// del servidor; nunca el logo de 939 Host). Así lo ven las PCs que solo juegan y se mantienen
+/// al cambiar de anfitriona.
+fn card_for(cfg: &host939_core::model::ServerConfig, rev: u64) -> serde_json::Value {
+    use base64::Engine;
+    let icon = std::fs::read(host939_core::paths::server_run_dir(&cfg.id).join("server-icon.png")).ok()
+        .filter(|b| cfg.logo.is_some() && b.len() < 64 * 1024 && host939_core::logo::png_size(b).map(|s| s == (64, 64)).unwrap_or(false))
+        .map(|b| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(b)));
+    serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "rev": rev, "logo": icon })
+}
+
 fn bump_rev(s: &mut ShareConfig) {
     let mut card = s.card.take().unwrap_or_else(|| serde_json::json!({}));
     let r = card.get("rev").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
@@ -1341,6 +1367,12 @@ impl Inner {
             for m in s2.members.iter_mut() {
                 let want = if m.node_id == self.me { Some(my_name.clone()) } else { names.iter().find(|(n, _)| *n == m.node_id).map(|(_, v)| v.clone()) };
                 if let Some(w) = want.filter(|w| !w.trim().is_empty() && *w != m.name) { m.name = w; touched = true; }
+            }
+            // Datos públicos al día (nombre, versión, logo) y firmados.
+            if let Ok(cfg) = host939_core::instance::load(server) {
+                let card = card_for(&cfg, rev(&s2).unwrap_or(0));
+                let differs = s2.card.as_ref().map(|c| { let mut a = c.clone(); let mut b = card.clone(); a["rev"] = 0.into(); b["rev"] = 0.into(); a != b }).unwrap_or(true);
+                if differs { s2.card = Some(card); touched = true; }
             }
             // Grupos anteriores a las firmas: la propietaria firma su lista en el primer contacto.
             if touched || s2.sig.is_none() { let _ = self.commit(server, &mut s2); self.local.changed(server); }

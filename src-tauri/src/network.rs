@@ -284,6 +284,8 @@ pub async fn group_sync(id: String, cluster: State<'_, Cluster>) -> AppResult<()
 #[serde(rename_all = "camelCase")]
 pub struct JoinedView {
     pub id: String,
+    /// Logo del servidor (64×64) tal como lo publicó la propietaria.
+    pub logo: Option<String>,
     pub name: String,
     pub mc_version: String,
     pub loader: String,
@@ -312,6 +314,7 @@ pub async fn remote_list(cluster: State<'_, Cluster>) -> AppResult<Vec<JoinedVie
         out.push(JoinedView {
             id: sid.clone(), name: get("name"), mc_version: get("mcVersion"), loader: get("loader"), has_copy: instance::load(&sid).is_ok(),
             route_port: route_port(&sid), host_name, host_online, i_am_host,
+            logo: card.get("logo").and_then(|v| v.as_str()).filter(|u| u.starts_with("data:image/png;base64,")).map(String::from),
         });
     }
     Ok(out)

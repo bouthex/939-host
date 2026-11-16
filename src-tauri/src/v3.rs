@@ -397,6 +397,7 @@ fn paths_has_world(id: &str) -> bool { host939_core::paths::server_run_dir(id).j
 #[tauri::command]
 pub async fn server_logo_set(app: AppHandle, id: String, kind: String, big: Vec<u8>, icon: Vec<u8>) -> AppResult<()> {
     host939_core::logo::set(&id, &kind, &big, &icon)?;
+    if let Ok(n) = app.state::<crate::network::Cluster>().node().await { let _ = n.refresh_card(&id); }
     app.state::<Manager>().changed(&id);
     let _ = app.emit("servers-changed", ());
     Ok(())
@@ -405,6 +406,7 @@ pub async fn server_logo_set(app: AppHandle, id: String, kind: String, big: Vec<
 #[tauri::command]
 pub async fn server_logo_clear(app: AppHandle, id: String) -> AppResult<()> {
     host939_core::logo::clear(&id)?;
+    if let Ok(n) = app.state::<crate::network::Cluster>().node().await { let _ = n.refresh_card(&id); }
     app.state::<Manager>().changed(&id);
     let _ = app.emit("servers-changed", ());
     Ok(())

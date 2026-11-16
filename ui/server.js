@@ -397,7 +397,7 @@ A.invite = async (el) => {
   const role = el.dataset.role || 'jugador';
   try {
     const ticket = await invoke('invite_create', { id: state.params.id, role, label: role });
-    await dialog({ title: role === 'coanfitrion' ? 'Invitación de coanfitrión' : 'Invitación de jugador', body: `<p class="sm">${role === 'coanfitrion' ? 'La PC que la use guarda una copia sincronizada y puede hostear el servidor cuando esta no esté.' : 'La PC que la use puede jugar, pero no guarda copia ni hostea.'} Se pega en 939 Host → Servidores de amigos → Unirme. Sirve para una sola PC; esta PC tiene que tener 939 Host abierto cuando la usen.</p><div class="addr"><span class="sm">${esc(ticket)}</span></div>`, confirm: 'Copiar y cerrar', cancel: null });
+    await dialog({ title: role === 'coanfitrion' ? 'Invitación de coanfitrión' : 'Invitación de jugador', body: `<div class="invite-card">${srvLogo(state.server.logoUrl, 48)}<div><b>${esc(state.server.config.name)}</b><div class="sm t2">${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)} · quien se una ve este logo en «Servidores de amigos»</div></div></div><p class="sm">${role === 'coanfitrion' ? 'La PC que la use guarda una copia sincronizada y puede hostear el servidor cuando esta no esté.' : 'La PC que la use puede jugar, pero no guarda copia ni hostea.'} Se pega en 939 Host → Servidores de amigos → Unirme. Sirve para una sola PC; esta PC tiene que tener 939 Host abierto cuando la usen.</p><div class="addr"><span class="sm">${esc(ticket)}</span></div>`, confirm: 'Copiar y cerrar', cancel: null });
     try { await navigator.clipboard.writeText(ticket); toast('Código copiado'); } catch { /* sin portapapeles */ }
   } catch (e) { fail(e); }
   drawTab();

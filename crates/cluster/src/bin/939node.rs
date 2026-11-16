@@ -217,6 +217,12 @@ async fn main() {
                 "exists" => Ok(serde_json::json!(paths::server_run_dir(&p(1)).join(p(2)).exists())),
                 "sha1" => Ok(serde_json::json!(host939_core::net::sha1_file(&paths::server_run_dir(&p(1)).join(p(2))).ok())),
                 "lsdir" => Ok(serde_json::json!(std::fs::read_dir(paths::server_run_dir(&p(1)).join(p(2))).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>()).unwrap_or_default())),
+                "logo" => {
+                    // PNG mínimos válidos (cabecera + IHDR + IEND) de 256×256 y 64×64.
+                    let png = |w: u32| { let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13]; v.extend_from_slice(b"IHDR"); v.extend_from_slice(&w.to_be_bytes()); v.extend_from_slice(&w.to_be_bytes()); v.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]); v.extend_from_slice(&[0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]); v };
+                    host939_core::logo::set(&p(1), "preset:3", &png(256), &png(64)).map_err(|e| e.message).and_then(|_| node.refresh_card(&p(1)).map(|b| serde_json::json!(b)).map_err(|e| e.to_string()))
+                }
+                "card" => Ok(host939_core::network::load_share(&p(1)).card.unwrap_or_default()),
                 "exit" => { node.shutdown().await; say("@@", "{\"ok\":true,\"v\":\"bye\"}"); std::process::exit(0) }
                 other => Err(format!("orden desconocida: {other}")),
             }

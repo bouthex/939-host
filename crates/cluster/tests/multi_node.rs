@@ -629,3 +629,34 @@ fn remote_files_follow_host_and_protect_world() {
     assert!(b.ok(&format!("exists {sid} config/desde-a")).as_bool().unwrap());
     println!("✔ tras el traspaso, los archivos se administran en la nueva anfitriona B");
 }
+
+/// El logo del servidor viaja firmado en sus datos públicos: lo ve la PC que solo juega y se
+/// mantiene cuando cambia la anfitriona.
+#[test]
+fn server_logo_reaches_players_and_survives_handover() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let sid = a.ok("create Logos 25851").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25852"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    c.ok(&format!("join {t}"));
+    assert!(c.ok(&format!("card {sid}"))["logo"].is_null());
+    assert_eq!(a.ok(&format!("logo {sid}")).as_bool(), Some(true));
+    wait("C recibe el logo", Duration::from_secs(20), || c.ok(&format!("card {sid}"))["logo"].as_str().map(|l| l.starts_with("data:image/png;base64,")).unwrap_or(false));
+    println!("✔ la PC que solo juega recibe el logo firmado por la propietaria");
+    a.ok(&format!("start {sid}"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    a.ok(&format!("handover {sid} {}", b.ok("id").as_str().unwrap()));
+    wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    b.ok(&format!("sync {sid}")); c.ok(&format!("sync {sid}"));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(c.ok(&format!("card {sid}"))["logo"].as_str().unwrap_or("").starts_with("data:image/png"), "el logo se perdió tras el traspaso");
+    assert!(b.ok(&format!("card {sid}"))["logo"].as_str().unwrap_or("").starts_with("data:image/png"));
+    println!("✔ tras pasar el servidor a B, el logo sigue en todas las PCs");
+}
