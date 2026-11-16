@@ -326,7 +326,7 @@ pub async fn duplicate(id: &str, new_name: &str, parts: &CopyParts, total_ram_mb
         name: name.into(), description: src.description.clone(), mc_version: src.mc_version.clone(), loader: src.loader, memory_mb: src.memory_mb,
         difficulty: src.difficulty.clone(), gamemode: src.gamemode.clone(), max_players: src.max_players, port: free_port(src.port), online_mode: src.online_mode,
         whitelist: src.whitelist, view_distance: src.view_distance, simulation_distance: src.simulation_distance, level_seed: src.level_seed.clone(),
-        accept_eula: src.eula_accepted_at.is_some(), import_world_path: None,
+        accept_eula: src.eula_accepted_at.is_some(), import_world_path: None, optimize: vec![],
     };
     let mut cfg = instance::create(input, total_ram_mb).await?;
     let from = paths::server_run_dir(id);

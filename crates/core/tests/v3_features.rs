@@ -68,7 +68,7 @@ async fn design_v3_features() {
         name: "Prueba v3".into(), description: String::new(), mc_version: "26.2".into(), loader: Loader::Vanilla,
         memory_mb: 1536, difficulty: "peaceful".into(), gamemode: "survival".into(), max_players: 4, port: 25631,
         online_mode: true, whitelist: true, view_distance: 3, simulation_distance: 3, level_seed: "939".into(),
-        accept_eula: true, import_world_path: None,
+        accept_eula: true, import_world_path: None, optimize: vec![],
     };
     let cfg = instance::create(input, 8192).await.expect("crear");
     instance::install(&mgr, cfg.id.clone()).await;

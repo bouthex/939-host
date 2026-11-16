@@ -442,3 +442,39 @@ pub fn profile_open(path: String, reveal: bool) -> AppResult<()> {
     }
     crate::commands::open_path(&path)
 }
+
+/* ───────── Mods de rendimiento ───────── */
+
+use host939_core::optimize;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizeOptions { candidates: Vec<optimize::Candidate>, recommended: Vec<String>, max: Vec<String> }
+
+/// Candidatos para una versión y loader (sirve en el asistente, antes de que exista el servidor).
+#[tauri::command]
+pub async fn optimize_options(mc: String, loader: host939_core::model::Loader, id: Option<String>) -> AppResult<OptimizeOptions> {
+    let installed: Vec<String> = id.map(|i| host939_core::mods::load_manifest(&i).mods.into_iter().map(|m| m.project_id).collect()).unwrap_or_default();
+    let candidates = optimize::candidates(&Modrinth, &mc, loader, &installed).await?;
+    Ok(OptimizeOptions { recommended: optimize::preset(&candidates, "recommended"), max: optimize::preset(&candidates, "max"), candidates })
+}
+
+/// Para el asistente: se instalan cuando termine la instalación del servidor.
+#[tauri::command]
+pub fn optimize_set_pending(id: String, slugs: Vec<String>) -> AppResult<()> { optimize::set_pending(&id, &slugs) }
+
+/// Servidor existente: copia de seguridad (si ya tiene mundo) y después instala.
+#[tauri::command]
+pub async fn optimize_install(app: AppHandle, id: String, slugs: Vec<String>) -> AppResult<optimize::InstallReport> {
+    let cfg = instance::load(&id)?;
+    let mgr = app.state::<Manager>();
+    if mgr.runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor para instalar mods: se cargan al arrancar.")); }
+    if host939_core::paths::server_run_dir(&id).join("world").join("level.dat").exists() {
+        host939_core::backup::create(&mgr, &id, "Antes de instalar mods de rendimiento", "seguridad", &cfg.mc_version)?;
+    }
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let r = optimize::install(&Modrinth, &cfg, &slugs, move |m, f| { let _ = app2.emit("version-progress", serde_json::json!({ "id": id2, "message": m, "fraction": f })); }).await;
+    mgr.changed(&id);
+    r
+}

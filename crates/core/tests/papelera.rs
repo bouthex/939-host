@@ -11,7 +11,7 @@ impl Events for NoEv { fn server_changed(&self, _: &str) {} fn console_line(&sel
 fn input(name: &str, port: u16) -> CreateServerInput {
     CreateServerInput { name: name.into(), description: "papelera".into(), mc_version: "26.2".into(), loader: Loader::Vanilla, memory_mb: 1024,
         difficulty: "normal".into(), gamemode: "survival".into(), max_players: 4, port, online_mode: true, whitelist: false, view_distance: 4,
-        simulation_distance: 4, level_seed: String::new(), accept_eula: true, import_world_path: None }
+        simulation_distance: 4, level_seed: String::new(), accept_eula: true, import_world_path: None, optimize: vec![] }
 }
 
 #[tokio::test]

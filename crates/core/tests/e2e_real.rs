@@ -20,10 +20,11 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 struct Recorder {
     progress: Mutex<Vec<String>>,
+    console: Mutex<Vec<String>>,
 }
 impl Events for Recorder {
     fn server_changed(&self, _: &str) {}
-    fn console_line(&self, _: &str, _: &str) {}
+    fn console_line(&self, _: &str, l: &str) { self.console.lock().unwrap().push(l.to_string()); }
     fn install_progress(&self, p: &InstallProgress) {
         let mut v = self.progress.lock().unwrap();
         if v.last().map(|l| !l.starts_with(&p.message)).unwrap_or(true) || p.error.is_some() {
@@ -108,7 +109,7 @@ fn input(name: &str, mc: &str, loader: Loader, port: u16) -> CreateServerInput {
         name: name.into(), description: "prueba de punta a punta".into(), mc_version: mc.into(), loader,
         memory_mb: 2048, difficulty: "normal".into(), gamemode: "survival".into(), max_players: 4, port,
         online_mode: true, whitelist: false, view_distance: 4, simulation_distance: 4, level_seed: "939".into(),
-        accept_eula: true, import_world_path: None,
+        accept_eula: true, import_world_path: None, optimize: vec![],
     }
 }
 
@@ -384,4 +385,58 @@ async fn e2e_perfil_mrpack() {
     let mut z = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
     assert!(z.by_name("overrides/mods/hecho-a-mano.jar").is_ok());
     println!("✔ .mrpack válido ({} mods de Modrinth verificados por sha512; manual excluido/incluido según se pida)", idx["files"].as_array().unwrap().len());
+}
+
+/// Mods de rendimiento reales: candidatos consultados en Modrinth para la versión exacta,
+/// preset «Recomendado» instalado al crear (como en el asistente), el servidor arranca con los
+/// mods cargados y Chunky pregenera un área chica cuando se lo pide.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_optimizacion() {
+    use host939_core::optimize;
+    init();
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let src = modrinth::Modrinth;
+    let cands = release_candidates().await;
+    for (loader, port) in [(Loader::Fabric, 25962u16), (Loader::NeoForge, 25963u16)] {
+        let mut mc = None;
+        for v in &cands { if meta::loader_support(loader, v).await.map(|s| s.supported).unwrap_or(false) { mc = Some(v.clone()); break; } }
+        let mc = mc.expect("sin versión para el loader");
+        let cs = optimize::candidates(&src, &mc, loader, &[]).await.unwrap();
+        for c in &cs { println!("  {:?} {mc} · {:<18} {} {}", loader, c.slug, if c.available { "disponible" } else { "—" }, c.unavailable_reason.clone().unwrap_or_default()); }
+        let pick = optimize::preset(&cs, "recommended");
+        println!("  Recomendado: {pick:?} · Máximo: {:?}", optimize::preset(&cs, "max"));
+        assert!(!pick.is_empty(), "ningún mod recomendado para {loader:?} {mc}");
+        assert!(optimize::conflicts(&cs, &optimize::preset(&cs, "max")).is_empty(), "el preset máximo trae una combinación a evitar");
+        let mut inp = input(&format!("Optimizado {loader:?}"), &mc, loader, port);
+        inp.optimize = pick.clone();
+        let cfg = instance::create(inp, 8192).await.unwrap();
+        instance::install(&mgr, cfg.id.clone()).await;
+        let cfg = instance::load(&cfg.id).unwrap();
+        assert!(cfg.installed, "{:?}", cfg.install_error);
+        let man = mods::load_manifest(&cfg.id);
+        let opt: Vec<&str> = man.mods.iter().filter(|m| m.origin.as_deref() == Some("optimizacion")).map(|m| m.title.as_str()).collect();
+        println!("  instalados desde Rendimiento: {opt:?} (+{} dependencias)", man.mods.len() - opt.len());
+        assert_eq!(opt.len(), pick.len(), "no se instalaron todos los elegidos: {:?}", rec.console.lock().unwrap().iter().filter(|l| l.contains("939 Host")).collect::<Vec<_>>());
+        for m in &man.mods { assert!(mods::mods_dir(&cfg.id).join(&m.file_name).exists(), "falta {}", m.file_name); }
+        mgr.start(&probe, &cfg).unwrap();
+        let rt = mgr.runtime(&cfg.id);
+        let ok = wait_for(Duration::from_secs(600), || { let s = rt.lock().unwrap().status(); s == RunStatus::Running || s == RunStatus::Crashed || s == RunStatus::Stopped });
+        assert!(ok && rt.lock().unwrap().status() == RunStatus::Running, "no arrancó con los mods: {:?}", rt.lock().unwrap().last_error);
+        println!("✔ {loader:?} {mc} arrancó con {} mods de rendimiento", opt.len());
+        if pick.iter().any(|s| s == "chunky") {
+            for c in ["chunky world minecraft:overworld", "chunky shape square", "chunky spawn", "chunky radius 64", "chunky start"] { mgr.send_command(&cfg.id, c).unwrap(); }
+            assert!(wait_for(Duration::from_secs(240), || mgr.console(&cfg.id).iter().any(|l| l.contains("[Chunky]") && l.contains("finished"))), "Chunky no terminó: {:?}", mgr.console(&cfg.id).iter().filter(|l| l.contains("Chunky")).collect::<Vec<_>>());
+            println!("✔ Chunky pregeneró un área de radio 64: {}", mgr.console(&cfg.id).iter().find(|l| l.contains("[Chunky]") && l.contains("finished")).unwrap());
+        }
+        mgr.stop(&cfg.id).unwrap();
+        assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
+        // Quitar uno desde la lista normal de mods.
+        let first = man.mods.iter().find(|m| m.origin.is_some() && m.required_by.is_empty()).unwrap();
+        mods::remove(&cfg, &first.project_id).unwrap();
+        assert!(!mods::mods_dir(&cfg.id).join(&first.file_name).exists());
+        println!("✔ {} quitado individualmente", first.title);
+    }
 }

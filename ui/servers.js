@@ -111,7 +111,8 @@ function drawCreate() {
     <div class="stack"><h3>Tipo de servidor</h3><div class="choices">
       ${[['vanilla', 'Vanilla', 'Minecraft oficial, sin mods.'], ['fabric', 'Fabric', 'Liviano y rápido. El más usado para mods modernos.'], ['neoforge', 'NeoForge', 'Para modpacks grandes basados en NeoForge.'], ['forge', 'Forge', 'Para mods y modpacks clásicos de Forge.']]
         .map(([k, t, d]) => `<button class="choice ${w.loader === k ? 'on' : ''}" data-a="loader" data-v="${k}" aria-pressed="${w.loader === k}"><span class="t">${t}</span><span class="d">${k === 'vanilla' ? d : loaderText(k, d)}</span></button>`).join('')}
-    </div></div>`;
+    </div></div>
+    ${wizardOptHTML(w)}`;
   if (w.step === 2) body = `
     <div class="field"><div class="range-head"><span>Memoria (RAM)</span><span class="mono">${fmtMB(w.memoryMb)}</span></div>
       <input type="range" min="1024" max="${w.maxMem}" step="512" value="${w.memoryMb}" data-w="memoryMb" data-type="int" aria-label="Memoria">
@@ -141,6 +142,7 @@ function drawCreate() {
       ['Distancias', `${w.viewDistance} de visión · ${w.simulationDistance} de simulación`],
       ['Red', `Puerto ${w.port} · ${w.onlineMode ? 'cuentas verificadas' : 'sin verificar cuentas'}`],
       ['Copias', 'Puntos de restauración automáticos cada 15 min'],
+      ...(w.optOn && w.loader !== 'vanilla' ? [['Rendimiento', w.optSlugs?.length ? `${w.optSlugs.length} mods de optimización` : 'Ninguno disponible']] : []),
     ].map(([k, v]) => `<div class="kv"><span class="k">${k}</span><span>${v}</span></div>`).join('')}</div></div>
     <label class="check"><input type="checkbox" data-w="eula" ${w.eula ? 'checked' : ''}><span>Acepto el <button class="link" data-a="link" data-url="https://aka.ms/MinecraftEULA">EULA de Minecraft</button><span class="hint">Mojang exige aceptarlo para ejecutar un servidor. 939 Host lo registra con fecha.</span></span></label>`;
 
@@ -196,7 +198,7 @@ async function toggleSnapshots(on) {
   if (!list.some((v) => v.id === state.wizard.mcVersion)) state.wizard.mcVersion = list[0]?.id || '';
   checkLoader();
 }
-A.loader = (el) => { state.wizard.loader = el.dataset.v; checkLoader(); };
+A.loader = (el) => { const w = state.wizard; if (w.loader !== el.dataset.v) { w.optSlugs = null; w.optOn = false; } w.loader = el.dataset.v; checkLoader(); };
 A.worldmode = (el) => { state.wizard.worldMode = el.dataset.v; drawCreate(); };
 A.wnext = () => { if (stepValid()) { state.wizard.step++; drawCreate(); main.scrollTop = 0; } };
 A.wback = () => { state.wizard.step--; drawCreate(); };
@@ -216,6 +218,7 @@ A.wcreate = async () => {
       difficulty: w.difficulty, gamemode: w.gamemode, maxPlayers: w.maxPlayers, port: w.port, onlineMode: w.onlineMode,
       whitelist: w.whitelist, viewDistance: w.viewDistance, simulationDistance: w.simulationDistance, levelSeed: w.worldMode === 'new' ? w.seed : '',
       acceptEula: w.eula, importWorldPath: w.worldMode === 'import' ? w.importPath : null,
+      optimize: w.optOn && w.loader !== 'vanilla' ? (w.optSlugs || []) : [],
     } });
     state.wizard = null; state.tab = 'summary';
     toast('Servidor creado. Descargando lo necesario…');
@@ -229,7 +232,7 @@ main.addEventListener('input', (e) => {
   const key = el.dataset.w;
   state.wizard[key] = val;
   if (key === 'snapshots') { toggleSnapshots(val); return; }
-  if (key === 'mcVersion') { checkLoader(); return; }
+  if (key === 'mcVersion') { state.wizard.optSlugs = null; state.wizard.optOn = false; checkLoader(); return; }
   if (el.type === 'range' || el.type === 'checkbox' || el.tagName === 'SELECT') { const y = main.scrollTop; drawCreate(); main.scrollTop = y; return; }
   const btn = main.querySelector('[data-a="wnext"]');
   if (btn) btn.disabled = !stepValid();

@@ -142,6 +142,9 @@ pub struct CreateServerInput {
     pub accept_eula: bool,
     #[serde(default)]
     pub import_world_path: Option<String>,
+    /// Mods de rendimiento elegidos en el asistente (se instalan al terminar la instalación).
+    #[serde(default)]
+    pub optimize: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]

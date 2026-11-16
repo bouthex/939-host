@@ -20,6 +20,7 @@ pub mod mods;
 pub mod net;
 pub mod nbt;
 pub mod network;
+pub mod optimize;
 pub mod paths;
 pub mod playerdata;
 pub mod reach;

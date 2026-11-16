@@ -375,14 +375,6 @@ pub async fn mods_updates(id: String) -> AppResult<std::collections::HashMap<Str
     Ok(mods::check_updates(&Modrinth, &cfg).await?.into_iter().map(|(k, v)| (k, v.version_number)).collect())
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PerfMod { pub slug: String, pub title: String, pub description: String, pub recommended: bool }
-
-#[tauri::command]
-pub fn mods_performance_list() -> Vec<PerfMod> {
-    mods::PERFORMANCE_FABRIC.iter().map(|(slug, title, desc, rec)| PerfMod { slug: slug.to_string(), title: title.to_string(), description: desc.to_string(), recommended: *rec }).collect()
-}
 
 /* ───────── Puntos de restauración incrementales ───────── */
 

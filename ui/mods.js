@@ -22,7 +22,6 @@ tabDraw.mods = async (el) => {
   if (md.loadedFor !== c.id) { Object.assign(md, { sub: 'installed', results: null, q: '', cat: '', updates: {}, detail: null, offset: 0 }); md.loadedFor = c.id; }
   el.innerHTML = '<div id="mods-root" class="stack" style="gap:16px"><div class="card pad"><div class="bar indet"><i></i></div></div></div>';
   await loadMods();
-  if (!md.perf.length) md.perf = await invoke('mods_performance_list').catch(() => []);
   paintMods();
 };
 async function loadMods() {
@@ -63,17 +62,21 @@ function paintInstalled(el) {
       <div class="card"><div class="card-head"><h2>Instalados por 939 Host</h2><span class="sm t3">${list.length}</span></div>
       ${list.length ? `<div class="list">${list.map((x) => `<div class="li">${modIcon(null, x.title, 'sm')}
         <div class="mod-main"><span class="t">${x.projectId ? `<button class="link" data-a="mod-open" data-project="${esc(x.projectId)}">${esc(x.title)}</button>` : esc(x.title)}${x.versionNumber ? `<span class="mono xs t3">${esc(x.versionNumber)}</span>` : ''}${x.issues.map((i) => `<span class="chip s">${ISSUE[i] || esc(i)}</span>`).join('')}</span>
-        <span class="xs t3">${SIDE[x.side] || esc(x.side)} · ${x.explicit ? 'Instalado por vos' : 'Dependencia'}${x.requiredBy.length ? ` de ${esc(x.requiredBy.join(', '))}` : ''}</span></div>
+        <span class="xs t3">${SIDE[x.side] || esc(x.side)} · ${x.origin === 'optimizacion' ? 'Rendimiento' : x.explicit ? 'Instalado por vos' : 'Dependencia'}${x.requiredBy.length ? ` de ${esc(x.requiredBy.join(', '))}` : ''}</span></div>
         <div class="btns">${md.updates[x.projectId] ? `<button class="btn s" data-a="mod-install" data-project="${esc(x.projectId)}" data-title="${esc(x.title)}">${icon('download', 14)}${esc(md.updates[x.projectId])}</button>` : ''}
         <button class="btn s icon ghost" data-a="mod-remove" data-project="${esc(x.projectId)}" data-title="${esc(x.title)}" ${x.requiredBy.length ? 'disabled title="Otro mod lo necesita"' : 'title="Quitar"'} aria-label="Quitar ${esc(x.title)}">${icon('trash', 15)}</button></div></div>`).join('')}</div>`
         : `<div class="pad sm t2">Todavía no instalaste mods con 939 Host. Buscalos en <button class="link" data-a="msub" data-v="explore">Explorar Modrinth</button>${md.list.length ? ' o revisá los <button class="link" data-a="msub" data-v="files">archivos agregados a mano</button>' : ''}.</div>`}</div>
       ${dropZone()}
       ${active ? `<div class="note">${icon('info')}<div class="grow"><span class="sm t2">Los cambios en mods se aplican al reiniciar el servidor. Para importar archivos, detenelo primero.</span></div></div>` : ''}
     </div>
-    <div class="card pad stack"><div class="row" style="gap:8px">${icon('gauge')}<h2>Optimización</h2></div>
-      <p class="sm t2" style="margin:0">Mods de rendimiento que corren en el servidor. Se instala la versión exacta para ${esc(state.server.config.mcVersion)}.</p>
-      <div>${md.perf.map((p) => `<div class="kv"><span style="text-align:left"><b>${esc(p.title)}</b>${p.recommended ? ' <span class="chip s">Recomendado</span>' : ''}<br><span class="sm t3">${esc(p.description)}</span></span>
-        ${md.list.some((x) => (x.title || '').toLowerCase().startsWith(p.title.toLowerCase())) ? '<span class="sm t3">Instalado</span>' : `<button class="btn s" data-a="mod-install" data-project="${esc(p.slug)}" data-title="${esc(p.title)}" ${md.offline ? 'disabled' : ''}>Instalar</button>`}</div>`).join('')}</div></div>
+    <div class="stack" style="gap:16px">
+      <div class="card pad stack"><div class="row" style="gap:8px">${icon('gauge')}<h2>Rendimiento</h2></div>
+        <p class="sm t2" style="margin:0">939 Host consulta qué mods de optimización existen para ${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)} y te propone una selección estable. Antes de instalar se guarda una copia de seguridad.</p>
+        ${(() => { const mine = list.filter((x) => x.origin === 'optimizacion'); return mine.length ? `<div class="sm">${mine.map((x) => esc(x.title)).join(' · ')}</div>` : ''; })()}
+        <button class="btn" data-a="opt-open" data-tone="go" ${md.offline || active ? 'disabled' : ''}>${icon('gauge', 15)}${list.some((x) => x.origin === 'optimizacion') ? 'Revisar mods de rendimiento' : 'Elegir mods de rendimiento'}</button>
+        ${active ? '<span class="xs t3">Detené el servidor para instalar.</span>' : ''}</div>
+      ${hasChunky(list) ? `<div class="card pad stack"><h3>Pregenerar el mundo</h3><p class="sm t2" style="margin:0">Chunky está instalado. La pregeneración se maneja desde la pestaña Mundo.</p><button class="btn s" data-a="tab" data-v="world">Ir a Mundo</button></div>` : ''}
+    </div>
   </div>`;
 }
 

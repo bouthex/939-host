@@ -152,7 +152,7 @@ async fn main() {
                         name: p(1), description: String::new(), mc_version: "26.2".into(), loader: Loader::Vanilla, memory_mb: 1536,
                         difficulty: "normal".into(), gamemode: "creative".into(), max_players: 4, port: p(2).parse().unwrap_or(25700),
                         online_mode: false, whitelist: false, view_distance: 3, simulation_distance: 3, level_seed: "939".into(),
-                        accept_eula: true, import_world_path: None,
+                        accept_eula: true, import_world_path: None, optimize: vec![],
                     };
                     let cfg = instance::create(input, 8192).await.map_err(|e| e.message)?;
                     if fake {

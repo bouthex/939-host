@@ -242,6 +242,7 @@ tabDraw.world = async (el) => {
       <div class="card kpi"><span class="l">Jugadores con datos</span><span class="v">${w.playersData}</span></div>
       <div class="card kpi"><span class="l">Semilla</span><span class="v mono" style="font-size:14px;overflow-wrap:anywhere">${esc(w.seed || c.levelSeed || '—')}</span></div>
     </div>
+    ${c.loader !== 'vanilla' ? await (async () => { try { const ml = await invoke('mods_list', { id: c.id, online: false }); return hasChunky(ml) ? chunkyHTML(c.id) : ''; } catch { return ''; } })() : ''}
     ${!w.exists ? `<div class="note">${icon('info')}<div class="grow"><b>Todavía no hay mundo</b><span class="sm t2">Se genera la primera vez que inicies el servidor.</span></div></div>` : ''}
     <div class="card list">
       <div class="li"><span class="srv-ic">${icon('folder')}</span><div class="grow"><b>Abrir la carpeta del mundo</b><div class="sm t2">«${esc(w.levelName)}» dentro de la carpeta del servidor.</div></div><button class="btn s" data-a="folder" data-which="world">Abrir</button></div>

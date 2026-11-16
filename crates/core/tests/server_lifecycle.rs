@@ -63,7 +63,7 @@ async fn full_server_lifecycle() {
         name: "Prueba 939".into(), description: "aislada".into(), mc_version: "26.2".into(), loader: Loader::Vanilla,
         memory_mb: 2048, difficulty: "hard".into(), gamemode: "survival".into(), max_players: 4, port: 25611,
         online_mode: true, whitelist: true, view_distance: 4, simulation_distance: 4, level_seed: "939".into(),
-        accept_eula: true, import_world_path: None,
+        accept_eula: true, import_world_path: None, optimize: vec![],
     };
     let cfg = instance::create(input, 8192).await.expect("crear");
     assert!(cfg.identity.access_code.starts_with("PRUEBA-939 · "), "código: {}", cfg.identity.access_code);
@@ -195,7 +195,7 @@ async fn players_and_permissions_real_server() {
         name: "Permisos".into(), description: String::new(), mc_version: "26.2".into(), loader: Loader::Vanilla,
         memory_mb: 1536, difficulty: "easy".into(), gamemode: "survival".into(), max_players: 4, port: 25615,
         online_mode: false, whitelist: true, view_distance: 3, simulation_distance: 3, level_seed: "939".into(),
-        accept_eula: true, import_world_path: None,
+        accept_eula: true, import_world_path: None, optimize: vec![],
     };
     let cfg = instance::create(input, 8192).await.unwrap();
     instance::install(&mgr, cfg.id.clone()).await;
@@ -330,7 +330,7 @@ async fn migration_rehearsal_with_copies() {
         name: "Modpack prueba".into(), description: "copia".into(), mc_version: "26.2".into(), loader: Loader::Fabric,
         memory_mb: 3072, difficulty: "hard".into(), gamemode: "survival".into(), max_players: 8, port: 25619,
         online_mode: false, whitelist: false, view_distance: 6, simulation_distance: 4, level_seed: String::new(),
-        accept_eula: true, import_world_path: Some(world.clone()),
+        accept_eula: true, import_world_path: Some(world.clone()), optimize: vec![],
     };
     let cfg = instance::create(input, 8192).await.expect("crear");
     println!("✔ creado Fabric {} (loader {:?})", cfg.mc_version, cfg.loader_version);

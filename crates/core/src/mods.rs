@@ -26,6 +26,9 @@ pub struct InstalledMod {
     pub required_by: Vec<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// De dónde vino: `optimizacion` = desde «Mods de rendimiento». `None` = gestor de mods.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -184,6 +187,7 @@ pub async fn apply_plan(cfg: &ServerConfig, plan: &InstallPlan, mut progress: im
         }
         std::fs::copy(&staging, dir.join(&file.filename)).map_err(|e| AppError::io("No se pudo copiar el mod", e))?;
         let previous_explicit = manifest.mods.iter().find(|m| m.project_id == item.project_id).map(|m| m.explicit).unwrap_or(false);
+        let previous_origin = manifest.mods.iter().find(|m| m.project_id == item.project_id).and_then(|m| m.origin.clone());
         manifest.mods.retain(|m| m.project_id != item.project_id);
         let entry = InstalledMod {
             project_id: item.project_id.clone(),
@@ -194,6 +198,7 @@ pub async fn apply_plan(cfg: &ServerConfig, plan: &InstallPlan, mut progress: im
             sha1: file.hashes.sha1.clone(),
             side: item.side.clone(),
             explicit: item.explicit || previous_explicit,
+            origin: previous_origin,
             required_by: vec![],
             depends_on: item.depends_on.clone(),
         };
@@ -259,6 +264,8 @@ pub struct ModFileStatus {
     /// ok | duplicate | incompatible | client_only | unknown
     pub issues: Vec<String>,
     pub update: Option<String>,
+    /// `optimizacion` si se instaló desde «Mods de rendimiento».
+    pub origin: Option<String>,
 }
 
 /// Diagnóstico de la carpeta `mods`: identifica cada jar por hash en Modrinth y detecta
@@ -323,7 +330,7 @@ pub async fn scan<S: Source>(src: &S, cfg: &ServerConfig, online: bool) -> AppRe
 
     let mut out = vec![];
     for (name, size, sha) in files {
-        let mut st = ModFileStatus { file_name: name.clone(), size_kb: size, sha1: sha.clone(), project_id: None, title: name.trim_end_matches(".jar").into(), version_number: None, side: "unknown".into(), managed: false, explicit: false, required_by: vec![], issues: vec![], update: None };
+        let mut st = ModFileStatus { file_name: name.clone(), size_kb: size, sha1: sha.clone(), project_id: None, title: name.trim_end_matches(".jar").into(), version_number: None, side: "unknown".into(), managed: false, explicit: false, required_by: vec![], issues: vec![], update: None, origin: None };
         if let Some(m) = by_file.get(&name) {
             st.project_id = Some(m.project_id.clone());
             st.title = m.title.clone();
@@ -332,6 +339,7 @@ pub async fn scan<S: Source>(src: &S, cfg: &ServerConfig, online: bool) -> AppRe
             st.managed = true;
             st.explicit = m.explicit;
             st.required_by = m.required_by.clone();
+            st.origin = m.origin.clone();
         } else if let Some(v) = identified.get(&sha) {
             st.project_id = Some(v.project_id.clone());
             st.version_number = Some(v.version_number.clone());
@@ -399,15 +407,6 @@ pub async fn check_updates<S: Source>(src: &S, cfg: &ServerConfig) -> AppResult<
     }
     Ok(out)
 }
-
-/// Mods de optimización de servidor recomendados para Fabric (verificados por versión al instalar).
-pub const PERFORMANCE_FABRIC: &[(&str, &str, &str, bool)] = &[
-    ("lithium", "Lithium", "Lógica de juego más eficiente.", true),
-    ("ferrite-core", "FerriteCore", "Menos uso de memoria.", true),
-    ("scalablelux", "ScalableLux", "Cálculo de luz mucho más rápido.", true),
-    ("c2me-fabric", "C2ME", "Generación y carga de chunks en paralelo. Probalo con tus mods de mundo.", false),
-    ("krypton", "Krypton", "Red más eficiente.", false),
-];
 
 #[cfg(test)]
 mod tests {
@@ -485,7 +484,7 @@ mod tests {
     #[tokio::test]
     async fn plan_rejects_incompatible_with_installed() {
         let cfg = server(&root());
-        save_manifest(&cfg.id, &Manifest { mods: vec![InstalledMod { project_id: "bad".into(), version_id: "bad1".into(), title: "BAD".into(), version_number: "1".into(), file_name: "bad1.jar".into(), sha1: "x".into(), side: "both".into(), explicit: true, required_by: vec![], depends_on: vec![] }] }).unwrap();
+        save_manifest(&cfg.id, &Manifest { mods: vec![InstalledMod { project_id: "bad".into(), version_id: "bad1".into(), title: "BAD".into(), version_number: "1".into(), file_name: "bad1.jar".into(), sha1: "x".into(), side: "both".into(), explicit: true, required_by: vec![], depends_on: vec![], origin: None }] }).unwrap();
         let err = plan_install(&fake(), &cfg, "a", None).await.unwrap_err();
         assert!(err.message.contains("incompatible"), "{}", err.message);
     }
@@ -516,7 +515,7 @@ mod tests {
         for it in &plan.items {
             let f = it.version.primary_file().unwrap();
             std::fs::write(dir.join(&f.filename), b"jar").unwrap();
-            m.mods.push(InstalledMod { project_id: it.project_id.clone(), version_id: it.version.id.clone(), title: it.title.clone(), version_number: it.version.version_number.clone(), file_name: f.filename.clone(), sha1: f.hashes.sha1.clone(), side: it.side.clone(), explicit: it.explicit, required_by: vec![], depends_on: it.depends_on.clone() });
+            m.mods.push(InstalledMod { project_id: it.project_id.clone(), version_id: it.version.id.clone(), title: it.title.clone(), version_number: it.version.version_number.clone(), file_name: f.filename.clone(), sha1: f.hashes.sha1.clone(), side: it.side.clone(), explicit: it.explicit, required_by: vec![], depends_on: it.depends_on.clone(), origin: None });
         }
         save_manifest(&cfg.id, &m).unwrap();
         let err = remove(&cfg, "api").unwrap_err();
@@ -632,6 +631,7 @@ pub async fn link_file<S: Source>(src: &S, cfg: &ServerConfig, file_name: &str) 
         explicit: true,
         required_by: vec![],
         depends_on: vec![],
+        origin: None,
     };
     manifest.mods.push(m.clone());
     save_manifest(&cfg.id, &manifest)?;

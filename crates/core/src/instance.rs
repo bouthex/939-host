@@ -172,6 +172,7 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
     std::fs::create_dir_all(paths::server_backups_dir(&id)).map_err(|e| AppError::io("No se pudo crear la carpeta de backups", e))?;
     cfg.identity = identity::create_server_identity(&id, &cfg.name)?;
     save(&cfg)?;
+    if cfg.loader != Loader::Vanilla { crate::optimize::set_pending(&id, &input.optimize)?; }
 
     if let Some(src) = import {
         let dst = paths::server_run_dir(&id).join("world");
@@ -277,6 +278,16 @@ pub async fn install(mgr: &Manager, id: String) {
         cfg.installed = true;
         cfg.install_error = None;
         save(&cfg)?;
+        // Mods de rendimiento elegidos al crear el servidor.
+        let pending = crate::optimize::take_pending(&id);
+        if !pending.is_empty() && cfg.loader != Loader::Vanilla {
+            report("Instalando mods de rendimiento", 0.98);
+            match crate::optimize::install(&crate::modrinth::Modrinth, &cfg, &pending, |m, _| report(m, 0.98)).await {
+                Ok(r) if !r.skipped.is_empty() => ev.console_line(&id, &format!("[939 Host] Mods de rendimiento no instalados: {}", r.skipped.iter().map(|(a, b)| format!("{a} ({b})")).collect::<Vec<_>>().join(", "))),
+                Ok(_) => {}
+                Err(e) => ev.console_line(&id, &format!("[939 Host] No se pudieron instalar los mods de rendimiento: {}", e.message)),
+            }
+        }
         Ok::<_, AppError>(())
     }.await;
 

@@ -638,3 +638,15 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 .affix { display: flex; align-items: center; gap: 0; border: 1px solid var(--line2); border-radius: var(--r-input, 10px); background: var(--bg); padding-right: 12px; }
 .affix .input { border: 0; background: none; flex: 1; }
 .affix:focus-within { border-color: var(--text3); }
+
+/* Mods de rendimiento */
+.optlist { display: grid; gap: 2px; max-height: 52vh; overflow: auto; margin: 0 -4px; padding: 0 4px; }
+.optmod { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border-radius: 12px; cursor: default; transition: background var(--d-fast) var(--ease-out); }
+.optmod:hover { background: var(--hover); }
+.optmod input { margin-top: 10px; }
+.optmod img, .optmod .ph { width: 36px; height: 36px; border-radius: 9px; flex: none; object-fit: cover; background: var(--surface); display: grid; place-items: center; color: var(--text3); }
+.optmod .grow { display: grid; gap: 3px; min-width: 0; }
+.optmod.off { opacity: .55; }
+.tag { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; border: 1px solid var(--line2); color: var(--text2); }
+.tag.go { border-color: color-mix(in srgb, var(--go) 40%, var(--line2)); background: var(--go-bg); color: var(--text); }
+.tag.hold { border-color: color-mix(in srgb, var(--hold) 40%, var(--line2)); background: var(--hold-bg); color: var(--text); }
