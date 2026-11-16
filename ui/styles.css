@@ -688,3 +688,14 @@ input[type="checkbox"], input[type="radio"], input[type="range"], progress { acc
 @media (prefers-reduced-motion: reduce) { .fm-row { animation: none; } }
 
 .invite-card { display: flex; gap: 14px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+
+/* Microinteracciones: entrada al cambiar de pestaña, listas escalonadas, confirmación y foco. */
+.tab-enter { animation: fadeUp .22s var(--ease-out) both; }
+.trash-it, .optmod { animation: fadeUp .2s var(--ease-out) both; }
+.trash-it:nth-child(2), .optmod:nth-child(2) { animation-delay: .03s; }
+.trash-it:nth-child(n+3), .optmod:nth-child(n+3) { animation-delay: .06s; }
+.btn:focus-visible, .chip-btn:focus-visible, .optcard:focus-visible, .tab:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.toast.ok::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--go); margin-right: 8px; vertical-align: middle; animation: pop .3s var(--ease-out); }
+.optcard, .chip-btn, .lp, .fm-row, .trash-it { will-change: auto; }
+@media (prefers-reduced-motion: reduce) { .tab-enter, .trash-it, .optmod { animation: none !important; } }
+[data-motion="reduce"] .tab-enter, [data-motion="reduce"] .trash-it, [data-motion="reduce"] .optmod { animation: none !important; }

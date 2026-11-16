@@ -20,9 +20,14 @@ routes.server = async function renderServer() {
   every(1000, tickCountdown);
   every(5000, () => { if (state.route === 'server' && state.server && (isActive(state.server) || state.server.installing)) refreshServer(); });
 };
+let lastDrawnTab = null;
 async function drawTab() {
   const el = $('#srv-tab');
   if (!el) return;
+  // Entrada suave solo al cambiar de pestaña (no en cada actualización automática).
+  const changed = lastDrawnTab !== `${state.params.id}|${state.tab}`;
+  lastDrawnTab = `${state.params.id}|${state.tab}`;
+  if (changed && !reduceMotion()) { el.classList.remove('tab-enter'); void el.offsetWidth; el.classList.add('tab-enter'); }
   try { await (tabDraw[state.tab] || tabDraw.summary)(el); } catch (e) { el.innerHTML = `<div class="note">${icon('alert')}<div class="grow"><b>No se pudo cargar esta sección</b><span class="sm t2">${esc(errMsg(e))}</span></div></div>`; }
 }
 A.tab = async (el) => {

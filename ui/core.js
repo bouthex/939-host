@@ -121,7 +121,7 @@ const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = se
 /* ───────── avisos y errores ───────── */
 function toast(message, kind = 'ok', detail = '') {
   const el = document.createElement('div');
-  el.className = `toast ${kind === 'error' ? 'error' : ''}`;
+  el.className = `toast ${kind === 'error' ? 'error' : 'ok'}`;
   el.setAttribute('role', kind === 'error' ? 'alert' : 'status');
   el.innerHTML = `<span>${esc(message)}</span>${detail ? `<span class="detail">${esc(detail)}</span>` : ''}`;
   document.getElementById('toasts').appendChild(el);
@@ -192,7 +192,7 @@ function onLeave(fn) { leaveHooks.push(fn); }
 
 /* ───────── navegación ───────── */
 const NAV = [['servers', 'Servidores', 'servers'], ['friends', 'Servidores de amigos', 'friends'], ['trash', 'Papelera', 'trash'], ['settings', 'Configuración', 'settings']];
-function navKey() { return ['server', 'create', 'repair'].includes(state.route) ? 'servers' : state.route; }
+function navKey() { return ['server', 'create', 'repair', 'modpack'].includes(state.route) ? 'servers' : state.route; }
 function paintNav() {
   const k = navKey();
   $('#nav').innerHTML = NAV.map(([r, label, ic]) => `<button class="navi ${k === r ? 'on' : ''}" data-a="nav" data-route="${r}" ${k === r ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${r === 'servers' && state.servers.length ? `<span class="count">${state.servers.length}</span>` : ''}${r === 'trash' && state.trashCount ? `<span class="count" title="Servidores en la Papelera">${state.trashCount}</span>` : ''}</button>`).join('');
