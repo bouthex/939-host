@@ -106,12 +106,13 @@ async fn design_v3_features() {
     println!("✔ reanudado");
 
     // Guardando: save-all enciende y apaga el estado.
+    let n0 = mgr.console(&cfg.id).len();
     mgr.send_command(&cfg.id, "save-all flush").unwrap();
     let mut saw_saving = false;
     // En un mundo chico el guardado puede durar menos que el intervalo de consulta: se acepta
     // haber visto el estado o la confirmación de Minecraft, y que al final no quede «Guardando».
-    let saved = |m: &Manager| m.console(&cfg.id).iter().rev().take(20).any(|l| l.contains("Saved the game"));
-    assert!(wait_for(Duration::from_secs(30), || { let s = rt.lock().unwrap().saving; saw_saving |= s; (saw_saving || saved(&mgr)) && !s }), "no se vio Guardando → listo");
+    let saved = |m: &Manager| m.console(&cfg.id).iter().skip(n0.saturating_sub(5)).any(|l| l.contains("Saved the game") || l.contains("All dimensions are saved"));
+    assert!(wait_for(Duration::from_secs(30), || { let s = rt.lock().unwrap().saving; saw_saving |= s; (saw_saving || saved(&mgr)) && !s }), "no se vio Guardando → listo:\n{}", mgr.console(&cfg.id).iter().skip(n0.saturating_sub(5)).cloned().collect::<Vec<_>>().join("\n"));
     println!("✔ estado «Guardando» detectado y terminado");
 
     // Datos reales de una entidad (SNBT de 26.2) con el lector de jugadores.
