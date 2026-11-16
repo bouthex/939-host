@@ -683,7 +683,7 @@ input[type="checkbox"], input[type="radio"], input[type="range"], progress { acc
 .fm-size { text-align: right; }
 .fm-chk { margin: 0; }
 .fm-empty { display: grid; place-items: center; gap: 6px; padding: 48px 16px; text-align: center; }
-@media (max-width: 1080px) { .fm-head, .fm-row { grid-template-columns: 22px 22px minmax(0, 1fr) 18px 80px; } .fm-date { display: none; } .fm-search { width: 180px; } }
+@media (max-width: 1080px) { .fm-head, .fm-row { grid-template-columns: 22px 22px minmax(0, 1fr) 18px 80px; } .fm-date, .fm-head > span:last-child { display: none; } .fm-search { width: 180px; } }
 [data-motion="reduce"] .fm-row { animation: none; }
 @media (prefers-reduced-motion: reduce) { .fm-row { animation: none; } }
 
@@ -695,7 +695,7 @@ input[type="checkbox"], input[type="radio"], input[type="range"], progress { acc
 .trash-it:nth-child(2), .optmod:nth-child(2) { animation-delay: .03s; }
 .trash-it:nth-child(n+3), .optmod:nth-child(n+3) { animation-delay: .06s; }
 .btn:focus-visible, .chip-btn:focus-visible, .optcard:focus-visible, .tab:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
-.toast.ok::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--go); margin-right: 8px; vertical-align: middle; animation: pop .3s var(--ease-out); }
+.toast.ok > span:first-child::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--go); margin-right: 8px; vertical-align: middle; animation: pop .3s var(--ease-out); }
 .optcard, .chip-btn, .lp, .fm-row, .trash-it { will-change: auto; }
 @media (prefers-reduced-motion: reduce) { .tab-enter, .trash-it, .optmod { animation: none !important; } }
 [data-motion="reduce"] .tab-enter, [data-motion="reduce"] .trash-it, [data-motion="reduce"] .optmod { animation: none !important; }

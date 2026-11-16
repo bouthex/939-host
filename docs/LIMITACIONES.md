@@ -28,13 +28,19 @@
 
 Probado en Windows reales: cambio de versión con copia verificada y vuelta atrás, Papelera de 30 días,
 mods de rendimiento elegidos por versión y loader, pregeneración con Chunky, perfil `.mrpack` para
-los jugadores, logo por servidor, direcciones internas `.939host` y cambios del grupo firmados.
+los jugadores, servidores desde modpacks `.mrpack`, administrador de archivos local y remoto (también
+entre dos PCs en lugares distintos), logo por servidor (también en Servidores de amigos), direcciones
+internas `.939host` y cambios del grupo firmados.
 
 Límites conocidos de esas funciones:
 
 - Las direcciones `.939host` son **internas**: cada PC las crea en su 939 Host (pide permiso de
   administrador una vez) y no sirven para quien no tenga la app. No son direcciones públicas.
-- El logo todavía no se muestra en «Servidores de amigos» ni en las invitaciones.
+- **CurseForge** está implementado con su API oficial pero **no se pudo probar en vivo**: hace falta una
+  clave aprobada por CurseForge (ver el Manual). Sin clave, la app lo explica y todo lo demás funciona.
+  Los modpacks de CurseForge no indican qué mods son solo para jugadores: se instalan todos.
+- En el administrador de archivos remoto, exportar carpetas grandes baja archivo por archivo (no
+  comprime antes).
 - La app no detecta si tu Minecraft ya tiene la versión y los mods: el perfil `.mrpack` se importa en
   un launcher compatible (Modrinth App, Prism Launcher, ATLauncher).
 - Con la ventana minimizada la memoria baja poco (de unos 344 a 313 MB en RAM en las mediciones);
@@ -42,8 +48,6 @@ Límites conocidos de esas funciones:
 
 ## Pendiente para una próxima versión
 
-- Administrador de archivos integrado (local y en PCs del grupo).
-- CurseForge (requiere una clave de API de su consola para desarrolladores) y modpacks completos.
 - Firma de código del ejecutable.
 - Actualizador integrado.
 - Descubrimiento de PCs del grupo en la red local (mDNS) para no depender de direcciones guardadas cuando cambia la IP y no hay relays.
