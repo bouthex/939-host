@@ -12,6 +12,7 @@ const PRESET_TEXT = {
   max: 'Suma optimizaciones más agresivas (generación de chunks en paralelo y ajustes para servidores). Algunas cambian detalles, como la actividad de mobs lejanos.',
   custom: 'Elegís uno por uno. Los experimentales pueden cambiar el comportamiento del juego.',
 };
+const niceSlug = (o, s) => o.candidates.find((c) => c.slug === s)?.title || s.replace(/-fabric$/, '').replace(/-/g, ' ').replace(/^\w/, (x) => x.toUpperCase());
 const sideText = (c) => c.client === 'required' ? 'También en los jugadores' : c.client === 'unsupported' ? 'Solo servidor' : 'Solo servidor (opcional en jugadores)';
 
 /* Lista de mods con selección. `sel` = Set de slugs elegidos. */
@@ -25,7 +26,7 @@ function optListHTML(o, sel, editable) {
         ${c.experimental ? '<span class="tag hold">Experimental</span>' : c.tier === 'max' ? '<span class="tag">Máximo</span>' : '<span class="tag go">Recomendado</span>'}
         ${c.installed ? '<span class="tag">Instalado</span>' : ''}</span>
         <span class="sm t2">${esc(c.what)}</span>
-        <span class="xs t3">${c.available ? `${sideText(c)}${c.dependencies.length ? ` · necesita ${esc(c.dependencies.join(', '))} (se instala solo)` : ''}${c.avoidWith.length ? ` · no combinar con ${esc(c.avoidWith.join(', '))}` : ''}` : esc(c.unavailableReason || 'No disponible')}</span></span>
+        <span class="xs t3">${c.available ? `${sideText(c)}${c.dependencies.length ? ` · necesita ${esc(c.dependencies.join(', '))} (se instala solo)` : ''}${c.avoidWith.length ? ` · no combinar con ${esc(c.avoidWith.map((a) => niceSlug(o, a)).join(', '))}` : ''}` : esc(c.unavailableReason || 'No disponible')}</span></span>
     </label>`;
   }).join('')}</div>`;
 }

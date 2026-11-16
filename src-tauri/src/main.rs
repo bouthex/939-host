@@ -42,6 +42,27 @@ fn theme_background(w: Option<&tauri::WebviewWindow>) -> tauri::window::Color {
 }
 
 /// Muestra la ventana principal; si se había destruido para ahorrar memoria, la vuelve a crear.
+/// Minimizada: le pide a WebView2 que use la menor memoria posible (API oficial
+/// `MemoryUsageTargetLevel`, ICoreWebView2_19). Al restaurar vuelve a lo normal.
+fn webview_memory(window: &tauri::Window) {
+    static LOW: AtomicBool = AtomicBool::new(false);
+    let min = window.is_minimized().unwrap_or(false);
+    if LOW.swap(min, Ordering::SeqCst) == min { return; }
+    let Some(w) = window.app_handle().get_webview_window(window.label()) else { return };
+    let _ = w.with_webview(move |_wv| {
+        #[cfg(windows)]
+        unsafe {
+            use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL};
+            use windows_core::Interface;
+            if let Ok(core) = _wv.controller().CoreWebView2() {
+                if let Ok(c) = core.cast::<ICoreWebView2_19>() {
+                    let _ = c.SetMemoryUsageTargetLevel(if min { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL });
+                }
+            }
+        }
+    });
+}
+
 pub fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
@@ -152,6 +173,7 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let WindowEvent::Resized(_) = event { webview_memory(window); }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if QUITTING.load(Ordering::SeqCst) { return; }
                 if !settings::load().close_to_tray {

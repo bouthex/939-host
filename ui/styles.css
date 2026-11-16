@@ -650,3 +650,6 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; border: 1px solid var(--line2); color: var(--text2); }
 .tag.go { border-color: color-mix(in srgb, var(--go) 40%, var(--line2)); background: var(--go-bg); color: var(--text); }
 .tag.hold { border-color: color-mix(in srgb, var(--hold) 40%, var(--line2)); background: var(--hold-bg); color: var(--text); }
+
+/* Controles nativos en la identidad monocromática (sin el azul del sistema). */
+input[type="checkbox"], input[type="radio"], input[type="range"], progress { accent-color: var(--text); }

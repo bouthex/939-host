@@ -179,7 +179,9 @@ async function saveSetting(patch, msg = 'Ajuste guardado') {
 }
 
 /* ───────── temporizadores por pantalla ───────── */
-function every(ms, fn) { const t = setInterval(fn, ms); state.timers.push(t); return t; }
+// Tareas periódicas de pantalla: no corren con la ventana minimizada u oculta (se ponen al día al volver).
+function every(ms, fn) { const t = setInterval(() => { if (!document.hidden) fn(); }, ms); state.timers.push(t); return t; }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && state.route === 'server' && state.server) refreshServer(); });
 function clearTimers() { state.timers.forEach(clearInterval); state.timers = []; }
 const leaveHooks = [];
 function onLeave(fn) { leaveHooks.push(fn); }
@@ -210,6 +212,7 @@ async function go(route, params = {}) {
 const routes = {};
 async function render() {
   try { await (routes[state.route] || routes.servers)(); } catch (e) { fail(e); }
+  refreshRequests();
   paintNav();
 }
 
@@ -280,12 +283,14 @@ async function refreshRequests() {
   try { pendingReqs = await invoke('host_requests_pending'); } catch { pendingReqs = []; }
   const root = $('#reqbar-root');
   if (!root) return;
-  if (!pendingReqs.length) { root.innerHTML = ''; return; }
-  const r = pendingReqs[0];
-  const sig = `${r.id}|${r.request.nodeId}`;
+  // En la pantalla de ese mismo servidor el aviso ya está en su encabezado: no se repite arriba.
+  const shown = pendingReqs.filter((x) => !(state.route === 'server' && state.params?.id === x.id));
+  if (!shown.length) { root.innerHTML = ''; root.dataset.sig = ''; return; }
+  const r = shown[0];
+  const sig = `${r.id}|${r.request.nodeId}|${shown.length}`;
   if (root.dataset.sig === sig && root.firstElementChild) return;
   root.dataset.sig = sig;
-  root.innerHTML = `<div class="reqbar" role="alert">${pcAvatar(r.request.symbol, 32)}<div class="grow"><b>${esc(r.request.name)}</b> quiere alojar «${esc(r.serverName)}»${pendingReqs.length > 1 ? ` <span class="sm" style="opacity:.7">· y ${pendingReqs.length - 1} más</span>` : ''}<div class="xs" style="opacity:.7">El servidor sigue en esta PC hasta que aceptes.</div></div>
+  root.innerHTML = `<div class="reqbar" role="alert">${pcAvatar(r.request.symbol, 32)}<div class="grow"><b>${esc(r.request.name)}</b> quiere alojar «${esc(r.serverName)}»${shown.length > 1 ? ` <span class="sm" style="opacity:.7">· y ${shown.length - 1} más</span>` : ''}<div class="xs" style="opacity:.7">El servidor sigue en esta PC hasta que aceptes.</div></div>
     <div class="btns"><button class="btn s" data-a="req-no" data-id="${esc(r.id)}">Rechazar</button><button class="btn s pri" data-a="req-review" data-id="${esc(r.id)}">Revisar</button></div></div>`;
 }
 const profileRows = (a, b) => {
