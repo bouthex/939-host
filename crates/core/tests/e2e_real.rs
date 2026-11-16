@@ -259,3 +259,83 @@ async fn e2e_cliente_real() {
         assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
     }
 }
+
+/// Cambio de versión real: análisis, actualización en el mismo servidor con copia verificada,
+/// arranque de prueba, mundo conservado, mods actualizados y vuelta atrás.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_cambio_version() {
+    use host939_core::version_change as vc;
+    init();
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let src = modrinth::Modrinth;
+    let cands = release_candidates().await;
+    // Dos versiones estables seguidas que Fabric y Lithium soporten.
+    let mut pair = None;
+    for w in cands.windows(2) {
+        let (new, old) = (w[0].clone(), w[1].clone());
+        let ok_f = meta::loader_support(Loader::Fabric, &new).await.map(|s| s.supported).unwrap_or(false) && meta::loader_support(Loader::Fabric, &old).await.map(|s| s.supported).unwrap_or(false);
+        if ok_f && src.search("lithium", &old, "fabric", true, 0).await.map(|r| r.hits.iter().any(|h| h.slug == "lithium")).unwrap_or(false)
+            && src.search("lithium", &new, "fabric", true, 0).await.map(|r| r.hits.iter().any(|h| h.slug == "lithium")).unwrap_or(false) { pair = Some((old, new)); break; }
+    }
+    let (old, new) = pair.expect("no hay dos versiones seguidas con Fabric y Lithium");
+    println!("▶ Fabric {old} → {new}");
+    let cfg = instance::create(input("Cambio", &old, Loader::Fabric, 25960), 8192).await.unwrap();
+    instance::install(&mgr, cfg.id.clone()).await;
+    let cfg = instance::load(&cfg.id).unwrap();
+    assert!(cfg.installed, "{:?}", cfg.install_error);
+    let hit = src.search("lithium", &old, "fabric", true, 0).await.unwrap().hits.into_iter().find(|h| h.slug == "lithium").unwrap();
+    let plan = mods::plan_install(&src, &cfg, &hit.project_id, None).await.unwrap();
+    mods::apply_plan(&cfg, &plan, |_, _| {}).await.unwrap();
+    // Mundo con una marca.
+    mgr.start(&probe, &cfg).unwrap();
+    let rt = mgr.runtime(&cfg.id);
+    assert!(wait_for(Duration::from_secs(400), || rt.lock().unwrap().status() == RunStatus::Running));
+    mgr.send_command(&cfg.id, "scoreboard objectives add cambio dummy").unwrap();
+    mgr.send_command(&cfg.id, "scoreboard players set marca cambio 939").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    mgr.stop(&cfg.id).unwrap();
+    assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
+
+    // Análisis.
+    let a = vc::analyze(&src, &cfg, &new).await.unwrap();
+    println!("  análisis: {} · bloqueos {:?} · avisos {:?}", a.direction, a.blockers, a.warnings);
+    assert_eq!(a.direction, "upgrade");
+    assert!(a.can_update_in_place);
+    assert!(a.mods.iter().any(|m| m.title.to_lowercase().contains("lithium") && (m.status == "update" || m.status == "ok")));
+    let back = vc::analyze(&src, &instance::load(&cfg.id).unwrap(), &cands.iter().rev().find(|v| **v != old && **v != new).cloned().unwrap()).await.unwrap();
+    assert_eq!(back.direction, "downgrade");
+    assert!(!back.can_update_in_place && !back.blockers.is_empty(), "volver atrás con mundo tiene que estar bloqueado");
+    println!("✔ análisis: actualizar permitido; volver a una versión anterior con el mundo, bloqueado con explicación");
+
+    // Actualización en el mismo servidor.
+    let r = vc::update_in_place(&mgr, &src, &cfg.id, &new, |m, _| println!("    · {m}")).await.unwrap();
+    for s in &r.steps { println!("    ✓ {s}"); }
+    assert!(r.ok, "falló: {:?}", r.error);
+    let c2 = instance::load(&cfg.id).unwrap();
+    assert_eq!(c2.mc_version, new);
+    let jars: Vec<String> = std::fs::read_dir(mods::mods_dir(&cfg.id)).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    println!("  mods ahora: {jars:?}");
+    // El mundo conserva la marca.
+    mgr.start(&probe, &c2).unwrap();
+    assert!(wait_for(Duration::from_secs(400), || rt.lock().unwrap().status() == RunStatus::Running));
+    mgr.send_command(&cfg.id, "scoreboard players get marca cambio").unwrap();
+    assert!(wait_for(Duration::from_secs(20), || mgr.console(&cfg.id).iter().any(|l| l.contains("marca has 939"))), "el mundo perdió la marca");
+    mgr.stop(&cfg.id).unwrap();
+    assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
+    println!("✔ actualizado a {new}: copia verificada, mods actualizados, arranque de prueba y mundo con la marca");
+
+    // Volver atrás.
+    vc::rollback(&mgr, &cfg.id).await.unwrap();
+    let c3 = instance::load(&cfg.id).unwrap();
+    assert_eq!(c3.mc_version, old);
+    mgr.start(&probe, &c3).unwrap();
+    assert!(wait_for(Duration::from_secs(400), || rt.lock().unwrap().status() == RunStatus::Running), "no arrancó tras volver atrás");
+    mgr.send_command(&cfg.id, "scoreboard players get marca cambio").unwrap();
+    assert!(wait_for(Duration::from_secs(20), || mgr.console(&cfg.id).iter().any(|l| l.contains("marca has 939"))), "la vuelta atrás perdió la marca");
+    mgr.stop(&cfg.id).unwrap();
+    assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
+    println!("✔ vuelta atrás a {old}: mundo anterior restaurado y arranca");
+}

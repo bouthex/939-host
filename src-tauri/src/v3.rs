@@ -322,3 +322,71 @@ pub struct EmptyResult { pub removed: usize, pub freed_bytes: u64, pub errors: V
 pub async fn trash_empty() -> AppResult<EmptyResult> {
     blocking(|| { let (removed, freed_bytes, errors) = host939_core::trash::empty(); Ok(EmptyResult { removed, freed_bytes, errors }) }).await
 }
+
+
+/* ───────── Cambio de versión ───────── */
+
+use host939_core::version_change as vc;
+
+#[tauri::command]
+pub async fn version_analyze(id: String, to: String) -> AppResult<vc::Analysis> {
+    let cfg = instance::load(&id)?;
+    vc::analyze(&Modrinth, &cfg, &to).await
+}
+
+#[tauri::command]
+pub async fn version_last_change(id: String) -> AppResult<Option<vc::ChangeRecord>> { Ok(vc::last_change(&id)) }
+
+/// Actualiza en el mismo servidor. Informa el avance con el evento `version-progress`.
+#[tauri::command]
+pub async fn version_update(app: AppHandle, id: String, to: String) -> AppResult<vc::ChangeReport> {
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let r = vc::update_in_place(&app.state::<Manager>(), &Modrinth, &id, &to, move |msg, f| {
+        let _ = app2.emit("version-progress", serde_json::json!({ "id": id2, "message": msg, "fraction": f }));
+    }).await;
+    app.state::<Manager>().changed(&id);
+    r
+}
+
+#[tauri::command]
+pub async fn version_rollback(app: AppHandle, id: String) -> AppResult<()> {
+    let r = vc::rollback(&app.state::<Manager>(), &id).await;
+    app.state::<Manager>().changed(&id);
+    r
+}
+
+/// Copia independiente (opción B). Si `to` viene, la copia queda en esa versión: si trae el mundo,
+/// se actualiza con el mismo procedimiento seguro; si no, se instala directo en la versión nueva.
+#[tauri::command]
+pub async fn server_duplicate(app: AppHandle, id: String, name: String, parts: vc::CopyParts, to: Option<String>) -> AppResult<String> {
+    let total = hardware::live(&app.state::<Probe>(), 0).ram_total_mb;
+    let new_id = vc::duplicate(&id, &name, &parts, total).await?;
+    if let Some(to) = to.filter(|t| !t.is_empty()) {
+        let mut c = instance::load(&new_id)?;
+        if parts.world && paths_has_world(&new_id) {
+            // Primero se instala la versión original y después se actualiza con copia verificada.
+            instance::install(&app.state::<Manager>(), new_id.clone()).await;
+            let app2 = app.clone();
+            let nid = new_id.clone();
+            let r = vc::update_in_place(&app.state::<Manager>(), &Modrinth, &new_id, &to, move |msg, f| {
+                let _ = app2.emit("version-progress", serde_json::json!({ "id": nid, "message": msg, "fraction": f }));
+            }).await?;
+            if !r.ok { return Err(AppError::new("version", "La copia se creó, pero no se pudo pasar a la versión nueva.").with_detail(r.error.unwrap_or_default())); }
+        } else {
+            let a = vc::analyze(&Modrinth, &c, &to).await?;
+            c.mc_version = to;
+            c.loader_version = a.loader_version;
+            c.installed = false;
+            instance::save(&c)?;
+            let mgr = app.state::<Manager>();
+            instance::install(&mgr, new_id.clone()).await;
+        }
+    } else {
+        instance::install(&app.state::<Manager>(), new_id.clone()).await;
+    }
+    let _ = app.emit("servers-changed", ());
+    Ok(new_id)
+}
+
+fn paths_has_world(id: &str) -> bool { host939_core::paths::server_run_dir(id).join("world").join("level.dat").exists() }

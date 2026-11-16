@@ -57,6 +57,12 @@ jobs:
       - name: Modrinth real
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_modrinth -- --ignored --nocapture
+      - name: Cambio de versión real (actualizar, mods, vuelta atrás)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_cambio_version -- --ignored --nocapture
+      - name: Papelera y copias de servidores
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test papelera -- --nocapture
       - name: Ciclo completo, copias y restauración
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test server_lifecycle full_server_lifecycle -- --ignored --nocapture

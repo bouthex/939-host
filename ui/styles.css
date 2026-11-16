@@ -599,3 +599,17 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 /* Lista de servidores: el estado en curso se lee como estado, no como texto secundario. */
 .st { font-size: 13.5px; }
 .st[data-k="starting"], .st[data-k="checking"], .st[data-k="saving"], .st[data-k="restarting"], .st[data-k="stopping"] { color: var(--text); }
+
+/* Cambio de versión */
+.verrow { display: flex; gap: 8px; align-items: center; }
+.verrow .input.ro { flex: 1; display: flex; align-items: center; background: var(--surface); color: var(--text); font-family: var(--mono); font-size: 13.5px; }
+.optcards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.optcard { display: grid; gap: 6px; text-align: left; padding: 16px; border: 1px solid var(--line2); border-radius: var(--r-card); background: var(--bg); color: var(--text); cursor: pointer; transition: border-color var(--d-fast) var(--ease-out), background var(--d-fast) var(--ease-out), transform var(--d-fast) var(--ease-out); }
+.optcard:hover { border-color: var(--text3); background: var(--hover); }
+.optcard:active { transform: scale(.985); }
+.optcard[disabled] { opacity: .5; cursor: not-allowed; }
+.optcard b { font-weight: 600; }
+.warnlist { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; color: var(--text2); }
+.steps-done { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13.5px; }
+.steps-done li { display: flex; gap: 8px; align-items: flex-start; } .steps-done svg { color: var(--go); margin-top: 3px; flex: none; }
+@media (max-width: 1080px) { .optcards { grid-template-columns: minmax(0, 1fr); } }

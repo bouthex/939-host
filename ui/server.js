@@ -448,7 +448,7 @@ tabDraw.settings = async (el) => {
     <div class="stack" style="gap:24px">
       ${sec('general', 'General', `<div class="form">
         <label class="field">Nombre<input class="input" data-bind="name" maxlength="40" value="${esc(e.name)}"></label>
-        <label class="field">Versión<input class="input mono" readonly value="${loaderName(e.loader)} ${esc(e.mcVersion)}"><span class="hint">Para cambiar de versión, creá otro servidor usando una copia de este mundo: este queda intacto.</span></label>
+        <div class="field">Versión de Minecraft<div class="verrow"><span class="input ro">${loaderName(e.loader)} ${esc(e.mcVersion)}</span><button class="btn" data-a="ver-change" data-tone="cycle">${icon('sync', 15)}Cambiar versión</button></div><span class="hint">939 Host revisa qué implica el cambio para este servidor y te ofrece actualizarlo, hacer una copia o empezar de cero.</span></div>
         <label class="field full">Descripción<input class="input" data-bind="description" maxlength="120" value="${esc(e.description)}"></label>
         <label class="field full">Mensaje del servidor (MOTD)<input class="input" data-bind="motd" maxlength="120" value="${esc(e.motd)}"></label></div>`)}
       ${sec('perf', 'Memoria y Java', `<div class="field"><div class="range-head"><span>Memoria (RAM)</span><span class="mono" id="mem-label">${fmtMB(e.memoryMb)}</span></div>

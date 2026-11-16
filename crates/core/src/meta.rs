@@ -52,6 +52,12 @@ async fn manifest() -> AppResult<Manifest> {
     }
 }
 
+/// Fecha de publicación y tipo («release», «snapshot»…) de una versión, según Mojang.
+pub async fn version_info(id: &str) -> AppResult<Option<(String, String)>> {
+    let m = manifest().await?;
+    Ok(m.versions.into_iter().find(|v| v.id == id).map(|v| (v.release_time, v.kind)))
+}
+
 pub async fn list_versions(include_snapshots: bool) -> AppResult<Vec<VersionOption>> {
     let m = manifest().await?;
     Ok(m.versions

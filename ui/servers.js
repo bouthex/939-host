@@ -87,6 +87,8 @@ routes.create = async function renderCreate() {
       viewDistance: 10, simulationDistance: 8, port: await invoke('suggest_port'), onlineMode: true, whitelist: false,
       eula: false, creating: false, snapshots: false,
     };
+    // «Empezar de cero» desde el cambio de versión: llega con la versión y el tipo elegidos.
+    if (state.prefill) { Object.assign(state.wizard, state.prefill); state.prefill = null; }
   }
   if (!state.versions) state.versions = await call('list_versions', { includeSnapshots: false });
   const w = state.wizard;
