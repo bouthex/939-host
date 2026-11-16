@@ -236,6 +236,21 @@ pub async fn member_remove(id: String, node_id: String, cluster: State<'_, Clust
 }
 
 #[tauri::command]
+pub async fn group_transfer(app: AppHandle, id: String, node_id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.transfer_ownership(&id, &node_id).await.map_err(|e| AppError::invalid(e.to_string()))?;
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}
+
+/// Sale del grupo. Devuelve si la propietaria lo confirmó en el momento.
+#[tauri::command]
+pub async fn group_leave(app: AppHandle, id: String, cluster: State<'_, Cluster>) -> AppResult<bool> {
+    let r = cluster.node().await?.leave_group(&id).await.map_err(|e| AppError::invalid(e.to_string()))?;
+    let _ = app.emit("servers-changed", ());
+    Ok(r)
+}
+
+#[tauri::command]
 pub async fn group_options(id: String, auto_failover: bool, handover_on_quit: bool, cluster: State<'_, Cluster>) -> AppResult<()> {
     cluster.node().await?.set_options(&id, auto_failover, handover_on_quit).map_err(|e| AppError::invalid(e.to_string()))
 }

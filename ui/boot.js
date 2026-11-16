@@ -66,6 +66,8 @@ async function boot() {
   refreshRequests();
   await go('servers');
   $('#splash')?.classList.add('out');
+  // Momento en que la app queda usable (para medir el arranque en las pruebas).
+  window.__h939Ready = performance.timeOrigin + performance.now();
   setTimeout(() => $('#splash')?.remove(), 300);
   invoke('notify_ui_ready').catch(() => {});
 }

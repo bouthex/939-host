@@ -109,7 +109,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install playwright==1.48.0 pillow
+      - run: pip install playwright==1.48.0 pillow psutil
       - name: Abrir la app y usarla como una persona
         timeout-minutes: 35
         shell: pwsh

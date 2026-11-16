@@ -241,6 +241,8 @@ fn main() {
             network::servers_hosting,
             v3::pause_server,
             v3::trash_list,
+            network::group_transfer,
+            network::group_leave,
             v3::profile_export,
             v3::profile_open,
             aliases::alias_status,

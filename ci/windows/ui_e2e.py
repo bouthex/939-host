@@ -8,6 +8,8 @@ No hay datos simulados: todo pasa por el backend real de la app. Las capturas qu
 `capturas/` para revisión visual.
 """
 import asyncio, os, sys, time, json
+sys.path.insert(0, os.path.dirname(__file__))
+import medir
 
 sys.stdout.reconfigure(encoding="utf-8")
 from playwright.async_api import async_playwright
@@ -47,6 +49,24 @@ async def main():
         await p.wait_for_selector(".nav-wrap, .welcome", timeout=60000)
         await p.wait_for_timeout(1500)
         n = [0]
+        metrics = {}
+        try:
+            ready = await p.evaluate("window.__h939Ready || null")
+            t0 = medir.started_at()
+            if ready and t0: metrics["arranque_s"] = round(ready / 1000 - t0, 2)
+        except Exception as e:
+            metrics["arranque_error"] = str(e)
+        await p.wait_for_timeout(8000)
+        metrics["reposo"] = {**medir.memory(), "cpu_pct": medir.cpu(10)}
+        try:
+            await p.evaluate("window.__TAURI__.window.getCurrentWindow().minimize()")
+            await asyncio.sleep(12)
+            metrics["minimizado"] = {**medir.memory(), "cpu_pct": medir.cpu(10)}
+            await p.evaluate("(async () => { const w = window.__TAURI__.window.getCurrentWindow(); await w.unminimize(); await w.setFocus(); })()")
+            await p.wait_for_timeout(1500)
+        except Exception as e:
+            metrics["minimizado_error"] = str(e).splitlines()[0]
+        print("MÉTRICAS (inicio): " + json.dumps(metrics, ensure_ascii=False), flush=True)
 
         async def shot(name, wait=600):
             await p.wait_for_timeout(wait)
@@ -191,6 +211,13 @@ async def main():
             await step("detener con confirmación y apagado limpio", stop())
         await shot("oscuro-detenido", 1000)
 
+        try:
+            metrics["despues_de_usarla"] = {**medir.memory(), "cpu_pct": medir.cpu(10)}
+            metrics["tamanos"] = medir.sizes()
+        except Exception as e:
+            metrics["final_error"] = str(e)
+        print("MÉTRICAS: " + json.dumps(metrics, ensure_ascii=False), flush=True)
+        json.dump(metrics, open(f"{OUT}/metricas.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         real_errors = [e for e in errors if "favicon" not in e]
         log(not real_errors, "sin errores de JavaScript", "; ".join(real_errors[:5]))
         json.dump(results, open(f"{OUT}/resultados.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)

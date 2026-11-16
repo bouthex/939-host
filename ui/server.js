@@ -377,7 +377,8 @@ tabDraw.group = async (el) => {
         <div class="card"><div class="card-head"><h2>PCs del grupo</h2><span class="sm t3">${online} de ${g.members.length} conectadas</span></div><div class="list">
           ${g.members.map((m) => `<div class="li">${pcAvatar(m.symbol, 32, m.isHost ? 'inv' : '')}<div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(m.name)}</b>${m.isMe ? '<span class="sm t3">(vos)</span>' : ''}${m.isHost ? '<span class="chip s fill">Anfitrión</span>' : ''}<span class="chip s">${ROLE[m.role] || esc(m.role)}</span></div>
             <div class="sm t3">${m.online ? `${SHAPES.dot.replace('class="dot"', 'class="dot" style="display:inline-block;width:6px;height:6px;margin-right:4px"')}Conectada${m.path ? ` · ${m.path === 'relay' ? 'por relay' : 'directa'}${m.rttMs != null ? ` · ${m.rttMs} ms` : ''}` : ''}` : 'Desconectada'}${m.canHost ? ` · estado ${esc(ago(m.latestAt))}` : ''}</div></div>
-            ${m.isMe ? `<button class="btn s icon ghost" data-a="identity" title="Cambiar el nombre de esta PC" aria-label="Cambiar el nombre de esta PC">${icon('edit', 15)}</button>` : ''}${!m.isMe && m.role !== 'propietario' && !m.isHost && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}">Quitar</button>` : ''}</div>`).join('')}</div></div>
+            ${m.isMe ? `<button class="btn s icon ghost" data-a="identity" title="Cambiar el nombre de esta PC" aria-label="Cambiar el nombre de esta PC">${icon('edit', 15)}</button>` : ''}${!m.isMe && m.role !== 'propietario' && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-transfer" data-node="${esc(m.nodeId)}" data-name="${esc(m.name)}">Hacer propietaria</button>` : ''}${!m.isMe && m.role !== 'propietario' && !m.isHost && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}" data-tone="halt">Quitar</button>` : ''}</div>`).join('')}</div>
+          ${g.members.find((x) => x.isMe)?.role !== 'propietario' ? `<div class="spread" style="margin-top:12px"><span class="sm t2">Si salís, esta PC deja de participar y la propietaria te quita de la lista.</span><button class="btn s" data-a="group-leave" data-tone="halt">Salir del grupo</button></div>` : '<p class="sm t2" style="margin-top:12px">Los cambios del grupo los firma esta PC (propietaria): ninguna otra puede agregarse, quitar a otras ni declararse propietaria. Para irte, primero pasá la propiedad.</p>'}</div>
         <div class="card pad stack"><h2>Invitar</h2>${inviteBtns}
           ${st.invites.length ? `<div><div class="sec" style="margin:6px 0">Invitaciones sin usar</div>${st.invites.map((i) => `<div class="kv"><span>${ROLE[i.role] || 'Jugador'} <span class="sm t3">${esc(fmtDate(i.createdAt))}</span></span><button class="btn s ghost" data-a="invite-revoke" data-secret="${esc(i.secret)}">Revocar</button></div>`).join('')}</div>` : ''}</div>
       </div></div></div>`;
@@ -401,6 +402,19 @@ A.invite = async (el) => {
   drawTab();
 };
 A['invite-revoke'] = async (el) => { try { await invoke('invite_revoke', { id: state.params.id, secret: el.dataset.secret }); toast('Invitación revocada'); } catch (e) { fail(e); } drawTab(); };
+A['member-transfer'] = async (el) => {
+  const id = state.server.config.id;
+  if (!(await dialog({ title: `Pasar la propiedad a ${el.dataset.name}`, confirm: 'Pasar la propiedad', danger: true,
+    body: `<p>${esc(el.dataset.name)} va a ser la PC propietaria: podrá invitar, quitar PCs y borrar el servidor. Esta PC queda como integrante.</p><p class="sm t2">El cambio lo firma esta PC y todo el grupo lo verifica. Para deshacerlo, la nueva propietaria tiene que devolvértela.</p>` }))) return;
+  try { await invoke('group_transfer', { id, nodeId: el.dataset.node }); toast('Propiedad transferida'); } catch (e) { fail(e); }
+  refreshServer();
+};
+A['group-leave'] = async () => {
+  const id = state.server.config.id;
+  if (!(await dialog({ title: 'Salir del grupo', confirm: 'Salir', danger: true, body: '<p>Esta PC deja de participar en este servidor: no lo vas a poder alojar ni ver su estado. Para volver necesitás una invitación nueva.</p>' }))) return;
+  try { const ok = await invoke('group_leave', { id }); toast(ok ? 'Saliste del grupo' : 'Saliste. La propietaria está desconectada: te quita de la lista cuando vuelva.'); } catch (e) { fail(e); }
+  refreshServer();
+};
 A['member-remove'] = async (el) => {
   if (!(await dialog({ title: 'Quitar del grupo', body: '<p>Pierde el acceso a este servidor. Para volver necesita una invitación nueva.</p>', confirm: 'Quitar' }))) return;
   try { await invoke('member_remove', { id: state.params.id, nodeId: el.dataset.node }); } catch (e) { fail(e); }

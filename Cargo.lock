@@ -2076,6 +2076,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "futures-util",
+ "hex",
  "host939-core",
  "host939-p2p",
  "iroh",

@@ -49,11 +49,17 @@ pub struct ShareConfig {
     /// Datos públicos del servidor (para PCs que solo juegan y no tienen copia).
     #[serde(default)]
     pub card: Option<serde_json::Value>,
+    /// Firma ed25519 de la PC propietaria sobre integrantes, opciones y datos públicos.
+    #[serde(default)]
+    pub sig: Option<String>,
+    /// Id de la PC propietaria en la que confía esta PC (se fija al unirse). Local: no se copia.
+    #[serde(default)]
+    pub owner_pin: Option<String>,
 }
 
 impl Default for ShareConfig {
     fn default() -> Self {
-        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None }
+        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None }
     }
 }
 

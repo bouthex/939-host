@@ -14,7 +14,6 @@ use host939_core::hardware::Probe;
 use host939_core::model::*;
 use host939_core::process::Manager;
 use host939_core::{instance, meta, modrinth, mods, net, paths};
-use host939_core::modrinth::Source;
 use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 

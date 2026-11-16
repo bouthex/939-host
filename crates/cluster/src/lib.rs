@@ -18,6 +18,7 @@
 //!   un mensaje claro en la lista de servidores de Minecraft.
 
 pub mod moving;
+pub mod signed;
 pub mod wire;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -135,6 +136,8 @@ enum Req {
     HostAnswer { server: String, accepted: bool, message: String },
     /// Traspaso en dos fases: la PC destino copia el punto ANTES de recibir el permiso.
     Prefetch { server: String, snapshot: String },
+    /// Una PC se va del grupo: se lo avisa a la propietaria, que firma la lista sin ella.
+    Leave { server: String },
 }
 
 impl Req {
@@ -142,7 +145,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } => server,
         }
     }
 }
@@ -226,6 +229,8 @@ struct Outgoing { host: String, host_name: String, at: Instant, epoch: u64 }
 
 struct Inner {
     ep: Endpoint,
+    /// Clave del nodo (la misma de iroh): firma los cambios de integrantes si esta PC es propietaria.
+    key: iroh::SecretKey,
     me: String,
     name: RwLock<(String, String)>,
     local: Arc<dyn LocalHost>,
@@ -384,7 +389,7 @@ impl GroupNode {
             if let Ok(a) = serde_json::from_value::<EndpointAddr>(v) { peers.insert(k, a); }
         }
         let inner = Arc::new(Inner {
-            ep: ep.clone(), me, name: RwLock::new((name.to_string(), String::new())), local, timing, started: Instant::now(),
+            ep: ep.clone(), key: iroh::SecretKey::from_bytes(&secret), me, name: RwLock::new((name.to_string(), String::new())), local, timing, started: Instant::now(),
             peers: RwLock::new(peers), conns: Default::default(), state: Default::default(), routes: Default::default(),
             stopping: Default::default(),
         });
@@ -427,15 +432,17 @@ impl GroupNode {
         if s.member(&self.inner.me).is_none() {
             s.members.insert(0, Member { node_id: self.inner.me.clone(), name: self.inner.name(), joined_at: chrono::Local::now().to_rfc3339(), role: "propietario".into() });
         }
-        s.card = Some(serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase() }));
-        bump_rev(&mut s);
-        network::save_share(server, &s).map_err(|e| anyhow!(e.message))?;
+        let prev_rev = rev(&s).unwrap_or(0);
+        s.card = Some(serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "rev": prev_rev }));
+        self.inner.commit(server, &mut s)?;
         lease::ensure(server, &self.inner.name()).map_err(|e| anyhow!(e.message))?;
         Ok(s)
     }
 
     /// Crea una invitación. `role`: "coanfitrion" (guarda copia y puede hostear) o "jugador".
     pub fn invite(&self, server: &str, role: &str, label: &str) -> Result<String> {
+        // Solo la propietaria invita: es la única que puede firmar la entrada de una PC nueva.
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede invitar a otras PCs."); }
         let mut s = network::load_share(server);
         if !s.enabled { bail!("Primero compartí el servidor."); }
         let secret = network::random_secret();
@@ -459,16 +466,55 @@ impl GroupNode {
         if lease::read(server).map(|l| l.held_by(node)).unwrap_or(false) { bail!("Esa PC es la anfitriona ahora: primero pasá el servidor a otra."); }
         let mut s = network::load_share(server);
         s.members.retain(|m| m.node_id != node || m.role == "propietario");
-        bump_rev(&mut s);
-        network::save_share(server, &s).map_err(|e| anyhow!(e.message))
+        self.inner.commit(server, &mut s)
+    }
+
+    /// Pasa la propiedad a otra PC del grupo. La firma la propietaria actual; desde ese momento
+    /// todas las PCs confían en la nueva, y esta queda como coanfitriona (o jugadora sin copia).
+    pub async fn transfer_ownership(&self, server: &str, to: &str) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede transferir la propiedad."); }
+        let mut s = network::load_share(server);
+        if to == self.inner.me || s.member(to).is_none() { bail!("Elegí otra PC del grupo."); }
+        let mine_role = if has_copy(server) { "coanfitrion" } else { "jugador" };
+        for m in s.members.iter_mut() {
+            if m.node_id == to { m.role = "propietario".into(); } else if m.node_id == self.inner.me { m.role = mine_role.into(); }
+        }
+        self.inner.commit(server, &mut s)?;
+        self.inner.local.changed(server);
+        // Que la nueva propietaria y el resto lo tomen ya.
+        for m in s.members.iter().filter(|m| m.node_id != self.inner.me) {
+            let _ = self.inner.rpc_timeout(&m.node_id, &Req::SyncNow { server: server.into() }, Duration::from_secs(3)).await;
+        }
+        Ok(())
+    }
+
+    /// Esta PC sale del grupo. La propietaria no puede: primero transfiere. Devuelve si la
+    /// propietaria confirmó (si estaba apagada, la quita cuando quiera; esta PC ya no participa).
+    pub async fn leave_group(&self, server: &str) -> Result<bool> {
+        let s = network::load_share(server);
+        if s.member(&self.inner.me).map(|m| m.role == "propietario").unwrap_or(false) { bail!("Sos la PC propietaria: primero transferí la propiedad a otra PC del grupo."); }
+        if lease::read(server).map(|l| l.held_by(&self.inner.me)).unwrap_or(false) { bail!("Esta PC aloja el servidor ahora: primero pasalo a otra PC del grupo."); }
+        let owner = signed::owner_of(&s);
+        let confirmed = match owner {
+            Some(o) => matches!(self.inner.rpc_timeout(&o, &Req::Leave { server: server.into() }, Duration::from_secs(6)).await, Ok(Resp::Ok)),
+            None => false,
+        };
+        self.close_route(server).await;
+        self.close_alias(server).await;
+        let mut mine = network::load_share(server);
+        mine.enabled = false;
+        mine.members.retain(|m| m.node_id != self.inner.me);
+        network::save_share(server, &mine).map_err(|e| anyhow!(e.message))?;
+        self.inner.local.changed(server);
+        Ok(confirmed)
     }
 
     pub fn set_options(&self, server: &str, auto_failover: bool, handover_on_quit: bool) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede cambiar estas opciones del grupo."); }
         let mut s = network::load_share(server);
         s.auto_failover = auto_failover;
         s.handover_on_quit = handover_on_quit;
-        bump_rev(&mut s);
-        network::save_share(server, &s).map_err(|e| anyhow!(e.message))
+        self.inner.commit(server, &mut s)
     }
 
     /// Se une a un servidor con un código de invitación. Devuelve el id del servidor.
@@ -484,6 +530,12 @@ impl GroupNode {
         let server = r.server.ok_or_else(|| anyhow!("respuesta incompleta"))?;
         let mut share = r.share.ok_or_else(|| anyhow!("respuesta incompleta"))?;
         share.invites.clear();
+        // La PC que invitó es la propietaria (autenticada por la conexión P2P) y firmó la lista.
+        let inviter_id = addr.id.to_string();
+        if signed::owner_of(&share).as_deref() != Some(inviter_id.as_str()) || !signed::verify(&server, &share, &inviter_id) {
+            bail!("La respuesta de la PC que invitó no está firmada por la propietaria del servidor.");
+        }
+        share.owner_pin = Some(inviter_id);
         std::fs::create_dir_all(host939_core::paths::server_dir(&server))?;
         network::save_share(&server, &share).map_err(|e| anyhow!(e.message))?;
         self.inner.learn(addr.clone());
@@ -514,8 +566,13 @@ impl GroupNode {
         }
         host939_core::instance::save(&cfg).map_err(|e| anyhow!(e.message))?;
         let mut mine = network::load_share(server);
-        mine.members = share.members; mine.auto_failover = share.auto_failover; mine.handover_on_quit = share.handover_on_quit;
-        mine.card = share.card; mine.enabled = true;
+        // La lista de integrantes solo se toma si la firmó la propietaria; si no, se queda la local.
+        if signed::accept(server, &mine, &share) {
+            mine.owner_pin = signed::owner_of(&share);
+            mine.members = share.members; mine.auto_failover = share.auto_failover; mine.handover_on_quit = share.handover_on_quit;
+            mine.card = share.card; mine.sig = share.sig;
+        }
+        mine.enabled = true;
         network::save_share(server, &mine).map_err(|e| anyhow!(e.message))?;
         Ok(())
     }
@@ -967,6 +1024,19 @@ fn rev(s: &ShareConfig) -> Option<u64> { s.card.as_ref().and_then(|c| c.get("rev
 /* ─────────────────────────────── Lógica interna ─────────────────────────────── */
 
 impl Inner {
+    /// Guarda un cambio del grupo hecho por la propietaria: nueva revisión, firma y guardado.
+    fn commit(&self, server: &str, s: &mut ShareConfig) -> Result<()> {
+        if signed::owner_of(s).as_deref() != Some(self.me.as_str()) && s.members.iter().any(|m| m.role == "propietario") {
+            // Solo una transferencia (la firma la propietaria saliente) puede nombrar a otra.
+            if signed::pin(&network::load_share(server)).as_deref() != Some(self.me.as_str()) { bail!("Solo la PC propietaria puede cambiar el grupo."); }
+        }
+        bump_rev(s);
+        signed::sign(&self.key, server, s);
+        s.owner_pin = signed::owner_of(s);
+        network::save_share(server, s).map_err(|e| anyhow!(e.message))
+    }
+    fn is_owner(&self, server: &str) -> bool { network::load_share(server).member(&self.me).map(|m| m.role == "propietario").unwrap_or(false) }
+
     fn name(&self) -> String { self.name.read().unwrap().0.clone() }
     fn symbol(&self) -> String { self.name.read().unwrap().1.clone() }
 
@@ -1271,14 +1341,20 @@ impl Inner {
                 let want = if m.node_id == self.me { Some(my_name.clone()) } else { names.iter().find(|(n, _)| *n == m.node_id).map(|(_, v)| v.clone()) };
                 if let Some(w) = want.filter(|w| !w.trim().is_empty() && *w != m.name) { m.name = w; touched = true; }
             }
-            if touched { bump_rev(&mut s2); let _ = network::save_share(server, &s2); self.local.changed(server); }
+            // Grupos anteriores a las firmas: la propietaria firma su lista en el primer contacto.
+            if touched || s2.sig.is_none() { let _ = self.commit(server, &mut s2); self.local.changed(server); }
         }
         if let Some((_, from)) = newest_share {
             if let Ok(Resp::Config { share: remote, .. }) = self.rpc(&from, &Req::Config { server: server.into() }).await {
                 let mut mine = network::load_share(server);
-                mine.members = remote.members; mine.auto_failover = remote.auto_failover; mine.handover_on_quit = remote.handover_on_quit; mine.card = remote.card;
-                let _ = network::save_share(server, &mine);
-                self.local.changed(server);
+                if signed::accept(server, &mine, &remote) {
+                    mine.owner_pin = signed::owner_of(&remote);
+                    mine.members = remote.members; mine.auto_failover = remote.auto_failover; mine.handover_on_quit = remote.handover_on_quit; mine.card = remote.card; mine.sig = remote.sig;
+                    let _ = network::save_share(server, &mine);
+                    self.local.changed(server);
+                } else {
+                    debug(&format!("{} rechazó una lista de integrantes sin la firma de la propietaria (de {})", self.name(), &from[..8.min(from.len())]));
+                }
             }
         }
 
@@ -1537,6 +1613,17 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             inner.with_state(&server, |s| { s.left.insert(remote.to_string()); s.last_ok.remove(remote); });
             Resp::Ok
         }
+        Req::Leave { server } => {
+            if !inner.is_owner(&server) { return Resp::Err { msg: "Esta PC no es la propietaria.".into() }; }
+            if lease::read(&server).map(|l| l.held_by(remote)).unwrap_or(false) { return Resp::Err { msg: "Esa PC aloja el servidor ahora: primero tiene que pasarlo a otra.".into() }; }
+            let mut s = network::load_share(&server);
+            let name = s.member(remote).map(|m| m.name.clone());
+            s.members.retain(|m| m.node_id != remote || m.role == "propietario");
+            match inner.commit(&server, &mut s) {
+                Ok(()) => { if let Some(n) = name { inner.local.note(&server, &format!("{} salió del grupo.", nice(&n))); } inner.local.changed(&server); Resp::Ok }
+                Err(e) => Resp::Err { msg: e.to_string() },
+            }
+        }
         Req::HostRequest { server, name, symbol, profile } => {
             let Some(l) = lease::read(&server).filter(|l| l.held_by(&inner.me)) else { return Resp::Err { msg: "Esta PC ya no aloja el servidor.".into() } };
             if !network::load_share(&server).member(remote).map(|m| m.can_host()).unwrap_or(false) {
@@ -1730,8 +1817,7 @@ impl ProtocolHandler for JoinH {
                         s.members.push(Member { node_id: remote.clone(), name: if name.is_empty() { "Amigo".into() } else { name.clone() }, joined_at: chrono::Local::now().to_rfc3339(), role: role.into() });
                         // Cada invitación sirve para una sola PC.
                         s.invites.retain(|i| i.secret != req.secret);
-                        bump_rev(&mut s);
-                        let _ = network::save_share(&sid, &s);
+                        let _ = inner.commit(&sid, &mut s);
                         inner.local.note(&sid, &format!("{} se unió al grupo como {}.", if name.is_empty() { "Un amigo" } else { &name }, role));
                         inner.local.changed(&sid);
                         let mut out = s.clone();
