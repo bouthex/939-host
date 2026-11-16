@@ -95,6 +95,11 @@ fn main() {
             }
             wb.build()?;
             paths::init(data_root()).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            // Papelera: lo que lleva más de 30 días se borra al abrir y después cada 6 horas.
+            std::thread::spawn(|| loop {
+                let _ = host939_core::trash::purge_expired();
+                std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+            });
             let node = identity::load_or_create_node().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             app.manage(node);
             app.manage(process::Manager::new(Arc::new(TauriEvents(app.handle().clone()))));
@@ -225,6 +230,10 @@ fn main() {
             network::host_requests_pending,
             network::servers_hosting,
             v3::pause_server,
+            v3::trash_list,
+            v3::trash_restore,
+            v3::trash_purge,
+            v3::trash_empty,
             v3::server_check_connection,
             v3::server_clear_join_issue,
             v3::resume_server,

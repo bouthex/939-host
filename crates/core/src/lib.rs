@@ -29,3 +29,4 @@ pub mod repair;
 pub mod settings;
 pub mod skins;
 pub mod snapshots;
+pub mod trash;

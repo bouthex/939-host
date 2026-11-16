@@ -293,3 +293,32 @@ pub async fn mods_link(app: AppHandle, id: String, file_name: String) -> AppResu
     app.state::<Manager>().changed(&id);
     Ok(r)
 }
+
+
+/* ───────── Papelera ───────── */
+
+#[tauri::command]
+pub async fn trash_list() -> AppResult<Vec<host939_core::trash::TrashItem>> {
+    blocking(|| Ok(host939_core::trash::list())).await
+}
+
+#[tauri::command]
+pub async fn trash_restore(app: AppHandle, key: String) -> AppResult<String> {
+    let id = blocking(move || host939_core::trash::restore(&key)).await?;
+    let _ = app.emit("servers-changed", ());
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn trash_purge(key: String) -> AppResult<()> {
+    blocking(move || host939_core::trash::purge(&key)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyResult { pub removed: usize, pub freed_bytes: u64, pub errors: Vec<String> }
+
+#[tauri::command]
+pub async fn trash_empty() -> AppResult<EmptyResult> {
+    blocking(|| { let (removed, freed_bytes, errors) = host939_core::trash::empty(); Ok(EmptyResult { removed, freed_bytes, errors }) }).await
+}

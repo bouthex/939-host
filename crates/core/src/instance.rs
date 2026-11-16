@@ -325,6 +325,11 @@ pub fn delete(mgr: &Manager, id: &str, confirm_name: &str) -> AppResult<()> {
     }
     let dst = paths::trash_slot(id);
     paths::rename_retry(paths::server_dir(id), &dst).map_err(|e| AppError::io("No se pudo mover el servidor a la Papelera", e))?;
+    // Fecha real de borrado: el plazo de 30 días se cuenta desde acá, también tras reiniciar.
+    let _ = crate::trash::stamp(&dst, &crate::trash::TrashMeta {
+        kind: "server".into(), original_id: cfg.id.clone(), name: cfg.name.clone(), deleted_at: chrono::Local::now().to_rfc3339(),
+        mc_version: cfg.mc_version.clone(), loader: cfg.loader.name().into(), logo: None,
+    });
     Ok(())
 }
 

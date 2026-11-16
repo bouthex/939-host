@@ -132,10 +132,10 @@ async function call(cmd, args, okMsg) {
    buttons: [{ label, value, kind: 'pri'|'' }]. Devuelve el value elegido (o false al cancelar).
    requireText: hay que escribirlo para habilitar el botón principal. */
 let dialogOpen = null;
-function dialog({ title, body = '', confirm = 'Aceptar', cancel = 'Cancelar', buttons = null, requireText = null, wide = false, onMount = null }) {
+function dialog({ title, body = '', confirm = 'Aceptar', cancel = 'Cancelar', buttons = null, requireText = null, wide = false, onMount = null, danger = false }) {
   return new Promise((resolve) => {
     const root = document.getElementById('modal-root');
-    const btns = buttons || [{ label: confirm, value: true, kind: 'pri' }];
+    const btns = buttons || [{ label: confirm, value: true, kind: danger ? 'pri danger' : 'pri' }];
     const prev = document.activeElement;
     root.innerHTML = `<div class="overlay" role="dialog" aria-modal="true" aria-labelledby="dlg-t"><div class="dialog ${wide ? 'wide' : ''}">
       <h2 id="dlg-t">${esc(title)}</h2><div class="stack" style="gap:10px">${body}</div>
@@ -184,11 +184,14 @@ const leaveHooks = [];
 function onLeave(fn) { leaveHooks.push(fn); }
 
 /* ───────── navegación ───────── */
-const NAV = [['servers', 'Servidores', 'servers'], ['friends', 'Servidores de amigos', 'friends'], ['settings', 'Configuración', 'settings']];
+const NAV = [['servers', 'Servidores', 'servers'], ['friends', 'Servidores de amigos', 'friends'], ['trash', 'Papelera', 'trash'], ['settings', 'Configuración', 'settings']];
 function navKey() { return ['server', 'create', 'repair'].includes(state.route) ? 'servers' : state.route; }
 function paintNav() {
   const k = navKey();
-  $('#nav').innerHTML = NAV.map(([r, label, ic]) => `<button class="navi ${k === r ? 'on' : ''}" data-a="nav" data-route="${r}" ${k === r ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${r === 'servers' && state.servers.length ? `<span class="count">${state.servers.length}</span>` : ''}</button>`).join('');
+  $('#nav').innerHTML = NAV.map(([r, label, ic]) => `<button class="navi ${k === r ? 'on' : ''}" data-a="nav" data-route="${r}" ${k === r ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${r === 'servers' && state.servers.length ? `<span class="count">${state.servers.length}</span>` : ''}${r === 'trash' && state.trashCount ? `<span class="count" title="Servidores en la Papelera">${state.trashCount}</span>` : ''}</button>`).join('');
+}
+async function refreshTrashCount() {
+  try { const n = (await invoke('trash_list', {})).length; if (n !== state.trashCount) { state.trashCount = n; paintNav(); } } catch { /* sin datos */ }
 }
 const guards = [];
 async function canLeave() { for (const g of guards) { if (!(await g())) return false; } return true; }

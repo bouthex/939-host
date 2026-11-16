@@ -565,3 +565,37 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 .issue b { font-weight: 600; }
 .issue .mono { font-size: 11.5px; color: var(--text3); word-break: break-all; }
 .ta-r { text-align: right; }
+
+/* Confirmación destructiva: rojo desaturado sólido, solo en el botón que borra. */
+.btn.pri.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.pri.danger:hover { background: color-mix(in srgb, var(--danger) 88%, #000); opacity: 1; }
+[data-theme="dark"] .btn.pri.danger { color: #160a09; }
+
+/* Papelera */
+.trash-it { gap: 14px; align-items: center; }
+.days { font-size: 12.5px; color: var(--text2); white-space: nowrap; font-variant-numeric: tabular-nums; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); }
+.days.soon { color: var(--halt); border-color: color-mix(in srgb, var(--halt) 35%, var(--line)); background: var(--halt-bg); }
+
+/* ═════════════ Operaciones visibles ═════════════
+   Franja bajo el encabezado del servidor: tono funcional tenue, giro y barra indeterminada. */
+.opstrip { position: relative; overflow: hidden; display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-radius: var(--r-card);
+  border: 1px solid color-mix(in srgb, var(--tone, var(--text3)) 28%, var(--line)); background: var(--tone-bg, var(--surface)); }
+.opstrip[data-tone="go"] { --tone: var(--go); --tone-bg: var(--go-bg); }
+.opstrip[data-tone="hold"] { --tone: var(--hold); --tone-bg: var(--hold-bg); }
+.opstrip[data-tone="cycle"] { --tone: var(--cycle); --tone-bg: var(--cycle-bg); }
+.opstrip[data-tone="halt"] { --tone: var(--halt); --tone-bg: var(--halt-bg); }
+.opstrip b { display: block; font-weight: 600; font-size: 14.5px; }
+.opstrip .op-ic { color: var(--tone); display: grid; place-items: center; }
+.op-spin { width: 18px; height: 18px; flex: none; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--tone) 30%, transparent); border-top-color: var(--tone); animation: spin .9s linear infinite; }
+.op-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: color-mix(in srgb, var(--tone) 15%, transparent); }
+.op-bar i { position: absolute; top: 0; bottom: 0; width: 30%; background: var(--tone); animation: opbar 1.6s var(--ease-out) infinite; }
+@keyframes opbar { from { left: -30%; } to { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .op-spin { animation-duration: 3s; } .op-bar i { animation: none; left: 0; width: 100%; opacity: .5; } }
+[data-motion="reduce"] .op-spin { animation-duration: 3s; } [data-motion="reduce"] .op-bar i { animation: none; left: 0; width: 100%; opacity: .5; }
+/* Píldora de estado un poco más presente y legible. */
+.statepill { height: 32px; padding: 0 14px; font-size: 13.5px; border-color: var(--line2); }
+.statepill[data-k="starting"], .statepill[data-k="checking"], .statepill[data-k="saving"], .statepill[data-k="restarting"], .statepill[data-k="stopping"] { border-color: color-mix(in srgb, var(--cycle) 40%, var(--line2)); background: var(--cycle-bg); }
+.statepill[data-k="paused"] { border-color: color-mix(in srgb, var(--hold) 40%, var(--line2)); background: var(--hold-bg); }
+/* Lista de servidores: el estado en curso se lee como estado, no como texto secundario. */
+.st { font-size: 13.5px; }
+.st[data-k="starting"], .st[data-k="checking"], .st[data-k="saving"], .st[data-k="restarting"], .st[data-k="stopping"] { color: var(--text); }

@@ -80,12 +80,13 @@ function drawHeader() {
   state.lastState = { id: c.id, key: s.key };
   const meta = [`${loaderName(c.loader)} ${esc(c.mcVersion)}${c.javaMajor ? ` · Java ${c.javaMajor}` : ''}`, `<span class="mono">localhost:${c.port}</span>`];
   if (v.status === 'running') meta.push(`Encendido hace ${fmtUptime(v.startedAt)}`);
-  if (s.detail) meta.push(esc(s.detail));
+  if (s.detail && !OPS[s.key]) meta.push(esc(s.detail));
   el.innerHTML = `<div class="srv-head">
       <div class="srv-title"><h1 class="ellipsis">${esc(c.name)}</h1><div class="srv-meta">${hostedElsewhere ? `<span class="statepill">${SHAPES.dot}En otra PC</span>` : stateHTML(v, true).replace('class="statepill"', `class="statepill${changed ? ' changed' : ''}"`)}${meta.map((m) => `<span>${m}</span>`).join('')}</div></div>
       <div class="ctl">${ctl}<button class="btn icon" data-a="folder" data-which="server" title="Abrir la carpeta del servidor" aria-label="Abrir la carpeta del servidor">${icon('folder', 16)}</button></div></div>
     ${v.countdown ? `<div class="countdown" role="status"><div class="row"><span class="num" id="cd-num">${cdLeft(v.countdown)}</span><div><b>${v.countdown.kind === 'restart' ? 'El servidor se reinicia' : 'El servidor se detiene'} en <span id="cd-txt">${cdLeft(v.countdown)}</span> segundos</b><div class="sm t2">Los jugadores ven la cuenta regresiva en el chat. El mundo se guarda antes de cerrar.</div></div></div>
       <div class="btns"><button class="btn s" data-a="cd-cancel" data-id="${id}">Cancelar</button><button class="btn s pri" data-a="cd-now" data-id="${id}" data-kind="${esc(v.countdown.kind)}">${v.countdown.kind === 'restart' ? 'Reiniciar ya' : 'Detener ya'}</button></div></div>` : ''}
+    ${!hostedElsewhere && !v.countdown && !(v.installing || (prog && !prog.done)) ? opStrip(v, s) : ''}
     ${v.installing || (prog && !prog.done) ? `<div class="card pad row" style="gap:14px"><span id="inst-ring">${pring(prog?.fraction || 0, 28, !prog)}</span><div class="grow stack" style="gap:6px"><div class="spread"><b>${esc(prog?.message || 'Preparando la instalación')}</b><span class="mono sm">${Math.round((prog?.fraction || 0) * 100)} %</span></div><div class="bar"><i style="width:${Math.round((prog?.fraction || 0) * 100)}%"></i></div></div></div>` : ''}
     ${g?.outgoingRequest ? `<div class="note">${SHAPES.ring}<div class="grow"><b>Le pediste a ${esc(g.outgoingRequest.hostName)} alojar este servidor</b><span class="sm t2">Le apareció un aviso en su 939 Host. La solicitud vence en ${fmtDuration(g.outgoingRequest.expiresInSecs)}.</span></div><button class="btn s" data-a="req-cancel" data-id="${id}">Cancelar</button></div>` : ''}
     ${g?.lastAnswer && !g.outgoingRequest ? `<div class="note ${g.lastAnswer.accepted ? '' : 'strong'}">${icon(g.lastAnswer.accepted ? 'check' : 'info')}<div class="grow"><b>${g.lastAnswer.accepted ? 'Solicitud aceptada' : 'Solicitud sin éxito'}</b><span class="sm t2">${esc(g.lastAnswer.message)}</span></div></div>` : ''}
@@ -93,6 +94,23 @@ function drawHeader() {
     ${v.lastError && !v.installing && !isActive(v) ? `<div class="note strong">${icon('alert')}<div class="grow"><b>${!c.installed ? 'La instalación no se completó' : 'El servidor se detuvo con un error'}</b><span class="sm t2">${esc(v.lastError)}</span></div>
       <div class="btns">${!c.installed ? `<button class="btn s pri" data-a="reinstall">Reintentar</button>` : `<button class="btn s" data-a="tab" data-v="console">Ver consola</button><button class="btn s pri" data-a="repair" data-id="${id}">${icon('wrench', 14)}Reparar</button>`}</div></div>` : ''}
     ${v.needsRestart && isActive(v) ? `<div class="note">${icon('restart')}<div class="grow"><b>Hay cambios que se aplican al reiniciar</b><span class="sm t2">Ajustes o mods nuevos quedan activos después de reiniciar el servidor.</span></div><button class="btn s" data-a="restart" data-id="${id}">Reiniciar</button></div>` : ''}`;
+}
+/* Operación en curso, bien visible: qué pasa, si hay que esperar y si algo falló. */
+const OPS = {
+  starting: (v) => ({ tone: 'cycle', title: v.phase ? `Iniciando · ${v.phase}` : 'Iniciando', text: 'Minecraft está cargando. Los jugadores pueden entrar cuando aparezca «Listo para jugar».' }),
+  checking: () => ({ tone: 'cycle', title: 'Comprobando la conexión', text: '939 Host está consultando al servidor como lo hace Minecraft para confirmar que recibe jugadores.' }),
+  saving: () => ({ tone: 'cycle', title: 'Guardando el mundo', text: 'Se escribe el mundo en el disco. No apagues la PC; los jugadores siguen conectados.' }),
+  restarting: () => ({ tone: 'cycle', title: 'Reiniciando', text: 'Guardando, apagando y volviendo a encender. Tarda unos segundos.' }),
+  stopping: () => ({ tone: 'halt', title: 'Deteniendo', text: 'Guardando el mundo y cerrando de forma ordenada.' }),
+  paused: () => ({ tone: 'hold', title: 'Pausado', text: 'El mundo está congelado: no pasa el tiempo ni se mueven los mobs. Nadie se desconecta.', still: true }),
+  unreachable: (v) => ({ tone: 'halt', title: 'El servidor no recibe conexiones', text: v.reachError ? `Dice estar encendido, pero la consulta falló: ${v.reachError}` : 'Dice estar encendido, pero no responde a Minecraft.', action: '<button class="btn s" data-a="reach-check" data-tone="cycle">Comprobar de nuevo</button>', still: true }),
+};
+function opStrip(v, s) {
+  const f = OPS[s.key];
+  if (!f) return '';
+  const o = f(v);
+  return `<div class="opstrip" data-tone="${o.tone}" role="status" aria-live="polite">${o.still ? `<span class="op-ic">${icon(s.key === 'paused' ? 'pause' : 'alert', 16)}</span>` : '<span class="op-spin" aria-hidden="true"></span>'}
+    <div class="grow"><b>${esc(o.title)}</b><span class="sm t2">${esc(o.text)}</span></div>${o.action || ''}${o.still ? '' : '<span class="op-bar" aria-hidden="true"><i></i></span>'}</div>`;
 }
 function cdLeft(cd) { return Math.max(0, Math.ceil((new Date(cd.endsAt).getTime() - Date.now()) / 1000)); }
 function tickCountdown() {
@@ -528,6 +546,6 @@ A.diag = async (el) => {
 A.delete = async () => {
   const name = state.server.config.name;
   if (isActive(state.server)) { toast('Detené el servidor antes de borrarlo.', 'error'); return; }
-  if (!(await dialog({ title: `Borrar «${name}»`, body: '<p>El servidor, su mundo y sus copias se mueven a la Papelera de 939 Host. Podés recuperarlos desde esa carpeta.</p>', confirm: 'Borrar', requireText: name }))) return;
-  try { await invoke('delete_server', { id: state.params.id, confirmName: name }); toast('Servidor movido a la Papelera'); srvEdit.cfg = null; guards.length = 0; go('servers'); } catch (e) { fail(e); }
+  if (!(await dialog({ title: `Borrar «${name}»`, danger: true, body: '<p>El servidor, su mundo, sus mods y sus copias van a la <b>Papelera</b>. Se conservan 30 días y podés restaurarlos completos desde <b>Papelera</b> en la barra lateral.</p>', confirm: 'Mover a la Papelera', requireText: name }))) return;
+  try { await invoke('delete_server', { id: state.params.id, confirmName: name }); toast('Movido a la Papelera · se conserva 30 días'); srvEdit.cfg = null; guards.length = 0; refreshTrashCount(); go('servers'); } catch (e) { fail(e); }
 };

@@ -18,6 +18,7 @@ async function boot() {
   applyTheme();
   paintFoot();
   refreshFootState();
+  refreshTrashCount();
   setInterval(() => { if (!document.hidden) refreshFootState(); }, 30000);
 
   await listen('server-changed', (ev) => scheduleRefresh(ev.payload.id));
