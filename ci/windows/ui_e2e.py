@@ -273,7 +273,13 @@ async def main():
         if ok:
             async def close_window_keeps_server():
                 await p.click('[data-a=nav][data-route=servers]')
-                await p.evaluate("window.__TAURI__.window.getCurrentWindow().close()")
+                # Como la X o «Cerrar ventana» de la barra de tareas: WM_CLOSE a la ventana.
+                import ctypes
+                u = ctypes.windll.user32
+                hwnd = u.FindWindowW(None, "939 Host")
+                if not hwnd:
+                    raise RuntimeError("no se encontró la ventana «939 Host»")
+                u.PostMessageW(hwnd, 0x0010, 0, 0)
                 await p.wait_for_selector('.dialog', timeout=10000)
                 await shot("cerrar-ventana-aviso", 300)
                 await p.click('.dialog .btn.pri')
