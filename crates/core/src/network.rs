@@ -152,6 +152,8 @@ pub fn next_local_port(existing: &[RemoteServer]) -> u16 {
 
 pub fn random_secret() -> String {
     let mut b = [0u8; 16];
-    let _ = getrandom::getrandom(&mut b);
+    // Sin generador aleatorio del sistema no hay invitación segura posible: mejor fallar que
+    // emitir un secreto predecible (antes, un error dejaba el secreto en ceros).
+    getrandom::getrandom(&mut b).expect("generador aleatorio del sistema");
     hex::encode(b)
 }
