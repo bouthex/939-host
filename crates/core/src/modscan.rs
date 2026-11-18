@@ -27,7 +27,7 @@ use std::io::Read;
 use std::path::Path;
 
 /// Sube cuando cambian las reglas: los análisis guardados con otra versión se rehacen.
-pub const ANALYZER_VERSION: u32 = 1;
+pub const ANALYZER_VERSION: u32 = 2;
 
 const MAX_ENTRIES: usize = 50_000;
 const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
@@ -170,6 +170,17 @@ fn contains(hay: &[u8], needle: &str) -> bool {
     !n.is_empty() && hay.windows(n.len()).any(|w| w == n)
 }
 
+/// ¿Tiene el «constant pool» de la clase una entrada de texto exactamente igual a `s`? (en un
+/// `.class`, cada nombre de clase, método o texto literal es: byte 1, largo en 2 bytes, el texto).
+/// Evita confundir `exec` con `Executor` o `execute`.
+fn cp_entry(hay: &[u8], s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() > u16::MAX as usize { return false; }
+    let mut needle = vec![1u8, (b.len() >> 8) as u8, b.len() as u8];
+    needle.extend_from_slice(b);
+    hay.windows(needle.len()).any(|w| w == needle.as_slice())
+}
+
 fn contains_ci(hay: &[u8], needle: &str) -> bool {
     let n = needle.to_ascii_lowercase();
     let n = n.as_bytes();
@@ -205,7 +216,7 @@ fn scan_class(name: &str, b: &[u8], sig: &mut Signals) {
     for o in OBFUSCATORS {
         if contains(b, o) { push(sig, Level::Precaucion, "ofuscador", "Marcas de un ofuscador de código", format!("{name}: «{o}»")); }
     }
-    if sig.exec.is_none() && (contains(b, "java/lang/ProcessBuilder") || (contains(b, "java/lang/Runtime") && contains(b, "exec"))) { sig.exec = Some(name.into()); }
+    if sig.exec.is_none() && (cp_entry(b, "java/lang/ProcessBuilder") || (cp_entry(b, "java/lang/Runtime") && cp_entry(b, "exec"))) { sig.exec = Some(name.into()); }
     if sig.dynload.is_none() && (contains(b, "java/net/URLClassLoader") || contains(b, "defineClass")) { sig.dynload = Some(name.into()); }
     if sig.remote_load.is_none() && contains(b, "java/net/URLClassLoader") && (contains(b, "http://") || contains(b, "https://")) { sig.remote_load = Some(name.into()); }
     if sig.native_load.is_none() && contains(b, "loadLibrary") && contains(b, "java/lang/System") { sig.native_load = Some(name.into()); }
@@ -459,6 +470,8 @@ mod t {
     fn status(files: &[(&str, &[u8])]) -> ModReport { analyze(&write(&format!("j{}", sha256_of(files)), &jar(files))) }
     fn sha256_of(files: &[(&str, &[u8])]) -> String { let mut h = sha2::Sha256::new(); for (n, b) in files { h.update(n.as_bytes()); h.update(b); } hex::encode(h.finalize())[..12].to_string() }
     fn codes(r: &ModReport) -> Vec<String> { r.findings.iter().map(|f| f.code.clone()).collect() }
+    /// Entradas del «constant pool» como en un .class real.
+    fn cp(items: &[&str]) -> Vec<u8> { let mut v = vec![0xCA, 0xFE, 0xBA, 0xBE]; for s in items { v.push(1); v.extend_from_slice(&(s.len() as u16).to_be_bytes()); v.extend_from_slice(s.as_bytes()); } v }
 
     #[test]
     fn mod_normal_sin_falsas_alarmas() {
@@ -470,8 +483,16 @@ mod t {
         assert_eq!(r.meta.depends, vec!["fabric-api".to_string()], "dependencias sin minecraft ni el loader");
         assert_eq!(r.size, std::fs::metadata(write(&format!("j{}", sha256_of(&[("fabric.mod.json", FABRIC), ("ej/Mod.class", b"java/net/URL https://api.ejemplo.com java/lang/reflect/Method config/ejemplo.json"), ("ej/Util.class", b"java/nio/file/Files")])), &jar(&[("fabric.mod.json", FABRIC), ("ej/Mod.class", b"java/net/URL https://api.ejemplo.com java/lang/reflect/Method config/ejemplo.json"), ("ej/Util.class", b"java/nio/file/Files")]))).unwrap().len());
         // Abrir el navegador con un comando: precaución, no sospecha.
-        let r = status(&[("fabric.mod.json", FABRIC), ("ej/Abrir.class", b"java/lang/ProcessBuilder xdg-open")]);
+        let abrir = cp(&["java/lang/ProcessBuilder", "xdg-open"]);
+        let r = status(&[("fabric.mod.json", FABRIC), ("ej/Abrir.class", &abrir)]);
         assert_eq!(r.status, "precaucion", "{:?}", r.findings);
+        // Falso positivo visto con Fabric API y Chunky reales: Runtime (procesadores) + Executor no
+        // es ejecutar comandos.
+        let hilos = cp(&["java/lang/Runtime", "availableProcessors", "java/util/concurrent/Executors", "execute", "newFixedThreadPool"]);
+        let r = status(&[("fabric.mod.json", FABRIC), ("ej/Hilos.class", &hilos)]);
+        assert!(r.findings.iter().all(|f| f.level == Level::Info), "{:?}", r.findings);
+        let exec = cp(&["java/lang/Runtime", "getRuntime", "exec"]);
+        assert_eq!(status(&[("fabric.mod.json", FABRIC), ("ej/Exec.class", &exec)]).status, "precaucion", "Runtime.exec de verdad");
         // Código nativo de un mod de rendimiento: precaución.
         assert_eq!(status(&[("fabric.mod.json", FABRIC), ("natives/rapido.dll", b"MZ")]).status, "precaucion");
     }
@@ -506,7 +527,7 @@ mod t {
         let as_ref: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
         let r = status(&as_ref);
         assert!(codes(&r).contains(&"ofuscado".into()) && r.status == "precaucion", "ofuscado solo: precaución {:?}", r.findings);
-        files.push(("a/zz.class".into(), b"java/lang/ProcessBuilder".to_vec()));
+        files.push(("a/zz.class".into(), cp(&["java/lang/ProcessBuilder"])));
         let as_ref: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
         assert_eq!(status(&as_ref).status, "sospechoso", "ofuscado y ejecuta comandos");
         // Una librería incluida (jar dentro del jar) con un ladrón de credenciales.

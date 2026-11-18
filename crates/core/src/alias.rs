@@ -174,22 +174,23 @@ pub fn hosts_script(entries: &[Entry]) -> AppResult<String> {
     Ok(format!(r#"$ErrorActionPreference = 'Stop'
 $entries = @({list})
 $re = '^127\.93\.(25[0-5]|2[0-4]\d|1?\d?\d)\.(25[0-5]|2[0-4]\d|1?\d?\d) [a-z0-9]([a-z0-9-]{{0,38}}[a-z0-9])?$'
-foreach ($e in $entries) {{ if ($e -cnotmatch $re) {{ exit 3 }} }}
+foreach ($entry in $entries) {{ if ($entry -cnotmatch $re) {{ exit 3 }} }}
 $p = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
-$B = '{BEGIN}'
-$E = '{END}'
+# Ojo: en PowerShell las variables no distinguen mayúsculas ($e y $E son la misma).
+$markBegin = '{BEGIN}'
+$markEnd = '{END}'
 $old = [IO.File]::ReadAllText($p)
 $nl = if ($old.Contains("`r`n")) {{ "`r`n" }} else {{ "`n" }}
 $out = New-Object System.Collections.Generic.List[string]
 $in = $false
-foreach ($l in ($old -split "`r?`n")) {{ $t = $l.Trim(); if ($t -ceq $B) {{ $in = $true; continue }}; if ($t -ceq $E) {{ $in = $false; continue }}; if (-not $in) {{ $out.Add($l) }} }}
+foreach ($l in ($old -split "`r?`n")) {{ $t = $l.Trim(); if ($t -ceq $markBegin) {{ $in = $true; continue }}; if ($t -ceq $markEnd) {{ $in = $false; continue }}; if (-not $in) {{ $out.Add($l) }} }}
 while ($out.Count -gt 0 -and $out[$out.Count - 1].Trim() -eq '') {{ $out.RemoveAt($out.Count - 1) }}
 $s = [string]::Join($nl, $out)
 if ($entries.Count -gt 0) {{
   if ($s -ne '') {{ $s += $nl + $nl }}
-  $s += $B + $nl
-  foreach ($e in $entries) {{ $parts = $e -split ' '; $s += $parts[0] + "`t" + $parts[1] + '{SUFFIX}' + $nl }}
-  $s += $E
+  $s += $markBegin + $nl
+  foreach ($entry in $entries) {{ $parts = $entry -split ' '; $s += $parts[0] + "`t" + $parts[1] + '{SUFFIX}' + $nl }}
+  $s += $markEnd
 }}
 $s += $nl
 $dir = Split-Path $p
@@ -247,6 +248,15 @@ mod t {
         let s = hosts_script(&e).unwrap();
         assert!(s.contains("$entries = @('127.93.1.3 alfa','127.93.1.2 zeta')"), "ordenadas como en apply: {s}");
         assert!(s.contains(BEGIN) && s.contains(END) && s.contains("exit 3"));
+        // En PowerShell las variables no distinguen mayúsculas: $e y $E son la misma (así se rompió
+        // el bloque en la CI). Ninguna variable puede chocar con otra.
+        let mut vars: Vec<String> = s.lines().filter(|l| !l.trim_start().starts_with('#'))
+            .flat_map(|l| l.split('$').skip(1).map(|t| t.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>()).collect::<Vec<_>>())
+            .filter(|v| !v.is_empty()).collect();
+        vars.sort(); vars.dedup();
+        let mut lower: Vec<String> = vars.iter().map(|v| v.to_lowercase()).collect();
+        lower.sort(); lower.dedup();
+        assert_eq!(vars.len(), lower.len(), "variables que chocan sin mayúsculas: {vars:?}");
         // Intentos de inyección en la etiqueta o fuera del rango: ni se arma el script.
         for bad in ["x';Start-Process calc;'", "a b", "ejemplo.com", "ñandu", ""] {
             assert!(hosts_script(&[Entry { label: bad.into(), ip: "127.93.1.2".parse().unwrap() }]).is_err(), "{bad}");
