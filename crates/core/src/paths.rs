@@ -56,7 +56,17 @@ pub fn rename_retry(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Re
 }
 
 /// Carpeta de un servidor: contiene `instance.json`, `server/` (lo que ve Java) y `backups/`.
-pub fn server_dir(id: &str) -> PathBuf { servers().join(id) }
+/// Id de servidor válido: minúsculas ASCII, dígitos y guiones, sin empezar con guion, hasta 48.
+/// Los ids llegan también desde la red (otras PCs): nunca pueden salir de la carpeta de servidores.
+pub fn valid_server_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 48 && !id.starts_with('-') && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Carpeta de un servidor. Un id inválido (por ejemplo `../../x` recibido por la red) apunta a
+/// una carpeta que nunca existe dentro de `servers`, así que no lee ni escribe fuera de ella.
+pub fn server_dir(id: &str) -> PathBuf {
+    if valid_server_id(id) { servers().join(id) } else { servers().join("_id-invalido_").join("_") }
+}
 pub fn server_run_dir(id: &str) -> PathBuf { server_dir(id).join("server") }
 pub fn server_backups_dir(id: &str) -> PathBuf { server_dir(id).join("backups") }
 

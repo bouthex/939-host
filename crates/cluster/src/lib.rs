@@ -190,7 +190,7 @@ enum Resp {
     Config { config: Option<serde_json::Value>, share: ShareConfig },
     Ok,
     Vote { agree: bool, #[serde(default)] sig: Option<String> },
-    Leases(Vec<Lease>),
+    Leases { leases: Vec<Lease> },
     Err { msg: String },
 }
 
@@ -1389,7 +1389,7 @@ impl Inner {
             cert::Verdict::Gap => {
                 let after = cur.as_ref().map(|c| c.epoch).unwrap_or(0);
                 let chain = match self.rpc_timeout(from, &Req::LeaseChain { server: server.into(), after }, Duration::from_secs(6)).await {
-                    Ok(Resp::Leases(v)) => v,
+                    Ok(Resp::Leases { leases }) => leases,
                     _ => vec![],
                 };
                 let alive = |n: &str| self.recently_ok(server, n, self.timing.host_dead);
@@ -1949,6 +1949,7 @@ impl Inner {
     }
 
     fn is_member(&self, server: &str, node: &str) -> bool {
+        if !host939_core::paths::valid_server_id(server) { return false; }
         !server.contains(['/', '\\', '.']) && network::load_share(server).member(node).is_some()
     }
 }
@@ -1979,6 +1980,11 @@ impl ProtocolHandler for Handler {
             let rid = conn.remote_id();
             tokio::spawn(async move {
                 let Ok(req) = wire::read_msg::<_, Req>(&mut recv).await else { return };
+                if !host939_core::paths::valid_server_id(req.server()) {
+                    let _ = wire::write_msg(&mut send, &Resp::Err { msg: "Servidor inválido.".into() }).await;
+                    let _ = send.finish();
+                    return;
+                }
                 if learn && inner.is_member(req.server(), &remote) { inner.learn_from(rid).await; }
                 let resp = if inner.is_member(req.server(), &remote) {
                     inner.with_state(req.server(), |s| { s.last_ok.insert(remote.clone(), Instant::now()); });
@@ -2040,7 +2046,7 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             }
         }
         Req::LeaseChain { server, after } => {
-            Resp::Leases(lease::history(&server).into_iter().filter(|l| l.epoch > after || (l.epoch == after && l.state == LeaseState::Released)).take(512).collect())
+            Resp::Leases { leases: lease::history(&server).into_iter().filter(|l| l.epoch > after || (l.epoch == after && l.state == LeaseState::Released)).take(512).collect() }
         }
         Req::Handover { server, lease: l, snapshot } => {
             if l.host != inner.me { return Resp::Err { msg: "El permiso no es para esta PC.".into() }; }
