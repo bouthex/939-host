@@ -124,7 +124,7 @@ impl Inner {
             FileReq::Search { q, .. } => lf::search(&server, &q, active, 200).map(|entries| FileResp { ok: true, entries, ..Default::default() }).unwrap_or_else(fail),
             FileReq::Mkdir { path, .. } => lf::mkdir(&server, &path, active).map(|_| ok()).unwrap_or_else(fail),
             FileReq::Delete { path, .. } => { let r = lf::delete(&server, &path, active).map(|_| ok()).unwrap_or_else(fail); if r.ok { self.local.note(&server, &format!("Una PC del grupo mandó «{path}» a la Papelera.")); } r }
-            FileReq::Transfer { from, to, mv, replace, .. } => match host939_core::modguard::foreign_write(&server, || lf::transfer(&server, &from, &to, mv, replace, active)) {
+            FileReq::Transfer { from, to, mv, replace, .. } => match host939_core::modguard::foreign_write(&server, remote, || lf::transfer(&server, &from, &to, mv, replace, active)) {
                 Ok((_, n)) => { received_n += n; ok() }
                 Err(e) => fail(e),
             },
@@ -160,7 +160,7 @@ impl Inner {
                     Ok(())
                 }.await;
                 match res {
-                    Ok(()) => match host939_core::modguard::foreign_write(&server, || lf::commit_upload(&server, &path, &tmp, replace, self.local.is_running(&server))) {
+                    Ok(()) => match host939_core::modguard::foreign_write(&server, remote, || lf::commit_upload(&server, &path, &tmp, replace, self.local.is_running(&server))) {
                         Ok((_, n)) => { received_n += n; ok() }
                         Err(e) => fail(e),
                     },

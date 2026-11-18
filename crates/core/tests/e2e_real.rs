@@ -199,6 +199,15 @@ async fn e2e_modrinth() {
     assert!(!installed.is_empty());
     let jars: Vec<_> = std::fs::read_dir(mods::mods_dir(&cfg.id)).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
     println!("✔ instalado con hash verificado: {jars:?}");
+    // Falsos positivos: mods reales y populares no tienen que salir como sospechosos, y Modrinth
+    // tiene que reconocerlos por su huella.
+    for j in &jars {
+        let r = host939_core::modscan::analyze_cached(&mods::mods_dir(&cfg.id).join(j)).await.expect("analizar");
+        println!("  análisis de {j}: {} · {} · alertas {:?} · Modrinth {:?}", r.status, r.summary, r.findings.iter().filter(|f| f.level != host939_core::modscan::Level::Info).map(|f| &f.title).collect::<Vec<_>>(), r.modrinth.as_ref().map(|m| &m.title));
+        assert!(r.status != "sospechoso" && r.status != "amenaza", "falso positivo en {j}: {:?}", r.findings);
+        assert!(r.modrinth.is_some() || r.unchecked.iter().any(|u| u.starts_with("procedencia")), "Modrinth tenía que reconocer {j} por su huella");
+    }
+    println!("✔ análisis de seguridad: sin falsos positivos y con procedencia de Modrinth");
     // Escaneo: el archivo queda reconocido como de Modrinth.
     let scan = mods::scan(&src, &cfg, true).await.expect("escaneo");
     assert!(!scan.is_empty());

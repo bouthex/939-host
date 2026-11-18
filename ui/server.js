@@ -415,15 +415,10 @@ function modsCard(st, g) {
   const pend = st.pendingMods || [];
   if (!owner && !pend.length) return '';
   return `<div class="card pad stack"><h2>Mods de otras PCs</h2>
-    ${pend.length ? `<div class="note strong">${icon('alert')}<div class="grow"><b>${pend.length} mod(s) esperan aprobación</b><span class="sm t2">Llegaron desde otra PC del grupo y no se cargan hasta que la propietaria los apruebe. Un mod es un programa: aprobalo solo si sabés de dónde salió.</span></div></div>
-      <div>${pend.map((p) => `<div class="kv"><span><b>${esc(p[0])}</b> <span class="xs t3 mono">${esc(p[1].slice(0, 12))}… · ${esc(p[2])}</span></span>${owner ? `<button class="btn s" data-a="mods-approve" data-h="${esc(p[1])}">Aprobar</button>` : ''}</div>`).join('')}</div>` : '<p class="sm t2" style="margin:0">No hay mods esperando aprobación.</p>'}
-    ${owner ? `<label class="switch"><div class="grow"><b>Confiar en las coanfitrionas</b><span class="sm t2">Apagado (recomendado): un mod que agrega o cambia otra PC no se ejecuta en ninguna PC hasta que lo apruebes. Encendido: se carga sin preguntar.</span></div><input type="checkbox" id="mods-trust" ${st.trustCohostMods ? 'checked' : ''}></label>` : ''}</div>`;
+    ${pend.length ? `<div class="note strong">${icon('alert')}<div class="grow"><b>${pend.length} mod(s) esperan aprobación</b><span class="sm t2">Llegaron desde otra PC del grupo y quedaron en cuarentena: no se cargan hasta que la propietaria los apruebe. En Mods → Solicitudes está el análisis de cada uno.</span></div><button class="btn s" data-a="mods-requests">Revisar</button></div>` : '<p class="sm t2" style="margin:0">No hay mods esperando aprobación.</p>'}
+    ${owner ? `<label class="switch"><div class="grow"><b>Confiar en las coanfitrionas</b><span class="sm t2">Apagado (recomendado): un mod que agrega o cambia otra PC no se ejecuta en ninguna PC hasta que lo apruebes. Encendido: se carga sin preguntar (salvo los que rechazaste).</span></div><input type="checkbox" id="mods-trust" ${st.trustCohostMods ? 'checked' : ''}></label>` : ''}</div>`;
 }
-A['mods-approve'] = async (el) => {
-  if (!(await dialog({ title: 'Aprobar mod', confirm: 'Aprobar', body: '<p>Se va a cargar en la PC que aloje el servidor, con los permisos de su usuario de Windows. Aprobalo solo si confiás en su origen.</p>' }))) return;
-  try { await invoke('mods_approve', { id: state.params.id, hashes: [el.dataset.h] }); toast('Mod aprobado: se carga en el próximo encendido'); } catch (e) { fail(e); }
-  drawTab();
-};
+A['mods-requests'] = async () => { md.goSub = 'requests'; await A.tab({ dataset: { v: 'mods' } }); };
 main.addEventListener('change', async (e) => {
   if (e.target.id !== 'mods-trust' || state.route !== 'server') return;
   try { await invoke('mods_policy', { id: state.params.id, trustCohosts: e.target.checked }); toast('Política de mods guardada'); } catch (err) { fail(err); }

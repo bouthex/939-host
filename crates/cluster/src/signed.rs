@@ -44,6 +44,10 @@ pub fn payload(server: &str, s: &ShareConfig) -> Vec<u8> {
         "recovery": s.recovery, "recoveryPending": s.recovery_pending, "successor": s.successor, "succession": s.succession,
         "approvedMods": s.approved_mods, "modPolicy": s.mod_policy,
     });
+    // Los rechazos se firman igual que las aprobaciones. Solo se agregan cuando hay alguno, para
+    // que las listas firmadas antes de que existieran sigan verificando.
+    let mut v = v;
+    if !s.rejected_mods.is_empty() { v["rejectedMods"] = serde_json::json!(s.rejected_mods); }
     canonical(&v)
 }
 

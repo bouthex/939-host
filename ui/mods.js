@@ -8,7 +8,7 @@ const CATS = [['', 'Todas'], ['optimization', 'Optimización'], ['utility', 'Uti
   ['decoration', 'Decoración'], ['food', 'Comida'], ['transportation', 'Transporte'], ['management', 'Administración'], ['social', 'Social'], ['economy', 'Economía'], ['minigame', 'Minijuegos']];
 const SIDE = { server: 'Solo servidor', both: 'Servidor y jugadores', client: 'Solo jugadores', unknown: 'Lado desconocido' };
 const ISSUE = { duplicate: 'Duplicado', incompatible: 'Otra versión de Minecraft', client_only: 'Solo para jugadores', unknown: 'No está en Modrinth' };
-const md = { sub: 'installed', list: [], offline: false, updates: {}, perf: [], q: '', cat: '', side: 'server', sort: 'relevance', results: null, offset: 0, detail: null, busy: false, loadedFor: null };
+const md = { req: null, sub: 'installed', list: [], offline: false, updates: {}, perf: [], q: '', cat: '', side: 'server', sort: 'relevance', results: null, offset: 0, detail: null, busy: false, loadedFor: null };
 const sideOf = (cl, sv) => (sv === 'unsupported' ? 'client' : cl === 'unsupported' ? 'server' : 'both');
 const imgs = () => state.info.settings.modImagesEnabled !== false;
 const modIcon = (url, title, cls = '') => `<span class="mod-ic ${cls}">${url && imgs() ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc((title || '?')[0].toUpperCase())}</span>`;
@@ -19,10 +19,13 @@ tabDraw.mods = async (el) => {
     el.innerHTML = `<div class="empty">${icon('box', 28)}<h2>Este servidor es Vanilla</h2><p>Los mods necesitan Fabric, NeoForge o Forge. Creá un servidor con uno de ellos (podés usar una copia de este mismo mundo) para instalar mods.</p><button class="btn pri" data-a="new">${icon('plus', 16)}Crear servidor</button></div>`;
     return;
   }
-  if (md.loadedFor !== c.id) { Object.assign(md, { sub: 'installed', results: null, q: '', cat: '', updates: {}, detail: null, offset: 0 }); md.loadedFor = c.id; }
+  if (md.loadedFor !== c.id) { Object.assign(md, { sub: 'installed', req: null, results: null, q: '', cat: '', updates: {}, detail: null, offset: 0 }); md.loadedFor = c.id; }
+  if (md.goSub) { md.sub = md.goSub; md.goSub = null; md.detail = null; }
   el.innerHTML = '<div id="mods-root" class="stack" style="gap:16px"><div class="card pad"><div class="bar indet"><i></i></div></div></div>';
   await loadMods();
   paintMods();
+  // Las solicitudes se cargan aparte: el análisis (y la consulta a Modrinth) no frena la pestaña.
+  loadRequests().then(() => { if (state.route === 'server' && state.tab === 'mods' && md.loadedFor === c.id) paintMods(); });
 };
 async function loadMods() {
   const id = state.params.id;
@@ -34,15 +37,18 @@ function paintMods() {
   if (!root) return;
   if (md.detail) { paintDetail(root); return; }
   const files = md.list.filter((x) => !x.managed);
-  const counts = { installed: md.list.filter((x) => x.managed).length, updates: Object.keys(md.updates).length, files: files.length };
+  const counts = { installed: md.list.filter((x) => x.managed).length, updates: Object.keys(md.updates).length, files: files.length, requests: (md.req?.list || []).filter((r) => !r.rejected).length };
+  const subs = state.share?.enabled ? [['requests', 'Solicitudes'], ...MSUB] : MSUB;
+  if (md.sub === 'requests' && !state.share?.enabled) md.sub = 'installed';
   root.innerHTML = `
     ${md.offline ? `<div class="note">${icon('alert')}<div class="grow"><b>Sin conexión con Modrinth</b><span class="sm t2">Se muestran los archivos locales. Para buscar, instalar o identificar mods hace falta internet.</span></div><button class="btn s" data-a="mods-reload">${icon('refresh', 14)}Reintentar</button></div>` : ''}
-    <div class="spread" style="flex-wrap:wrap"><div class="seg" role="tablist">${MSUB.map(([k, l]) => `<button class="${md.sub === k ? 'on' : ''}" data-a="msub" data-v="${k}" role="tab" aria-selected="${md.sub === k}">${l}${counts[k] ? ` <span class="t3">${counts[k]}</span>` : ''}</button>`).join('')}</div>
+    <div class="spread" style="flex-wrap:wrap"><div class="seg" role="tablist">${subs.map(([k, l]) => `<button class="${md.sub === k ? 'on' : ''}" data-a="msub" data-v="${k}" role="tab" aria-selected="${md.sub === k}">${l}${counts[k] ? ` <span class="t3">${counts[k]}</span>` : ''}</button>`).join('')}</div>
       <div class="btns"><span class="chip soft">${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)}</span><button class="btn s ghost" data-a="folder" data-which="mods">${icon('folder', 14)}Carpeta de mods</button></div></div>
     <div id="mods-progress"></div>
     <div id="mods-sub"></div>`;
   const sub = $('#mods-sub');
-  if (md.sub === 'installed') paintInstalled(sub);
+  if (md.sub === 'requests') paintRequests(sub);
+  else if (md.sub === 'installed') paintInstalled(sub);
   else if (md.sub === 'explore') paintExplore(sub);
   else if (md.sub === 'curseforge') paintCurseForge(sub);
   else if (md.sub === 'updates') paintUpdates(sub);
@@ -50,6 +56,91 @@ function paintMods() {
 }
 A.msub = (el) => { md.sub = el.dataset.v; paintMods(); if (md.sub === 'explore' && !md.results && !md.offline) runSearch(); };
 A['mods-reload'] = async () => { await loadMods(); paintMods(); };
+
+/* ── Solicitudes: mods que llegaron de otra PC y esperan la decisión de la propietaria ── */
+const RSTATUS = {
+  sin_alertas: 'Sin alertas conocidas', desconocido: 'Origen desconocido', precaucion: 'Precaución',
+  sospechoso: 'Sospechoso', amenaza: 'Amenaza confirmada', incompleto: 'Análisis incompleto',
+};
+async function loadRequests() {
+  if (!state.share?.enabled) { md.req = null; return; }
+  const owner = state.share.group?.members?.find((m) => m.isMe)?.role === 'propietario';
+  md.req = { ...(md.req || { list: [] }), loading: true, owner };
+  try { md.req = { list: await invoke('mod_requests', { id: state.params.id }), owner, loading: false }; }
+  catch (e) { md.req = { list: [], owner, loading: false, error: e?.message || String(e) }; }
+}
+function reqCard(r, owner) {
+  const a = r.analysis;
+  const title = a?.meta?.name || r.name;
+  const st = a ? a.status : 'incompleto';
+  const strong = st === 'sospechoso' || st === 'amenaza';
+  const alerts = a ? a.findings.filter((f) => f.level !== 'info') : [];
+  const when = r.at ? new Date(r.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' }) : '';
+  return `<div class="card pad stack${strong ? ' note strong' : ''}" style="gap:10px">
+    <div class="spread" style="align-items:flex-start;gap:12px"><div class="grow" style="min-width:0">
+      <b>${esc(title)}</b>${a?.meta?.version ? ` <span class="t2">${esc(a.meta.version)}</span>` : ''}
+      <div class="sm t2">${esc(r.name)}${r.size ? ` · ${fmtBytes(r.size)}` : ''} · de ${esc(r.from)}${when ? ` · ${esc(when)}` : ''}</div>
+    </div><span class="chip${strong ? ' fill' : ' soft'}">${esc(r.rejected ? 'Rechazado' : RSTATUS[st] || st)}</span></div>
+    ${r.here ? `<p class="sm" style="margin:0">${esc(a ? a.summary : 'No se pudo analizar el archivo. Que no haya alertas no significa nada.')}</p>`
+      : `<p class="sm" style="margin:0">Está apartado en ${esc(r.heldBy || 'otra PC')}. Se analiza cuando llegue a esta PC; un análisis hecho por otra PC no se puede verificar.</p>`}
+    ${alerts.length ? `<ul class="sm" style="margin:0;padding-left:18px">${alerts.map((f) => `<li>${esc(f.title)}</li>`).join('')}</ul>` : ''}
+    ${a?.modrinth ? `<div class="sm">Publicado en Modrinth: <a href="#" data-a="req-link" data-url="${esc(a.modrinth.url)}">${esc(a.modrinth.title || a.modrinth.project)}</a>${a.modrinth.version ? ` · versión ${esc(a.modrinth.version)}` : ''}</div>` : ''}
+    ${a?.meta?.depends?.length ? `<div class="sm t2">Necesita: ${a.meta.depends.map(esc).join(', ')}</div>` : ''}
+    <details><summary class="xs t3" style="cursor:pointer">Detalles técnicos</summary><div class="tech" style="margin-top:6px">${esc([
+      `SHA-256: ${r.sha256}`,
+      a ? `Tamaño: ${a.size} bytes · loader: ${a.meta.loader || 'no identificado'} · id: ${a.meta.id || '—'}` : '',
+      ...(a ? a.findings.map((f) => `[${f.level}] ${f.title}${f.detail ? ` — ${f.detail}` : ''}`) : []),
+      ...(a?.nested?.length ? [`Jars incluidos: ${a.nested.join(', ')}`] : []),
+      ...(a ? a.checked.map((c) => `Revisado: ${c}`) : []),
+      ...(a ? a.unchecked.map((c) => `No revisado: ${c}`) : []),
+      'El análisis no ejecuta el mod. Solo busca indicadores conocidos: no detecta todo.',
+    ].filter(Boolean).join('\n'))}</div></details>
+    <div class="btns">
+      ${owner ? `<button class="btn s${strong ? '' : ' pri'}" data-a="req-approve" data-h="${esc(r.sha256)}" data-st="${esc(st)}">${r.rejected ? 'Aprobar de todos modos' : 'Aprobar'}</button>` : ''}
+      ${owner && !r.rejected ? `<button class="btn s" data-a="req-reject" data-h="${esc(r.sha256)}">Rechazar</button>` : ''}
+      ${owner && r.here ? `<button class="btn s ghost" data-a="req-reject" data-h="${esc(r.sha256)}" data-discard="1">${r.rejected ? 'Borrar archivo' : 'Rechazar y borrar'}</button>` : ''}
+      <button class="btn s ghost" data-a="req-link" data-url="https://www.virustotal.com/gui/file/${esc(r.sha256)}" title="Abre la página de VirusTotal de esta huella en tu navegador. No sube el archivo.">${icon('external', 14)}VirusTotal</button>
+      <button class="btn s ghost" data-a="req-copy" data-h="${esc(r.sha256)}">${icon('copy', 14)}Copiar huella</button>
+    </div></div>`;
+}
+function paintRequests(el) {
+  const R = md.req;
+  if (!R || (R.loading && !R.list.length)) { el.innerHTML = '<div class="card pad stack"><div class="bar indet"><i></i></div><p class="sm t2" style="margin:0">Analizando los mods recibidos (sin ejecutarlos)…</p></div>'; return; }
+  const pend = R.list.filter((r) => !r.rejected);
+  const rej = R.list.filter((r) => r.rejected);
+  el.innerHTML = `<div class="stack" style="gap:12px">
+    <div class="note">${icon('shield')}<div class="grow"><b>Los mods que llegan de otra PC no se cargan sin tu aprobación</b><span class="sm t2">Quedan apartados en una cuarentena. Un mod es un programa que corre con los permisos de Windows de la PC que aloja el servidor: aprobalo solo si sabés de dónde salió. El análisis ayuda, pero no garantiza nada.${R.owner ? '' : ' Solo la PC propietaria puede aprobar o rechazar.'}</span></div></div>
+    ${R.error ? `<div class="note">${icon('alert')}<div class="grow"><b>No se pudieron cargar las solicitudes</b><span class="sm t2">${esc(R.error)}</span></div></div>` : ''}
+    ${pend.length ? pend.map((r) => reqCard(r, R.owner)).join('') : '<div class="card pad"><p class="sm t2" style="margin:0">No hay mods esperando aprobación.</p></div>'}
+    ${rej.length ? `<h3 style="margin:8px 0 0">Rechazados (${rej.length})</h3><p class="sm t2" style="margin:0">No se cargan nunca en ninguna PC del grupo.</p>${rej.map((r) => reqCard(r, R.owner)).join('')}` : ''}
+    ${R.owner ? `<details id="req-log"><summary class="sm" style="cursor:pointer">Registro de decisiones</summary><div id="req-log-body" class="sm t2" style="margin-top:8px">Cargando…</div></details>` : ''}
+  </div>`;
+  const log = $('#req-log');
+  if (log) log.addEventListener('toggle', async () => {
+    if (!log.open) return;
+    const v = await invoke('mod_decisions', { id: state.params.id }).catch(() => []);
+    const L = { aprobado: 'Aprobado', rechazado: 'Rechazado', descartado: 'Archivo borrado', propio: 'Instalado en esta PC (aprobado solo)' };
+    $('#req-log-body').innerHTML = v.length ? `<div>${v.slice(0, 100).map((d) => `<div class="kv"><span>${esc(L[d.decision] || d.decision)} · <b>${esc(d.name || d.sha256.slice(0, 12))}</b>${d.analysis ? ` <span class="t3">(${esc(RSTATUS[d.analysis] || d.analysis)})</span>` : ''}</span><span class="xs t3">${esc(new Date(d.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' }))}</span></div>`).join('')}</div>` : 'Todavía no hay decisiones.';
+  });
+}
+A['req-approve'] = async (el) => {
+  const st = el.dataset.st;
+  const danger = st === 'sospechoso' || st === 'amenaza';
+  const body = danger
+    ? `<p><b>El análisis encontró indicadores ${st === 'amenaza' ? 'de malware conocido' : 'que no son normales en un mod'}.</b> Si lo aprobás, se va a ejecutar en la PC que aloje el servidor con los permisos de su usuario de Windows.</p><p>Aprobalo solo si sabés exactamente por qué los necesita.</p>`
+    : '<p>Se va a cargar en la PC que aloje el servidor, con los permisos de su usuario de Windows. La aprobación vale solo para este archivo exacto: si cambia un byte, hay que volver a aprobarlo.</p>';
+  if (!(await dialog({ title: danger ? 'Aprobar un mod con alertas' : 'Aprobar mod', confirm: danger ? 'Aprobar de todos modos' : 'Aprobar', body }))) return;
+  try { await invoke('mods_approve', { id: state.params.id, hashes: [el.dataset.h] }); toast('Mod aprobado: se carga en el próximo encendido'); } catch (e) { fail(e); }
+  await loadRequests(); paintMods();
+};
+A['req-reject'] = async (el) => {
+  const discard = !!el.dataset.discard;
+  if (!(await dialog({ title: discard ? 'Rechazar y borrar' : 'Rechazar mod', confirm: discard ? 'Rechazar y borrar' : 'Rechazar', body: `<p>No se va a cargar nunca en ninguna PC del grupo${discard ? ', y el archivo se borra de esta PC' : ''}. Si llega otra vez el mismo archivo, sigue rechazado.</p>` }))) return;
+  try { await invoke('mods_reject', { id: state.params.id, hashes: [el.dataset.h], discard }); toast(discard ? 'Mod rechazado y borrado' : 'Mod rechazado'); } catch (e) { fail(e); }
+  await loadRequests(); paintMods();
+};
+A['req-link'] = async (el) => { try { await invoke('open_link', { url: el.dataset.url }); } catch (e) { fail(e); } };
+A['req-copy'] = async (el) => { try { await navigator.clipboard.writeText(el.dataset.h); toast('Huella copiada'); } catch { /* sin portapapeles */ } };
 
 function dropZone() {
   return `<div class="drop" id="mods-drop">${icon('upload', 22)}<div class="grow"><b>Agregar mods desde archivos</b><div class="sm t2">Arrastrá archivos .jar a esta ventana o elegilos. Se copian; los originales no se tocan. Los mods solo para jugadores se omiten.</div></div>

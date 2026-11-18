@@ -254,6 +254,63 @@ pub async fn mods_approve(id: String, hashes: Vec<String>, cluster: State<'_, Cl
     cluster.node().await?.approve_mods(&id, &hashes).map_err(|e| AppError::invalid(e.to_string()))
 }
 
+/// Una solicitud de mod para la propietaria: un archivo recibido de otra PC que espera decisión.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModRequest {
+    pub name: String,
+    pub sha256: String,
+    pub size: u64,
+    /// Nombre de la PC que lo mandó (o «esta PC» / desconocida).
+    pub from: String,
+    pub at: Option<String>,
+    /// El archivo está en esta PC (si no, se analiza cuando llegue).
+    pub here: bool,
+    /// PC donde está apartado, si no es esta.
+    pub held_by: Option<String>,
+    pub rejected: bool,
+    pub analysis: Option<host939_core::modscan::ModReport>,
+}
+
+/// Mods apartados esperando decisión, con su análisis (sin ejecutarlos). Los de esta PC se
+/// analizan acá; los que están apartados en otra PC se muestran sin análisis: un análisis hecho
+/// por otra PC no se puede verificar, y el archivo se analiza cuando llega a esta.
+#[tauri::command]
+pub async fn mod_requests(id: String, cluster: State<'_, Cluster>) -> AppResult<Vec<ModRequest>> {
+    let share = network::load_share(&id);
+    let name_of = |node: &str| share.members.iter().find(|m| m.node_id == node).map(|m| m.name.clone()).unwrap_or_else(|| "una PC que ya no está en el grupo".into());
+    let mut out = vec![];
+    for q in host939_core::modguard::quarantined(&id) {
+        let analysis = match host939_core::modguard::quarantined_path(&id, &q.sha256) {
+            Some(p) => host939_core::modscan::analyze_cached(&p).await.ok(),
+            None => None,
+        };
+        out.push(ModRequest {
+            from: q.from.as_deref().map(name_of).unwrap_or_else(|| "otra PC del grupo".into()),
+            name: q.name, sha256: q.sha256, size: q.size, at: q.at, here: true, held_by: None, rejected: q.rejected, analysis,
+        });
+    }
+    if let Some(node) = cluster.try_node() {
+        for (name, h, pc) in node.pending_mods(&id) {
+            if out.iter().any(|r| r.sha256 == h) { continue; }
+            out.push(ModRequest { name, sha256: h, size: 0, from: "otra PC del grupo".into(), at: None, here: false, held_by: Some(pc), rejected: false, analysis: None });
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn mods_reject(id: String, hashes: Vec<String>, discard: bool, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.reject_mods(&id, &hashes, discard).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub fn mod_decisions(id: String) -> Vec<host939_core::modguard::Decision> {
+    let mut v = host939_core::modguard::decisions(&id);
+    v.reverse();
+    v
+}
+
 #[tauri::command]
 pub async fn mods_policy(id: String, trust_cohosts: bool, cluster: State<'_, Cluster>) -> AppResult<()> {
     cluster.node().await?.set_mod_policy(&id, trust_cohosts).map_err(|e| AppError::invalid(e.to_string()))

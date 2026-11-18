@@ -50,7 +50,7 @@ async function boot() {
   });
   await listen('group-note', (ev) => {
     const m = ev.payload.message || '';
-    if (/anfitri|pasado|tomó|Recuperando|Deteniendo|se unió|no pudo|soltado/i.test(m)) toast(m, /no pudo|Deteniendo/.test(m) ? 'error' : 'ok');
+    if (/anfitri|pasado|tomó|Recuperando|Deteniendo|se unió|no pudo|soltado|mod\(s\)/i.test(m)) toast(m, /no pudo|Deteniendo/.test(m) ? 'error' : 'ok');
   });
   await listen('app-quitting', () => {
     if (dialogOpen) dialogOpen(false);

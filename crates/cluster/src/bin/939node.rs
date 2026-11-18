@@ -367,6 +367,9 @@ async fn main() {
                 "lease" => Ok(serde_json::to_value(host939_core::lease::read(&p(1))).unwrap()),
                 "pendingmods" => Ok(serde_json::to_value(node.pending_mods(&p(1))).unwrap()),
                 "approvemods" => node.approve_mods(&p(1), &parts[2..]).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "rejectmods" => node.reject_mods(&p(1), &parts[2..], false).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "quarantine" => Ok(serde_json::to_value(host939_core::modguard::quarantined(&p(1))).unwrap()),
+                "decisions" => Ok(serde_json::to_value(host939_core::modguard::decisions(&p(1))).unwrap()),
                 "modpolicy" => node.set_mod_policy(&p(1), p(2) == "confiar").map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "putmod" => {
                     // Simula instalar un mod en ESTA PC (lo hace su usuario, no llega de otra PC).

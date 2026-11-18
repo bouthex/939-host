@@ -484,6 +484,55 @@ fn mods_de_otra_pc_necesitan_aprobacion() {
     println!("✔ la propietaria aprueba y el mod vuelve a cargarse; la coanfitriona no puede aprobar");
 }
 
+/// Sistema de aprobación: lo que sube una coanfitriona va directo a la cuarentena de la anfitriona
+/// (nunca a la carpeta activa, ni siquiera antes de encender), con su procedencia; un rechazo de la
+/// propietaria vale en todas las PCs y para siempre, aunque el archivo vuelva a llegar con otro
+/// nombre o por otro camino.
+#[test]
+fn rechazo_y_cuarentena_inmediata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut a, mut b, _c, sid) = three(tmp.path(), &[], 25975);
+    let ib = id(&mut b);
+    a.ok(&format!("start {sid}"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    let evil = tmp.path().join("ladron.jar");
+    std::fs::write(&evil, b"robo de credenciales").unwrap();
+    b.ok(&format!("fput {sid} {} mods/ladron.jar", evil.display()));
+    // Con el servidor encendido, sin reiniciar: ya está apartado.
+    assert!(!a.ok(&format!("modsdir {sid}")).as_array().unwrap().iter().any(|m| m == "ladron.jar"), "nunca en la carpeta activa");
+    let q = a.ok(&format!("quarantine {sid}"));
+    let entry = q.as_array().unwrap().iter().find(|x| x["name"] == "ladron.jar").unwrap_or_else(|| panic!("en cuarentena: {q}")).clone();
+    assert_eq!(entry["from"], ib.as_str(), "la procedencia es la PC autenticada que lo mandó");
+    assert_eq!(entry["size"], 20);
+    let h = entry["sha256"].as_str().unwrap().to_string();
+    println!("✔ lo subido por la coanfitriona queda en cuarentena al instante, con su procedencia");
+    // La coanfitriona no puede rechazar ni aprobar.
+    assert!(b.err(&format!("rejectmods {sid} {h}")).contains("propietaria"));
+    assert!(b.err(&format!("approvemods {sid} {h}")).contains("propietaria"));
+    a.ok(&format!("rejectmods {sid} {h}"));
+    assert!(a.ok(&format!("pendingmods {sid}")).as_array().unwrap().is_empty(), "un rechazado ya no está pendiente");
+    assert!(a.ok(&format!("decisions {sid}")).as_array().unwrap().iter().any(|d| d["decision"] == "rechazado" && d["sha256"] == h.as_str()), "queda registrado");
+    // Vuelve a llegar con otro nombre: sigue rechazado.
+    b.ok(&format!("fput {sid} {} mods/otro-nombre.jar", evil.display()));
+    assert!(!a.ok(&format!("modsdir {sid}")).as_array().unwrap().iter().any(|m| m == "otro-nombre.jar"));
+    println!("✔ rechazado: no se carga aunque vuelva a llegar con otro nombre");
+    // El rechazo va firmado y llega a la coanfitriona.
+    wait("B recibe el rechazo", Duration::from_secs(20), || b.ok(&format!("share_json {sid}"))["rejectedMods"].as_array().map(|v| v.iter().any(|x| x == h.as_str())).unwrap_or(false));
+    // En su propia PC, la coanfitriona instala el mismo archivo a mano y lo pasa a la propietaria.
+    a.ok(&format!("handover {sid} {ib}"));
+    wait("B aloja", Duration::from_secs(30), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    b.ok(&format!("putmod {sid} a-mano.jar robo de credenciales"));
+    b.ok(&format!("stop {sid}"));
+    b.ok(&format!("start {sid}"));
+    assert!(!b.ok(&format!("modsdir {sid}")).as_array().unwrap().iter().any(|m| m == "a-mano.jar"), "en la PC de B tampoco corre: el rechazo vale para todo el grupo");
+    let ia = id(&mut a);
+    b.ok(&format!("handover {sid} {ia}"));
+    wait("A aloja", Duration::from_secs(30), || a.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(!a.ok(&format!("modsdir {sid}")).as_array().unwrap().iter().any(|m| m == "a-mano.jar"));
+    println!("✔ el rechazo va firmado a todo el grupo y vale aunque el archivo se instale a mano en otra PC");
+}
+
 /// Modo privado sin relay disponible: no se conecta, aunque haya camino directo (nunca cambia a
 /// directo por su cuenta). La anfitriona está en la misma PC, sin relays.
 #[test]

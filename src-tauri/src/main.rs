@@ -256,7 +256,7 @@ fn main() {
             network::invite_create,
             network::invite_revoke,
             network::recovery_create, network::recovery_rotate, network::recovery_reset_request, network::recovery_reset_finish, network::recovery_use,
-            network::mods_approve, network::mods_policy,
+            network::mods_approve, network::mods_policy, network::mod_requests, network::mods_reject, network::mod_decisions,
             network::successor_set, network::succession_start, network::succession_cancel, network::succession_complete,
             network::member_remove,
             network::group_options,

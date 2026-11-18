@@ -312,7 +312,7 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
     }
     Ok(())
     };
-    let placed = if foreign { crate::modguard::foreign_write(id, place).map(|_| ()) } else { place() };
+    let placed = if foreign { crate::modguard::foreign_write(id, &snap.info.origin, place).map(|_| ()) } else { place() };
     let _ = std::fs::remove_dir_all(&staging);
     placed
 }

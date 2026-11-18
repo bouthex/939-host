@@ -272,6 +272,9 @@ pub fn link_allowed(url: &str) -> bool {
     match host.to_ascii_lowercase().as_str() {
         "aka.ms" => path == "/MinecraftEULA",
         "modrinth.com" | "fabricmc.net" => true,
+        // Consulta de un mod en VirusTotal por su huella SHA-256: la abre la propietaria en su
+        // navegador; no se sube el archivo ni hace falta una clave.
+        "www.virustotal.com" => path.strip_prefix("/gui/file/").map(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or(false),
         _ => false,
     }
 }
@@ -280,7 +283,8 @@ pub fn link_allowed(url: &str) -> bool {
 mod link_tests {
     #[test]
     fn exact_domains_only() {
-        for ok in ["https://aka.ms/MinecraftEULA", "https://modrinth.com/mod/sodium", "https://fabricmc.net"] { assert!(super::link_allowed(ok), "{ok}"); }
+        for ok in ["https://aka.ms/MinecraftEULA", "https://modrinth.com/mod/sodium", "https://fabricmc.net", "https://www.virustotal.com/gui/file/a3f1c0de5b2e4f7a9d8c6b5a4e3f2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e"] { assert!(super::link_allowed(ok), "{ok}"); }
+        for bad in ["https://www.virustotal.com/gui/home/upload", "https://www.virustotal.com/gui/file/abc", "https://www.virustotal.com/gui/file/a3f1c0de5b2e4f7a9d8c6b5a4e3f2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e/../x"] { assert!(!super::link_allowed(bad), "{bad}"); }
         for bad in ["https://modrinth.com.ejemplo.com/x", "https://aka.ms/otra", "http://modrinth.com", "https://evil@modrinth.com", "https://modrinth.com:444/x", "https://fabricmc.net\"&calc", "file:///C:/Windows", "https://ejemplo.com/?https://modrinth.com"] { assert!(!super::link_allowed(bad), "{bad}"); }
     }
 }

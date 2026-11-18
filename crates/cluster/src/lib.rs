@@ -240,6 +240,8 @@ struct SrvState {
     rejected: u32,
     /// Reclamo de sucesión en curso que vio esta PC.
     claim: Option<serde_json::Value>,
+    /// Mods pendientes de los que ya se avisó a la propietaria (por huella).
+    mods_noticed: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -421,6 +423,8 @@ fn vote_conditions(l: &Lease, me: &str, epoch: u64, candidate: &str, remote: &st
     if cand < mine || cand.0 > l.epoch { return false; }
     candidate_can_host && candidate == remote
 }
+
+fn is_sha256(h: &str) -> bool { h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) }
 
 fn has_copy(server: &str) -> bool { host939_core::instance::load(server).is_ok() }
 
@@ -774,16 +778,40 @@ impl GroupNode {
         v
     }
 
-    /// La propietaria aprueba mods por su huella (firma la lista nueva).
+    /// La propietaria aprueba mods por su huella exacta (firma la lista nueva). Aprobar quita un
+    /// rechazo anterior de la misma huella.
     pub fn approve_mods(&self, server: &str, hashes: &[String]) -> Result<()> {
         if !self.inner.is_owner(server) { bail!("Solo la PC propietaria aprueba mods."); }
         let mut s = network::load_share(server);
         for h in hashes {
-            if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) { bail!("Huella inválida."); }
+            if !is_sha256(h) { bail!("Huella inválida."); }
             if !s.approved_mods.contains(h) { s.approved_mods.push(h.clone()); }
+            s.rejected_mods.retain(|r| r != h);
         }
         self.inner.commit(server, &mut s)?;
+        for h in hashes { host939_core::modguard::log_decision(server, h, "aprobado"); }
         audit(server, "mods-approved", &hashes.join(","));
+        Ok(())
+    }
+
+    /// La propietaria rechaza mods por su huella (firma la lista nueva): no se cargan nunca en
+    /// ninguna PC del grupo. Con `discard`, además se borran de la cuarentena de esta PC.
+    pub fn reject_mods(&self, server: &str, hashes: &[String], discard: bool) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria rechaza mods."); }
+        let mut s = network::load_share(server);
+        for h in hashes {
+            if !is_sha256(h) { bail!("Huella inválida."); }
+            s.approved_mods.retain(|a| a != h);
+            if !s.rejected_mods.contains(h) { s.rejected_mods.push(h.clone()); }
+        }
+        self.inner.commit(server, &mut s)?;
+        for h in hashes {
+            host939_core::modguard::log_decision(server, h, "rechazado");
+            if discard && host939_core::modguard::discard(server, h) > 0 { host939_core::modguard::log_decision(server, h, "descartado"); }
+        }
+        // Si alguno estaba en la carpeta activa (por ejemplo, aprobado antes), se aparta ya.
+        let _ = host939_core::modguard::enforce(server);
+        audit(server, "mods-rejected", &hashes.join(","));
         Ok(())
     }
 
@@ -1408,7 +1436,7 @@ impl Inner {
                 mine.card = remote.card.clone(); mine.sig = remote.sig.clone();
                 mine.recovery = remote.recovery.clone(); mine.recovery_pending = remote.recovery_pending.clone();
                 mine.successor = remote.successor.clone(); mine.succession = remote.succession.clone(); mine.rsig = remote.rsig.clone();
-                mine.approved_mods = remote.approved_mods.clone(); mine.mod_policy = remote.mod_policy.clone();
+                mine.approved_mods = remote.approved_mods.clone(); mine.mod_policy = remote.mod_policy.clone(); mine.rejected_mods = remote.rejected_mods.clone();
                 if let Some(pk) = &mine.recovery_pending {
                     if self.mark_seen(server, &format!("reset:{pk}")) {
                         self.local.note(server, "La propietaria pidió cambiar el código de recuperación sin el código actual. Se aplica después de la espera de seguridad.");
@@ -1866,9 +1894,21 @@ impl Inner {
                 let differs = s2.card.as_ref().map(|c| { let mut a = c.clone(); let mut b = card.clone(); a["rev"] = 0.into(); b["rev"] = 0.into(); a != b }).unwrap_or(true);
                 if differs { s2.card = Some(card); touched = true; }
             }
+            // Un mod nuevo espera decisión (en esta PC o en otra del grupo): se avisa una vez.
+            let waiting: Vec<String> = self.with_state(server, |st| {
+                let mut v: Vec<String> = host939_core::modguard::pending(server).into_iter().map(|(_, h)| h).collect();
+                for i in st.infos.values() { v.extend(i.pending_mods.iter().map(|(_, h)| h.clone())); }
+                v.retain(|h| !s2.approved_mods.contains(h) && !s2.rejected_mods.contains(h));
+                let fresh = v.iter().filter(|h| !st.mods_noticed.contains(*h)).count();
+                st.mods_noticed.extend(v.iter().cloned());
+                if fresh > 0 { v } else { vec![] }
+            });
+            if !waiting.is_empty() {
+                self.local.note(server, &format!("{} mod(s) de otra PC esperan tu aprobación: revisalos en Mods → Solicitudes.", waiting.len()));
+            }
             // Mods instalados por la propietaria en su propia PC: aprobados sin preguntar.
             for h in host939_core::modguard::local_jars(server) {
-                if !s2.approved_mods.contains(&h) { s2.approved_mods.push(h); touched = true; }
+                if !s2.approved_mods.contains(&h) { host939_core::modguard::log_decision(server, &h, "propio"); s2.approved_mods.push(h); touched = true; }
             }
             // Grupos anteriores a las firmas: la propietaria firma su lista en el primer contacto.
             if touched || s2.sig.is_none() { let _ = self.commit(server, &mut s2); self.local.changed(server); }

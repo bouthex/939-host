@@ -91,11 +91,15 @@ pub struct ShareConfig {
     /// `estricta` (por defecto) o `confiar-coanfitrionas`.
     #[serde(default)]
     pub mod_policy: Option<String>,
+    /// Huellas SHA-256 de mods rechazados por la propietaria: no se cargan nunca, con ninguna
+    /// política (ver `modguard`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected_mods: Vec<String>,
 }
 
 impl Default for ShareConfig {
     fn default() -> Self {
-        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None }
+        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None, rejected_mods: vec![] }
     }
 }
 
