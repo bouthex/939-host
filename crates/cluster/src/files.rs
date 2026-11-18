@@ -118,6 +118,7 @@ impl Inner {
                 return Ok(());
             }
             FileReq::Upload { path, size, replace, .. } => {
+                if let Err(e) = lf::check_upload_size(&server, size) { return wire::write_msg(send, &fail(e)).await; }
                 let tmp = match lf::upload_temp(&server, &path, active) { Ok(t) => t, Err(e) => return wire::write_msg(send, &fail(e)).await };
                 wire::write_msg(send, &ok()).await?;
                 let mut got = 0u64;

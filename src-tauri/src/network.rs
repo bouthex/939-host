@@ -135,7 +135,10 @@ pub fn start(app: AppHandle) {
         let cluster = app.state::<Cluster>();
         let r = async {
             let secret = identity::node_secret().map_err(|e| anyhow::anyhow!(e.message))?;
-            let relays = if settings::load().allow_public_relays { host939_p2p::Relays::PublicFallback } else { host939_p2p::Relays::Disabled };
+            let s = settings::load();
+            // Modo privado: solo relays (gana sobre el ajuste de relays públicos, porque sin
+            // relay no hay forma de conectarse sin mostrar la IP).
+            let relays = if s.private_mode { host939_p2p::Relays::Private } else if s.allow_public_relays { host939_p2p::Relays::PublicFallback } else { host939_p2p::Relays::Disabled };
             GroupNode::start(secret, &node_name(), relays, Arc::new(AppLocal(app.clone())), Timing::default()).await
         }.await;
         match r {
@@ -182,6 +185,16 @@ pub struct ShareView {
     pub route_port: Option<u16>,
     pub relays: bool,
     pub node_id: Option<String>,
+    /// Esta PC está en modo privado (solo relays).
+    pub private_mode: bool,
+    /// El grupo tiene código de recuperación.
+    pub recovery_set: bool,
+    /// Hay un cambio de código pendiente (con espera).
+    pub recovery_pending: bool,
+    /// Sucesora designada (id de nodo).
+    pub successor: Option<String>,
+    /// Sucesión en curso: (id de la sucesora, segundos que faltan).
+    pub succession: Option<(String, u64)>,
 }
 
 #[tauri::command]
@@ -193,6 +206,9 @@ pub async fn share_status(id: String, cluster: State<'_, Cluster>) -> AppResult<
         enabled: share.enabled, group, invites: share.invites,
         route_port: share.enabled.then(|| route_port(&id)), relays: settings::load().allow_public_relays,
         node_id: node.map(|n| n.id()),
+        private_mode: settings::load().private_mode,
+        recovery_set: share.recovery.is_some(), recovery_pending: share.recovery_pending.is_some(),
+        successor: share.successor.clone(), succession: node.and_then(|n| n.succession_status(&id)),
     })
 }
 
@@ -222,7 +238,58 @@ pub async fn invite_create(id: String, role: String, label: String, cluster: Sta
         node.share(&id).map_err(|e| p2p_err("No se pudo compartir", e))?;
         let _ = node.open_route(&id, route_port(&id)).await;
     }
-    node.invite(&id, &role, if label.trim().is_empty() { "Invitación" } else { label.trim() }).map_err(|e| p2p_err("No se pudo crear la invitación", e))
+    node.invite_for(&id, &role, if label.trim().is_empty() { "Invitación" } else { label.trim() }, settings::load().invite_hours).map_err(|e| p2p_err("No se pudo crear la invitación", e))
+}
+
+/* ── Recuperación de la propiedad ── */
+
+#[tauri::command]
+pub async fn recovery_create(id: String, cluster: State<'_, Cluster>) -> AppResult<String> {
+    cluster.node().await?.create_recovery_code(&id).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn recovery_rotate(id: String, current: String, cluster: State<'_, Cluster>) -> AppResult<String> {
+    cluster.node().await?.rotate_recovery_code(&id, &current).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn recovery_reset_request(id: String, cluster: State<'_, Cluster>) -> AppResult<String> {
+    cluster.node().await?.request_recovery_reset(&id).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn recovery_reset_finish(id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.finish_recovery_reset(&id).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn recovery_use(app: AppHandle, id: String, code: String, cluster: State<'_, Cluster>) -> AppResult<String> {
+    let r = cluster.node().await?.clone().recover_with_code(&id, &code).await.map_err(|e| AppError::invalid(e.to_string()))?;
+    let _ = app.emit("servers-changed", ());
+    Ok(r)
+}
+
+#[tauri::command]
+pub async fn successor_set(id: String, node_id: Option<String>, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.set_successor(&id, node_id.as_deref()).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn succession_start(id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.clone().start_succession(&id).await.map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn succession_cancel(id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.cancel_succession(&id).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn succession_complete(app: AppHandle, id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.clone().complete_succession(&id).await.map_err(|e| AppError::invalid(e.to_string()))?;
+    let _ = app.emit("servers-changed", ());
+    Ok(())
 }
 
 #[tauri::command]

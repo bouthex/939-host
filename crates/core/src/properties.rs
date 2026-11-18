@@ -11,6 +11,7 @@ pub const MANAGED: &[&str] = &[
     "server-port", "max-players", "motd", "online-mode", "white-list", "enforce-whitelist",
     "difficulty", "gamemode", "hardcore", "pvp", "level-seed", "level-type", "level-name",
     "view-distance", "simulation-distance", "spawn-protection", "allow-flight", "enable-command-block",
+    "server-ip",
 ];
 
 pub fn read(path: &Path) -> BTreeMap<String, String> {
@@ -96,6 +97,9 @@ pub fn write_for(cfg: &ServerConfig) -> AppResult<()> {
         ("spawn-protection", cfg.spawn_protection.to_string()),
         ("allow-flight", b(cfg.allow_flight)),
         ("enable-command-block", b(cfg.enable_command_block)),
+        // Por defecto el servidor escucha solo en esta PC: se juega a través de 939 Host (que
+        // autentica a cada PC del grupo). «Permitir conexiones de mi red local» lo abre a la LAN.
+        ("server-ip", if crate::settings::load().lan_access { String::new() } else { "127.0.0.1".to_string() }),
     ];
     for (k, v) in managed { map.insert(k.to_string(), v); }
 

@@ -1,9 +1,10 @@
 //! CurseForge por su API oficial (https://docs.curseforge.com/rest-api). Sin scraping.
 //!
-//! - Requiere una clave (`x-api-key`) emitida por CurseForge for Studios a quien la solicita;
-//!   es intransferible y no se publica. 939 Host la toma de la compilación
-//!   (`H939_CURSEFORGE_KEY`, secreto de GitHub Actions) o de la configuración local de la PC.
-//!   Sin clave, todo lo demás de 939 Host funciona y la interfaz explica cómo conseguirla.
+//! - Requiere una clave (`x-api-key`) emitida por CurseForge a quien la solicita. 939 Host NO
+//!   incluye ninguna clave en el ejecutable ni en el instalador: cada persona que quiera usar
+//!   CurseForge desde la app carga la suya, que se guarda protegida con DPAPI en su PC y nunca
+//!   se muestra ni se registra. Sin clave, todo lo demás funciona (y los modpacks descargados a
+//!   mano desde la web de CurseForge se pueden importar igual).
 //! - Los autores pueden no permitir la descarga desde apps de terceros: entonces la API no da
 //!   `downloadUrl` y 939 Host no descarga ese archivo; ofrece abrir su página en CurseForge.
 //! - Los archivos se verifican con el SHA-1 que publica CurseForge.
@@ -18,11 +19,8 @@ pub const MINECRAFT: u32 = 432;
 pub const CLASS_MODS: u32 = 6;
 pub const CLASS_MODPACKS: u32 = 4471;
 
-/// La clave: primero la de esta PC (configuración), después la de la compilación.
-pub fn key() -> Option<String> {
-    let local = crate::settings::load().curseforge_key.filter(|k| !k.trim().is_empty());
-    local.or_else(|| option_env!("H939_CURSEFORGE_KEY").map(String::from)).filter(|k| k.len() > 20)
-}
+/// La clave de esta PC (protegida con DPAPI). No hay clave de compilación.
+pub fn key() -> Option<String> { crate::settings::curseforge_key().filter(|k| k.len() > 20) }
 pub fn available() -> bool { key().is_some() }
 
 pub fn loader_type(l: Loader) -> Option<u32> {

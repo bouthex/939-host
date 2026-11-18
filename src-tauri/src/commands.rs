@@ -33,7 +33,7 @@ pub struct AppInfo {
 #[tauri::command]
 pub fn app_info(node: State<'_, NodeIdentity>) -> AppInfo {
     let s = settings::ensure_pc_identity();
-    AppInfo { version: env!("CARGO_PKG_VERSION").into(), data_dir: paths::root().display().to_string(), node: node.inner().clone(), settings: s }
+    AppInfo { version: env!("CARGO_PKG_VERSION").into(), data_dir: paths::root().display().to_string(), node: node.inner().clone(), settings: settings::for_ui(s) }
 }
 
 #[tauri::command]
@@ -43,6 +43,9 @@ pub fn save_settings(settings: AppSettings) -> AppResult<AppSettings> {
     let saved = settings::load();
     s.node_name = saved.node_name;
     s.node_symbol = saved.node_symbol;
+    // La clave de CurseForge se cambia solo con su comando (la interfaz nunca la tiene).
+    s.curseforge_key = saved.curseforge_key.clone();
+    s.invite_hours = s.invite_hours.clamp(1, 720);
     s.contribute_cpu_percent = s.contribute_cpu_percent.clamp(10, 100);
     // Los perfiles de reconexión se manejan con sus propios comandos.
     s.reconnect_profiles = settings::load().reconnect_profiles;
@@ -50,7 +53,7 @@ pub fn save_settings(settings: AppSettings) -> AppResult<AppSettings> {
         settings::apply_autostart(s.start_with_windows)?;
     }
     settings::save(&s)?;
-    Ok(s)
+    Ok(settings::for_ui(s))
 }
 
 #[tauri::command]

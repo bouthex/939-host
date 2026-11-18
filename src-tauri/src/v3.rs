@@ -491,18 +491,17 @@ pub struct CfStatus { available: bool, from_build: bool, local: bool }
 
 #[tauri::command]
 pub fn cf_status() -> CfStatus {
-    let local = host939_core::settings::load().curseforge_key.map(|k| !k.trim().is_empty()).unwrap_or(false);
-    CfStatus { available: cf::available(), from_build: option_env!("H939_CURSEFORGE_KEY").is_some(), local }
+    let local = host939_core::settings::load().curseforge_key.is_some();
+    CfStatus { available: cf::available(), from_build: false, local }
 }
 
 /// Guarda (o borra) la clave en esta PC después de comprobarla contra la API.
 #[tauri::command]
 pub async fn cf_set_key(key: Option<String>) -> AppResult<CfStatus> {
-    let mut s = host939_core::settings::load();
-    let prev = s.curseforge_key.clone();
-    s.curseforge_key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
-    host939_core::settings::save(&s)?;
-    if s.curseforge_key.is_some() {
+    let prev = host939_core::settings::load().curseforge_key;
+    let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    host939_core::settings::set_curseforge_key(key.as_deref())?;
+    if key.is_some() {
         if let Err(e) = cf::search("jei", None, None, cf::CLASS_MODS, 0).await {
             let mut back = host939_core::settings::load(); back.curseforge_key = prev; host939_core::settings::save(&back)?;
             return Err(e);

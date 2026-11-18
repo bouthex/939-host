@@ -343,7 +343,7 @@ tabDraw.group = async (el) => {
   const st = await invoke('share_status', { id: state.params.id });
   state.share = st;
   const g = st.group;
-  const head = `<div class="card pad"><label class="switch"><div class="grow"><b>Compartir con el grupo</b><span class="sm t2">Tus amigos juegan desde sus casas sin abrir puertos, y el servidor puede pasar de una PC a otra sin perder progreso. Conexión directa cifrada${st.relays ? '; relays públicos gratuitos solo como último recurso' : ' (relays públicos desactivados en Configuración)'}.</span></div><input type="checkbox" id="share-toggle" ${st.enabled ? 'checked' : ''}></label></div>`;
+  const head = `<div class="card pad"><label class="switch"><div class="grow"><b>Compartir con el grupo</b><span class="sm t2">Tus amigos juegan desde sus casas sin abrir puertos, y el servidor puede pasar de una PC a otra sin perder progreso. ${st.privateMode ? 'Modo privado activo: esta PC se conecta solo por relay y ninguna otra PC del grupo ve su IP (el relay ve la IP y el volumen, no el contenido).' : `Conexión directa cifrada${st.relays ? '; relays públicos gratuitos solo como último recurso' : ' (relays públicos desactivados en Configuración)'}.`}</span></div><input type="checkbox" id="share-toggle" ${st.enabled ? 'checked' : ''}></label></div>`;
   const inviteBtns = `<div class="btns"><button class="btn pri" data-a="invite" data-role="coanfitrion">${icon('plus', 16)}Invitar coanfitrión</button><button class="btn" data-a="invite" data-role="jugador">${icon('plus', 16)}Invitar jugador</button></div>`;
   if (!st.enabled || !g) {
     el.innerHTML = `<div class="stack" style="gap:16px">${head}
@@ -386,7 +386,8 @@ tabDraw.group = async (el) => {
             ${m.isMe ? `<button class="btn s icon ghost" data-a="identity" title="Cambiar el nombre de esta PC" aria-label="Cambiar el nombre de esta PC">${icon('edit', 15)}</button>` : ''}${!m.isMe && m.role !== 'propietario' && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-transfer" data-node="${esc(m.nodeId)}" data-name="${esc(m.name)}">Hacer propietaria</button>` : ''}${!m.isMe && m.role !== 'propietario' && !m.isHost && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}" data-tone="halt">Quitar</button>` : ''}</div>`).join('')}</div>
           ${g.members.find((x) => x.isMe)?.role !== 'propietario' ? `<div class="spread" style="margin-top:12px"><span class="sm t2">Si salís, esta PC deja de participar y la propietaria te quita de la lista.</span><button class="btn s" data-a="group-leave" data-tone="halt">Salir del grupo</button></div>` : '<p class="sm t2" style="margin-top:12px">Los cambios del grupo los firma esta PC (propietaria): ninguna otra puede agregarse, quitar a otras ni declararse propietaria. Para irte, primero pasá la propiedad.</p>'}</div>
         <div class="card pad stack"><h2>Invitar</h2>${inviteBtns}
-          ${st.invites.length ? `<div><div class="sec" style="margin:6px 0">Invitaciones sin usar</div>${st.invites.map((i) => `<div class="kv"><span>${ROLE[i.role] || 'Jugador'} <span class="sm t3">${esc(fmtDate(i.createdAt))}</span></span><button class="btn s ghost" data-a="invite-revoke" data-secret="${esc(i.secret)}">Revocar</button></div>`).join('')}</div>` : ''}</div>
+          ${st.invites.length ? `<div><div class="sec" style="margin:6px 0">Invitaciones sin usar</div>${st.invites.map((i) => `<div class="kv"><span>${ROLE[i.role] || 'Jugador'} <span class="sm t3">${esc(fmtDate(i.createdAt))}${i.expiresAt ? ` · vence ${esc(fmtDate(i.expiresAt))}` : ''}</span></span><button class="btn s ghost" data-a="invite-revoke" data-secret="${esc(i.secret)}">Revocar</button></div>`).join('')}</div>` : ''}</div>
+        ${ownershipCard(st, g)}
       </div></div></div>`;
     const fo = $('#opt-failover', el), ho = $('#opt-handover', el);
     const opts = () => invoke('group_options', { id: state.params.id, autoFailover: fo.checked, handoverOnQuit: ho.checked }).then(() => toast('Opciones del grupo guardadas')).catch(fail);
@@ -402,11 +403,65 @@ A.invite = async (el) => {
   const role = el.dataset.role || 'jugador';
   try {
     const ticket = await invoke('invite_create', { id: state.params.id, role, label: role });
-    await dialog({ title: role === 'coanfitrion' ? 'Invitación de coanfitrión' : 'Invitación de jugador', body: `<div class="invite-card">${srvLogo(state.server.logoUrl, 48)}<div><b>${esc(state.server.config.name)}</b><div class="sm t2">${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)} · quien se una ve este logo en «Servidores de amigos»</div></div></div><p class="sm">${role === 'coanfitrion' ? 'La PC que la use guarda una copia sincronizada y puede hostear el servidor cuando esta no esté.' : 'La PC que la use puede jugar, pero no guarda copia ni hostea.'} Se pega en 939 Host → Servidores de amigos → Unirme. Sirve para una sola PC; esta PC tiene que tener 939 Host abierto cuando la usen.</p><div class="addr"><span class="sm">${esc(ticket)}</span></div>`, confirm: 'Copiar y cerrar', cancel: null });
+    await dialog({ title: role === 'coanfitrion' ? 'Invitación de coanfitrión' : 'Invitación de jugador', body: `<div class="invite-card">${srvLogo(state.server.logoUrl, 48)}<div><b>${esc(state.server.config.name)}</b><div class="sm t2">${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)} · quien se una ve este logo en «Servidores de amigos»</div></div></div><p class="sm">${role === 'coanfitrion' ? 'La PC que la use guarda una copia sincronizada y puede hostear el servidor cuando esta no esté.' : 'La PC que la use puede jugar, pero no guarda copia ni hostea.'} Se pega en 939 Host → Servidores de amigos → Unirme. Sirve para una sola PC y vence en ${state.info.settings.inviteHours || 24} h; esta PC tiene que tener 939 Host abierto cuando la usen. Pasala por mensaje privado.</p><div class="addr"><span class="sm">${esc(ticket)}</span></div>`, confirm: 'Copiar y cerrar', cancel: null });
     try { await navigator.clipboard.writeText(ticket); toast('Código copiado'); } catch { /* sin portapapeles */ }
   } catch (e) { fail(e); }
   drawTab();
 };
+/* Seguridad de la propiedad: código de recuperación y sucesora designada. */
+function ownershipCard(st, g) {
+  const me = g.members.find((x) => x.isMe);
+  const owner = me?.role === 'propietario';
+  const name = (id) => g.members.find((m) => m.nodeId === id)?.name || 'otra PC';
+  const coh = g.members.filter((m) => m.role === 'coanfitrion');
+  const succ = st.succession;
+  const hours = (s) => Math.max(1, Math.ceil(s / 3600));
+  const succNote = succ ? `<div class="note strong">${icon('alert')}<div class="grow"><b>${esc(name(succ[0]))} inició la sucesión de la propiedad</b><span class="sm t2">${succ[1] > 0 ? `Se puede completar en ${hours(succ[1])} h si la propietaria no la cancela.` : 'La espera terminó.'}</span></div>${owner ? '<button class="btn s" data-a="succ-cancel">Cancelar sucesión</button>' : ''}${succ[0] === g.me && succ[1] === 0 ? '<button class="btn s pri" data-a="succ-complete">Completar</button>' : ''}</div>` : '';
+  if (owner) {
+    return `<div class="card pad stack"><h2>Si perdés esta PC</h2>${succNote}
+      <div class="kv"><span class="k">Código de recuperación</span><span>${st.recoverySet ? 'Configurado' : 'Sin configurar'}${st.recoveryPending ? ' · cambio pendiente (72 h)' : ''}</span></div>
+      <div class="btns">${st.recoverySet ? `<button class="btn s" data-a="rec-rotate">Cambiar código</button><button class="btn s ghost" data-a="rec-reset">Perdí el código</button>${st.recoveryPending ? '<button class="btn s ghost" data-a="rec-finish">Aplicar código nuevo</button>' : ''}` : '<button class="btn s pri" data-a="rec-create">Crear código de recuperación</button>'}</div>
+      <label class="field">Sucesora designada<select class="input" id="succ-sel"><option value="">Ninguna</option>${coh.map((m) => `<option value="${esc(m.nodeId)}" ${st.successor === m.nodeId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
+      <p class="xs t3" style="margin:0">Con el código, cualquier PC del grupo puede recuperar la propiedad si perdés esta (esta PC queda fuera del grupo y se genera un código nuevo). La sucesora puede reemplazarte si dejás de responder, después de un aviso visible y 72 h en las que podés cancelar. Ninguna otra PC puede autodesignarse.</p></div>`;
+  }
+  const iAmSucc = st.successor === g.me;
+  return `<div class="card pad stack"><h2>Propiedad del grupo</h2>${succNote}
+    ${iAmSucc && !succ ? '<p class="sm t2" style="margin:0">Sos la sucesora designada. Si la propietaria deja de responder, podés iniciar la sucesión (72 h de espera con aviso al grupo).</p><div class="btns"><button class="btn s" data-a="succ-start">Iniciar sucesión</button></div>' : ''}
+    <p class="sm t2" style="margin:0">Si la propietaria perdió su PC y te dio el código de recuperación, podés recuperar la propiedad en esta PC.</p>
+    <div class="btns"><button class="btn s ghost" data-a="rec-use">Usar código de recuperación</button></div></div>`;
+}
+async function showCode(title, code) {
+  await dialog({ title, confirm: 'Ya lo guardé', cancel: null, body: `<p>Guardalo fuera de esta PC (en papel o en un gestor de contraseñas). <b>Se muestra una sola vez</b>: 939 Host no lo guarda.</p><div class="addr"><span class="mono">${esc(code)}</span></div><p class="sm t2">Con este código, cualquier PC del grupo puede quedarse con la propiedad. No lo compartas.</p>` });
+}
+async function askCode(title, label) {
+  let v = '';
+  const ok = await dialog({ title, confirm: 'Continuar', body: `<label class="field">${label}<input class="input mono" id="rc-in" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-…"></label>`, onMount: (d) => { const i = d.querySelector('#rc-in'); i.focus(); i.addEventListener('input', () => { v = i.value.trim(); }); } });
+  return ok ? v : null;
+}
+A['rec-create'] = async () => { try { await showCode('Código de recuperación', await invoke('recovery_create', { id: state.params.id })); } catch (e) { fail(e); } drawTab(); };
+A['rec-rotate'] = async () => { const c = await askCode('Cambiar el código', 'Código actual'); if (!c) return; try { await showCode('Código de recuperación nuevo', await invoke('recovery_rotate', { id: state.params.id, current: c })); } catch (e) { fail(e); } drawTab(); };
+A['rec-reset'] = async () => {
+  if (!(await dialog({ title: 'Perdí el código', confirm: 'Pedir código nuevo', body: '<p>El código nuevo vale recién dentro de 72 h y todo el grupo lo ve. Así, si alguien usara esta PC sin permiso, quien tenga el código verdadero puede recuperar el grupo antes.</p>' }))) return;
+  try { await showCode('Código nuevo (vale en 72 h)', await invoke('recovery_reset_request', { id: state.params.id })); } catch (e) { fail(e); } drawTab();
+};
+A['rec-finish'] = async () => { try { await invoke('recovery_reset_finish', { id: state.params.id }); toast('Código nuevo aplicado'); } catch (e) { fail(e); } drawTab(); };
+A['rec-use'] = async () => {
+  const c = await askCode('Recuperar la propiedad', 'Código de recuperación');
+  if (!c) return;
+  if (!(await dialog({ title: 'Recuperar la propiedad en esta PC', danger: true, confirm: 'Recuperar', body: '<p>Esta PC pasa a ser la propietaria. La propietaria anterior queda fuera del grupo y el código usado deja de servir. Mundos, copias e integrantes no cambian.</p>' }))) return;
+  try { await showCode('Código de recuperación nuevo', await invoke('recovery_use', { id: state.params.id, code: c })); } catch (e) { fail(e); } refreshServer();
+};
+A['succ-start'] = async () => {
+  if (!(await dialog({ title: 'Iniciar sucesión', confirm: 'Iniciar', body: '<p>Se avisa a todo el grupo. Si la propietaria no la cancela en 72 h, podés completarla y pasar a ser la propietaria.</p>' }))) return;
+  try { await invoke('succession_start', { id: state.params.id }); toast('Sucesión iniciada'); } catch (e) { fail(e); } drawTab();
+};
+A['succ-cancel'] = async () => { try { await invoke('succession_cancel', { id: state.params.id }); toast('Sucesión cancelada'); } catch (e) { fail(e); } drawTab(); };
+A['succ-complete'] = async () => { try { await invoke('succession_complete', { id: state.params.id }); toast('Ahora sos la propietaria'); } catch (e) { fail(e); } refreshServer(); };
+main.addEventListener('change', async (e) => {
+  if (e.target.id !== 'succ-sel' || state.route !== 'server') return;
+  try { await invoke('successor_set', { id: state.params.id, nodeId: e.target.value || null }); toast(e.target.value ? 'Sucesora designada' : 'Sin sucesora'); } catch (err) { fail(err); }
+  drawTab();
+});
 A['invite-revoke'] = async (el) => { try { await invoke('invite_revoke', { id: state.params.id, secret: el.dataset.secret }); toast('Invitación revocada'); } catch (e) { fail(e); } drawTab(); };
 A['member-transfer'] = async (el) => {
   const id = state.server.config.id;

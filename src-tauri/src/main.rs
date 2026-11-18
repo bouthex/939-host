@@ -252,6 +252,8 @@ fn main() {
             network::share_set,
             network::invite_create,
             network::invite_revoke,
+            network::recovery_create, network::recovery_rotate, network::recovery_reset_request, network::recovery_reset_finish, network::recovery_use,
+            network::successor_set, network::succession_start, network::succession_cancel, network::succession_complete,
             network::member_remove,
             network::group_options,
             network::group_handover,
