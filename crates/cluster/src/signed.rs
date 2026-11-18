@@ -48,6 +48,8 @@ pub fn payload(server: &str, s: &ShareConfig) -> Vec<u8> {
     // que las listas firmadas antes de que existieran sigan verificando.
     let mut v = v;
     if !s.rejected_mods.is_empty() { v["rejectedMods"] = serde_json::json!(s.rejected_mods); }
+    if !s.mc_ops.is_empty() { v["mcOps"] = serde_json::json!(s.mc_ops); }
+    if !s.mc_ops_revoked.is_empty() { v["mcOpsRevoked"] = serde_json::json!(s.mc_ops_revoked); }
     canonical(&v)
 }
 

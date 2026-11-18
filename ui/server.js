@@ -87,7 +87,7 @@ function drawHeader() {
   if (v.status === 'running') meta.push(`Encendido hace ${fmtUptime(v.startedAt)}`);
   if (s.detail && !OPS[s.key]) meta.push(esc(s.detail));
   el.innerHTML = `<div class="srv-head">
-      <div class="srv-title"><div class="row" style="gap:14px">${hostedElsewhere ? srvLogo(v.logoUrl, 44) : `<button class="logo-btn" data-a="logo-edit" title="Cambiar el logo" aria-label="Cambiar el logo">${srvLogo(v.logoUrl, 44)}</button>`}<h1 class="ellipsis">${esc(c.name)}</h1></div><div class="srv-meta">${hostedElsewhere ? `<span class="statepill">${SHAPES.dot}En otra PC</span>` : stateHTML(v, true).replace('class="statepill"', `class="statepill${changed ? ' changed' : ''}"`)}${meta.map((m) => `<span>${m}</span>`).join('')}</div></div>
+      <div class="srv-title"><div class="row" style="gap:14px">${hostedElsewhere ? srvLogo(v.logoUrl, 44) : `<button class="logo-btn" data-a="logo-edit" title="Cambiar el logo" aria-label="Cambiar el logo">${srvLogo(v.logoUrl, 44)}</button>`}<h1 class="ellipsis">${esc(c.name)}</h1></div><div class="srv-meta">${hostedElsewhere ? remoteStatePill(g) : stateHTML(v, true).replace('class="statepill"', `class="statepill${changed ? ' changed' : ''}"`)}${meta.map((m) => `<span>${m}</span>`).join('')}</div></div>
       <div class="ctl">${ctl}<button class="btn icon" data-a="folder" data-which="server" title="Abrir la carpeta del servidor" aria-label="Abrir la carpeta del servidor">${icon('folder', 16)}</button></div></div>
     ${v.countdown ? `<div class="countdown" role="status"><div class="row"><span class="num" id="cd-num">${cdLeft(v.countdown)}</span><div><b>${v.countdown.kind === 'restart' ? 'El servidor se reinicia' : 'El servidor se detiene'} en <span id="cd-txt">${cdLeft(v.countdown)}</span> segundos</b><div class="sm t2">Los jugadores ven la cuenta regresiva en el chat. El mundo se guarda antes de cerrar.</div></div></div>
       <div class="btns"><button class="btn s" data-a="cd-cancel" data-id="${id}">Cancelar</button><button class="btn s pri" data-a="cd-now" data-id="${id}" data-kind="${esc(v.countdown.kind)}">${v.countdown.kind === 'restart' ? 'Reiniciar ya' : 'Detener ya'}</button></div></div>` : ''}
@@ -381,9 +381,9 @@ tabDraw.group = async (el) => {
       </div>
       <div class="stack" style="gap:16px">
         <div class="card"><div class="card-head"><h2>PCs del grupo</h2><span class="sm t3">${online} de ${g.members.length} conectadas</span></div><div class="list">
-          ${g.members.map((m) => `<div class="li">${pcAvatar(m.symbol, 32, m.isHost ? 'inv' : '', m.avatar)}<div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(m.name)}</b>${m.isMe ? '<span class="sm t3">(vos)</span>' : ''}${m.isHost ? '<span class="chip s fill">Anfitrión</span>' : ''}<span class="chip s">${ROLE[m.role] || esc(m.role)}</span></div>
+          ${g.members.map((m) => `<div class="li">${pcAvatar(m.symbol, 32, m.isHost ? 'inv' : '', m.avatar)}<div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(m.name)}</b>${m.isMe ? '<span class="sm t3">(vos)</span>' : ''}${m.isHost ? '<span class="chip s fill">Anfitrión</span>' : ''}<span class="chip s">${ROLE[m.role] || esc(m.role)}</span>${m.mcOp ? `<span class="chip s" title="OP en Minecraft concedido por la propietaria">OP · ${esc(m.mcOp)}</span>` : ''}</div>
             <div class="sm t3">${m.online ? `${SHAPES.dot.replace('class="dot"', 'class="dot" style="display:inline-block;width:6px;height:6px;margin-right:4px"')}Conectada${m.path ? ` · ${m.path === 'relay' ? 'por relay' : 'directa'}${m.rttMs != null ? ` · ${m.rttMs} ms` : ''}` : ''}` : 'Desconectada'}${m.canHost ? ` · estado ${esc(ago(m.latestAt))}` : ''}</div></div>
-            ${m.isMe ? `<button class="btn s icon ghost" data-a="identity" title="Cambiar el nombre de esta PC" aria-label="Cambiar el nombre de esta PC">${icon('edit', 15)}</button>` : ''}${!m.isMe && m.role !== 'propietario' && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-transfer" data-node="${esc(m.nodeId)}" data-name="${esc(m.name)}">Hacer propietaria</button>` : ''}${!m.isMe && m.role !== 'propietario' && !m.isHost && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}" data-tone="halt">Quitar</button>` : ''}</div>`).join('')}</div>
+            ${m.isMe ? `<button class="btn s icon ghost" data-a="identity" title="Cambiar el nombre de esta PC" aria-label="Cambiar el nombre de esta PC">${icon('edit', 15)}</button>` : ''}${g.members.find((x) => x.isMe)?.role === 'propietario' && m.role !== 'propietario' ? `<button class="btn s ghost" data-a="member-op" data-node="${esc(m.nodeId)}" data-name="${esc(m.name)}" data-op="${esc(m.mcOp || '')}">${m.mcOp ? 'Quitar OP' : 'Dar OP'}</button>` : ''}${!m.isMe && m.role !== 'propietario' && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-transfer" data-node="${esc(m.nodeId)}" data-name="${esc(m.name)}">Hacer propietaria</button>` : ''}${!m.isMe && m.role !== 'propietario' && !m.isHost && g.members.find((x) => x.isMe)?.role === 'propietario' ? `<button class="btn s ghost" data-a="member-remove" data-node="${esc(m.nodeId)}" data-tone="halt">Quitar</button>` : ''}</div>`).join('')}</div>
           ${g.members.find((x) => x.isMe)?.role !== 'propietario' ? `<div class="spread" style="margin-top:12px"><span class="sm t2">Si salís, esta PC deja de participar y la propietaria te quita de la lista.</span><button class="btn s" data-a="group-leave" data-tone="halt">Salir del grupo</button></div>` : '<p class="sm t2" style="margin-top:12px">Los cambios del grupo los firma esta PC (propietaria): ninguna otra puede agregarse, quitar a otras ni declararse propietaria. Para irte, primero pasá la propiedad.</p>'}</div>
         <div class="card pad stack"><h2>Invitar</h2>${inviteBtns}
           ${st.invites.length ? `<div><div class="sec" style="margin:6px 0">Invitaciones sin usar</div>${st.invites.map((i) => `<div class="kv"><span>${ROLE[i.role] || 'Jugador'} <span class="sm t3">${esc(fmtDate(i.createdAt))}${i.expiresAt ? ` · vence ${esc(fmtDate(i.expiresAt))}` : ''}</span></span><button class="btn s ghost" data-a="invite-revoke" data-secret="${esc(i.secret)}">Revocar</button></div>`).join('')}</div>` : ''}</div>
@@ -643,4 +643,34 @@ A.delete = async () => {
   if (isActive(state.server)) { toast('Detené el servidor antes de borrarlo.', 'error'); return; }
   if (!(await dialog({ title: `Borrar «${name}»`, danger: true, body: '<p>El servidor, su mundo, sus mods y sus copias van a la <b>Papelera</b>. Se conservan 30 días y podés restaurarlos completos desde <b>Papelera</b> en la barra lateral.</p>', confirm: 'Mover a la Papelera', requireText: name }))) return;
   try { await invoke('delete_server', { id: state.params.id, confirmName: name }); toast('Movido a la Papelera · se conserva 30 días'); srvEdit.cfg = null; guards.length = 0; refreshTrashCount(); go('servers'); } catch (e) { fail(e); }
+};
+
+/* Estado del servidor en la PC que lo aloja: el mismo para todas las PCs del grupo. */
+const REMOTE_STATE = { stopped: 'Apagado', starting: 'Iniciando', preparing: 'Preparando', ready: 'Listo', running: 'En ejecución', saving: 'Guardando',
+  restarting: 'Reiniciando', transferring: 'Transfiriendo anfitrión', recovering: 'Recuperándose', error: 'Error', unreachable: 'Sin respuesta', unknown: 'En otra PC' };
+function remoteStatePill(g) {
+  const h = g.hostState || { state: 'unknown' };
+  const label = REMOTE_STATE[h.state] || 'En otra PC';
+  const extra = h.state === 'running' && h.players ? ` · ${h.players} ${h.players === 1 ? 'jugador' : 'jugadores'}` : '';
+  const shape = ['ready', 'running'].includes(h.state) ? SHAPES.dot : ['starting', 'preparing', 'saving', 'restarting', 'transferring', 'recovering'].includes(h.state) ? SHAPES.ring : SHAPES.dot;
+  return `<span class="statepill" title="${esc(h.detail || '')}">${shape}${label}${extra}</span>`;
+}
+A['member-op'] = async (el) => {
+  const id = state.params.id;
+  if (el.dataset.op) {
+    if (!(await dialog({ title: `Quitar el OP de ${el.dataset.name}`, body: `<p>La cuenta <b>${esc(el.dataset.op)}</b> deja de ser OP en este servidor de Minecraft. Lo aplica la PC que lo aloja cuando el servidor está encendido. No cambia sus permisos en 939 Host.</p>`, confirm: 'Quitar OP' }))) return;
+    try { await invoke('group_mc_op', { id, node: el.dataset.node, mcName: null }); toast('OP quitado'); } catch (e) { fail(e); }
+  } else {
+    let typed = '';
+    const r = await dialog({ title: `Dar OP en Minecraft a ${el.dataset.name}`,
+      body: `<p>OP permite usar comandos de administración dentro del juego (por ejemplo, cambiar la hora o expulsar jugadores). Es distinto de los permisos de 939 Host: ser coanfitriona no da OP y dar OP no da permisos de 939 Host.</p>
+        <label class="field">Nombre de su cuenta de Minecraft<input class="input" id="op-name" maxlength="16" autocomplete="off" spellcheck="false" placeholder="por ejemplo, Archimak"></label>
+        <p class="sm t2">Queda firmado por esta PC (propietaria): nadie más puede darlo ni dárselo a sí misma. Lo podés quitar cuando quieras.</p>`,
+      confirm: 'Dar OP', onMount: (d) => { const i = d.querySelector('#op-name'); i.focus(); i.addEventListener('input', () => { typed = i.value; }); } });
+    if (!r) return;
+    const name = typed.trim();
+    if (!name) { toast('Escribí el nombre de su cuenta de Minecraft.', 'error'); return; }
+    try { await invoke('group_mc_op', { id, node: el.dataset.node, mcName: name }); toast(`OP para ${name}`); } catch (e) { fail(e); }
+  }
+  drawTab();
 };

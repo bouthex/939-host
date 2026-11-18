@@ -95,11 +95,22 @@ pub struct ShareConfig {
     /// política (ver `modguard`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rejected_mods: Vec<String>,
+    /// Permiso OP de Minecraft que la propietaria concedió a integrantes (por su cuenta de
+    /// Minecraft). Distinto de los permisos de 939 Host: ser coanfitriona no da OP.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mc_ops: Vec<McOp>,
+    /// Cuentas a las que la propietaria les quitó el OP concedido (la anfitriona se lo quita).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mc_ops_revoked: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McOp { pub node_id: String, pub mc_name: String }
 
 impl Default for ShareConfig {
     fn default() -> Self {
-        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None, rejected_mods: vec![] }
+        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None, rejected_mods: vec![], mc_ops: vec![], mc_ops_revoked: vec![] }
     }
 }
 

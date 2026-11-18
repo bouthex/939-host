@@ -688,3 +688,47 @@ fn direcciones_falsas_de_otras_pcs_no_se_aceptan() {
     wait("A ve a las 4", Duration::from_secs(20), || a.status(&sid)["members"].as_array().unwrap().len() == 4);
     println!("✔ direcciones falsas de otras PCs (relay propio, IP ajena) anunciadas por una jugadora o una coanfitriona: descartadas");
 }
+
+/// Estado compartido y OP de Minecraft concedido por la propietaria (§13): nadie se lo da a sí
+/// mismo, la anfitriona lo aplica, sobrevive al traspaso y la revocación se respeta.
+#[test]
+fn estado_compartido_y_op_concedido_por_la_propietaria() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut a, mut b, mut c, sid) = three(tmp.path(), &[], 25881);
+    let id_b = id(&mut b);
+    a.ok(&format!("start {sid}"));
+    wait("las tres ven el mismo estado", Duration::from_secs(25), || {
+        [&mut a, &mut b, &mut c].iter_mut().all(|n| n.status(&sid)["hostState"]["state"] == "running")
+    });
+    println!("✔ todas las PCs ven el servidor encendido en A");
+
+    // B (coanfitriona) no puede darse OP, ni C (jugadora).
+    assert!(b.err(&format!("grantop {sid} {id_b} Bjugador")).contains("propietaria"));
+    assert!(c.err(&format!("grantop {sid} {id_b} Bjugador")).contains("propietaria"));
+    // La propietaria lo concede; la anfitriona (A) lo aplica en el servidor encendido.
+    a.ok(&format!("grantop {sid} {id_b} Bjugador"));
+    wait("A aplica el OP", Duration::from_secs(20), || a.ok(&format!("ops {sid}")).as_str().unwrap_or("").contains("Bjugador"));
+    wait("B ve su OP en la lista firmada", Duration::from_secs(20), || b.status(&sid)["members"].as_array().unwrap().iter().any(|m| m["mcOp"] == "Bjugador"));
+    println!("✔ solo la propietaria concede OP; la anfitriona lo aplicó");
+
+    // Traspaso a B: el estado lo ven todas y la nueva anfitriona respeta la revocación.
+    a.ok(&format!("handover {sid} {id_b}"));
+    wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("A y C ven el estado de B", Duration::from_secs(25), || {
+        let (sa, sc) = (a.status(&sid), c.status(&sid));
+        sa["hostState"]["state"] == "running" && sc["hostState"]["state"] == "running" && sa["lease"]["host"] == id_b.as_str()
+    });
+    a.ok(&format!("revokeop {sid} {id_b}"));
+    wait("B (anfitriona) quita el OP", Duration::from_secs(25), || {
+        let ops = b.ok(&format!("ops {sid}"));
+        // ops.json viene con el mundo; si todavía no existe es porque nunca tuvo OP en B.
+        !ops.as_str().unwrap_or("").contains("Bjugador") && b.status(&sid)["members"].as_array().unwrap().iter().all(|m| m["mcOp"].is_null())
+    });
+    println!("✔ después del traspaso la nueva anfitriona respetó la revocación");
+
+    b.ok(&format!("stop {sid}"));
+    wait("A y C ven el servidor apagado", Duration::from_secs(25), || {
+        [&mut a, &mut c].iter_mut().all(|n| { let s = n.status(&sid)["hostState"]["state"].clone(); s == "stopped" })
+    });
+    println!("✔ al apagarlo, todas lo ven apagado");
+}

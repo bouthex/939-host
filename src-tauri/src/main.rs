@@ -355,6 +355,7 @@ fn main() {
             network::group_options,
             network::group_handover,
             network::group_release,
+            network::group_mc_op,
             network::group_take_here,
             network::group_sync,
             network::remote_list,

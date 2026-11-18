@@ -103,6 +103,19 @@ impl LocalHost for Local {
         if r.is_ok() && !self.is_running(server) { self.exited.lock().unwrap().remove(server); }
         r
     }
+    fn command(&self, server: &str, cmd: &str) -> Result<(), String> {
+        if self.fake {
+            // El servidor simulado registra los comandos y lleva su propio ops.json.
+            let run = paths::server_run_dir(server);
+            let mut ops: Vec<serde_json::Value> = paths::read_json(&run.join("ops.json")).unwrap_or_default();
+            if let Some(n) = cmd.strip_prefix("op ") { if !ops.iter().any(|o| o["name"] == n) { ops.push(serde_json::json!({ "name": n, "level": 4 })); } }
+            if let Some(n) = cmd.strip_prefix("deop ") { ops.retain(|o| o["name"] != n); }
+            paths::write_json(&run.join("ops.json"), &ops).map_err(|e| e.message)?;
+            say("##", &format!("comando: {cmd}"));
+            return Ok(());
+        }
+        self.mgr.send_command(server, cmd).map_err(|e| e.message)
+    }
     fn exited_unsaved(&self, server: &str) -> bool {
         if self.fake { return self.exited.lock().unwrap().remove(server); }
         self.mgr.take_exit_unsaved(server)
@@ -320,6 +333,9 @@ async fn main() {
                 "snapshot" => { let (l, s) = (local.clone(), p(1)); tokio::task::spawn_blocking(move || l.snapshot(&s, "prueba", "auto")).await.unwrap().map(|i| serde_json::to_value(i).unwrap()) }
                 // Punto «manual» como el botón de la interfaz (en una PC que no aloja queda como copia local).
                 "manualsnap" => { let (l, s) = (local.clone(), p(1)); tokio::task::spawn_blocking(move || l.snapshot(&s, "manual de prueba", "manual")).await.unwrap().map(|i| serde_json::to_value(i).unwrap()) }
+                "grantop" => node.grant_mc_op(&p(1), &p(2), &p(3)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "revokeop" => node.revoke_mc_op(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "ops" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_run_dir(&p(1)).join("ops.json")).unwrap_or_default())),
                 "latest" => Ok(serde_json::to_value(snapshots::latest(&p(1))).unwrap()),
                 "snapshots" => Ok(serde_json::to_value(snapshots::list(&p(1))).unwrap()),
                 "handover" => node.handover(&p(1), parts.get(2).map(|s| s.as_str())).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),

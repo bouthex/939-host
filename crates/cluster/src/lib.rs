@@ -81,6 +81,11 @@ pub trait LocalHost: Send + Sync + 'static {
     /// interfaz: etapa y progreso real si se conoce. `op_end` la cierra (con error o no).
     fn op(&self, _server: &str, _title: &str, _stage: &str, _fraction: Option<f64>) {}
     fn op_end(&self, _server: &str, _title: &str, _error: Option<&str>) {}
+    /// Comando en la consola del servidor encendido (para aplicar el OP que concedió la propietaria).
+    fn command(&self, _server: &str, _cmd: &str) -> Result<(), String> { Err("sin consola".into()) }
+    /// Estado detallado del servidor en esta PC: stopped | starting | preparing | ready | running |
+    /// saving | restarting | error, con un detalle en palabras y la cantidad de jugadores.
+    fn run_state(&self, server: &str) -> (String, String, u32) { (if self.is_running(server) { "running" } else { "stopped" }.into(), String::new(), 0) }
 }
 
 /// Lo que una PC cuenta de sí misma al pedir ser anfitriona (solo para mostrar y advertir).
@@ -196,7 +201,20 @@ pub struct Info {
     /// Huella SHA-256 de la foto de perfil de esta PC (la foto se pide aparte, una vez).
     #[serde(default)]
     pub avatar: Option<String>,
+    /// Estado detallado del servidor en esta PC (ver `LocalHost::run_state`), el detalle y los
+    /// jugadores conectados. Con un traspaso o una recuperación en curso: transferring / recovering.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub state_detail: String,
+    #[serde(default)]
+    pub players: u32,
 }
+
+/// Estado del servidor que ven todas las PCs del grupo (el de la PC que lo aloja).
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HostState { pub state: String, pub detail: String, pub players: u32, pub host_name: String }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
@@ -298,6 +316,8 @@ struct Inner {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupStatus {
+    /// Estado del servidor en la PC que lo aloja (el mismo para todas las PCs del grupo).
+    pub host_state: Option<HostState>,
     pub server: String,
     pub me: String,
     pub lease: Option<Lease>,
@@ -409,6 +429,8 @@ pub struct MemberStatus {
     pub rtt_ms: Option<u64>,
     /// Huella de su foto de perfil (si esta PC ya la tiene guardada).
     pub avatar: Option<String>,
+    /// Cuenta de Minecraft con OP concedido por la propietaria.
+    pub mc_op: Option<String>,
 }
 
 fn majority(n: usize) -> usize { n / 2 + 1 }
@@ -866,6 +888,33 @@ impl GroupNode {
         Ok(())
     }
 
+    /// La propietaria concede OP de Minecraft a un integrante (por su cuenta de Minecraft).
+    /// Queda en la lista firmada: nadie más puede concederlo, ni a sí mismo.
+    pub fn grant_mc_op(&self, server: &str, node: &str, mc_name: &str) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria concede el OP de Minecraft."); }
+        if !host939_core::players::valid_name(mc_name) { bail!("Ese no es un nombre de Minecraft válido (3 a 16 letras, números o _)."); }
+        let mut s = network::load_share(server);
+        if s.member(node).is_none() { bail!("Esa PC no es del grupo."); }
+        s.mc_ops.retain(|o| o.node_id != node && !o.mc_name.eq_ignore_ascii_case(mc_name));
+        s.mc_ops.push(network::McOp { node_id: node.into(), mc_name: mc_name.into() });
+        s.mc_ops_revoked.retain(|n| !n.eq_ignore_ascii_case(mc_name));
+        self.inner.commit(server, &mut s)?;
+        audit(server, "mc-op-grant", mc_name);
+        Ok(())
+    }
+
+    /// La propietaria quita el OP concedido: la anfitriona se lo quita en el servidor.
+    pub fn revoke_mc_op(&self, server: &str, node: &str) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria quita el OP de Minecraft."); }
+        let mut s = network::load_share(server);
+        let gone: Vec<String> = s.mc_ops.iter().filter(|o| o.node_id == node).map(|o| o.mc_name.clone()).collect();
+        if gone.is_empty() { return Ok(()); }
+        s.mc_ops.retain(|o| o.node_id != node);
+        for n in gone { if !s.mc_ops_revoked.iter().any(|x| x.eq_ignore_ascii_case(&n)) { s.mc_ops_revoked.push(n.clone()); } audit(server, "mc-op-revoke", &n); }
+        if s.mc_ops_revoked.len() > 200 { let k = s.mc_ops_revoked.len() - 200; s.mc_ops_revoked.drain(0..k); }
+        self.inner.commit(server, &mut s)
+    }
+
     /// Reclamo de sucesión en curso (para la interfaz): (quién, segundos que faltan).
     pub fn succession_status(&self, server: &str) -> Option<(String, u64)> {
         let c = self.inner.with_state(server, |st| st.claim.clone())?;
@@ -1201,6 +1250,7 @@ impl GroupNode {
                 role: m.role.clone(), is_me, online, running, is_host: l.as_ref().map(|l| l.held_by(&m.node_id)).unwrap_or(false),
                 can_host, score, latest_at: latest.as_ref().map(|s| s.created_at.clone()), fresh: fresh(&latest), path: if is_me { String::new() } else { path }, rtt_ms,
                 avatar: if is_me { host939_core::avatar::own_hash() } else { info.and_then(|i| i.avatar.clone()).filter(|h| host939_core::avatar::has_peer(h)) },
+                mc_op: share.mc_ops.iter().find(|o| o.node_id == m.node_id).map(|o| o.mc_name.clone()),
             });
         }
         let i_am_host = l.as_ref().map(|l| l.held_by(&inner.me)).unwrap_or(false);
@@ -1226,7 +1276,14 @@ impl GroupNode {
         });
         let outgoing_request = outgoing.map(|o| OutgoingView { host_name: o.host_name.clone(), age_secs: o.at.elapsed().as_secs(), expires_in_secs: ttl.saturating_sub(o.at.elapsed()).as_secs() });
         let last_answer = answer.filter(|a| a.2.elapsed() < Duration::from_secs(90)).map(|a| AnswerView { accepted: a.0, message: a.1 });
+        let host_state = l.as_ref().filter(|l| l.state == LeaseState::Hosting).map(|l| {
+            let (state, detail, players) = if l.host == inner.me { inner.state_of(server) } else if host_online {
+                infos.get(&l.host).map(|i| (i.state.clone(), i.state_detail.clone(), i.players)).unwrap_or_default()
+            } else { ("unreachable".into(), String::new(), 0) };
+            HostState { state: if state.is_empty() { "unknown".into() } else { state }, detail, players, host_name: l.host_name.clone() }
+        });
         GroupStatus {
+            host_state,
             server: server.into(), me: inner.me.clone(), lease: l, i_am_host, host_online, my_latest, has_copy: has_copy(server), fenced, busy,
             can_start, auto_failover: share.auto_failover, handover_on_quit: share.handover_on_quit, majority: majority(share.members.len()), members,
             can_request, incoming_request, outgoing_request, last_answer,
@@ -1498,12 +1555,14 @@ impl Inner {
         match signed::accept_with(server, &mine, remote, &signed::Ctx { seen_for: &seen, wait_secs: wait, witnesses }) {
             Ok(()) => {
                 let prev_owner = signed::pin(&mine);
+                // Se toma la lista firmada completa (antes se copiaba campo por campo y un campo
+                // nuevo que se olvidara dejaba la firma sin coincidir). Solo quedan los datos que
+                // son de esta PC: si participa y sus invitaciones.
+                let (enabled, invites) = (mine.enabled, std::mem::take(&mut mine.invites));
+                mine = remote.clone();
+                mine.enabled = enabled;
+                mine.invites = invites;
                 mine.owner_pin = signed::owner_of(remote);
-                mine.members = remote.members.clone(); mine.auto_failover = remote.auto_failover; mine.handover_on_quit = remote.handover_on_quit;
-                mine.card = remote.card.clone(); mine.sig = remote.sig.clone();
-                mine.recovery = remote.recovery.clone(); mine.recovery_pending = remote.recovery_pending.clone();
-                mine.successor = remote.successor.clone(); mine.succession = remote.succession.clone(); mine.rsig = remote.rsig.clone();
-                mine.approved_mods = remote.approved_mods.clone(); mine.mod_policy = remote.mod_policy.clone(); mine.rejected_mods = remote.rejected_mods.clone();
                 if let Some(pk) = &mine.recovery_pending {
                     if self.mark_seen(server, &format!("reset:{pk}")) {
                         self.local.note(server, "La propietaria pidió cambiar el código de recuperación sin el código actual. Se aplica después de la espera de seguridad.");
@@ -1720,13 +1779,47 @@ impl Inner {
             latest: None, has_copy: false, running: self.local.is_running(server), can_host: false, score: 0,
             share_rev: rev(&share).unwrap_or(0), owner: signed::owner_of(&share).unwrap_or_default(), addr: None, peers: vec![], pending_mods: vec![],
             avatar: host939_core::avatar::own_hash(),
+            state: String::new(), state_detail: String::new(), players: 0,
         };
+        let (state, state_detail, players) = self.state_of(server);
+        let base = Info { state, state_detail, players, ..base };
         if !trusted { return base; }
         Info {
             latest: if copy { snapshots::latest(server) } else { None }, has_copy: copy,
             can_host: copy && share.member(&self.me).map(|m| m.can_host()).unwrap_or(false) && self.local.allow_hosting(server),
             score: self.local.score(), addr: Some(host939_p2p::shareable(&self.ep.addr(), self.relays)), peers,
             pending_mods: host939_core::modguard::pending(server), ..base
+        }
+    }
+
+    /// Estado detallado del servidor en esta PC, incluido lo que hace el grupo (traspaso o recuperación).
+    fn state_of(&self, server: &str) -> (String, String, u32) {
+        if let Some(b) = self.with_state(server, |s| s.busy.clone()) {
+            let st = if b.starts_with("Pasando") { "transferring" } else { "recovering" };
+            return (st.into(), b, 0);
+        }
+        self.local.run_state(server)
+    }
+
+    /// Aplica el OP de Minecraft que concedió (o quitó) la propietaria. Lo hace la PC que aloja,
+    /// con el servidor encendido, comparando con `ops.json` (así vale aunque cambie la anfitriona).
+    /// Nunca toca a quien la propietaria no nombró en la lista firmada.
+    fn apply_mc_ops(&self, server: &str, share: &ShareConfig) {
+        if share.mc_ops.is_empty() && share.mc_ops_revoked.is_empty() { return; }
+        if !self.local.is_running(server) { return; }
+        let ops_now: Vec<String> = host939_core::paths::read_json::<Vec<serde_json::Value>>(&host939_core::paths::server_run_dir(server).join("ops.json")).unwrap_or_default()
+            .iter().filter_map(|o| o.get("name").and_then(|n| n.as_str()).map(|n| n.to_ascii_lowercase())).collect();
+        for o in &share.mc_ops {
+            if !host939_core::players::valid_name(&o.mc_name) || share.member(&o.node_id).is_none() { continue; }
+            if !ops_now.contains(&o.mc_name.to_ascii_lowercase()) && self.local.command(server, &format!("op {}", o.mc_name)).is_ok() {
+                self.local.note(server, &format!("OP de Minecraft para {} (lo concedió la propietaria).", o.mc_name));
+            }
+        }
+        for n in &share.mc_ops_revoked {
+            if !host939_core::players::valid_name(n) || share.mc_ops.iter().any(|o| o.mc_name.eq_ignore_ascii_case(n)) { continue; }
+            if ops_now.contains(&n.to_ascii_lowercase()) && self.local.command(server, &format!("deop {n}")).is_ok() {
+                self.local.note(server, &format!("Se quitó el OP de Minecraft a {n} (lo decidió la propietaria)."));
+            }
         }
     }
 
@@ -2041,6 +2134,7 @@ impl Inner {
         match &l {
             Some(l) if l.held_by(&self.me) => {
                 if !self.local.is_running(server) && self.local.exited_unsaved(server) { self.publish_final(server).await; }
+                self.apply_mc_ops(server, &share);
                 self.host_checks(server, &share).await;
                 // La anfitriona tiene el servidor apagado y otra coanfitriona pidió alojarlo: no hay
                 // nada encendido que proteger, así que se le pasa sin esperar una respuesta manual.

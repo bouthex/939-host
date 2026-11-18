@@ -72,6 +72,24 @@ impl LocalHost for AppLocal {
         if mgr.wait_inactive(server, Duration::from_secs(620)) { Ok(()) } else { Err("El servidor no se detuvo a tiempo.".into()) }
     }
     fn exited_unsaved(&self, server: &str) -> bool { self.0.state::<Manager>().take_exit_unsaved(server) }
+    fn command(&self, server: &str, cmd: &str) -> Result<(), String> { self.0.state::<Manager>().send_command(server, cmd).map_err(|e| e.message) }
+    fn run_state(&self, server: &str) -> (String, String, u32) {
+        let rt = self.0.state::<Manager>().runtime(server);
+        let r = rt.lock().unwrap();
+        let players = r.players.len() as u32;
+        let (st, detail) = match r.status() {
+            RunStatus::Starting if r.restarting => ("restarting", r.phase.clone().unwrap_or_default()),
+            RunStatus::Starting => ("starting", r.phase.clone().unwrap_or_default()),
+            RunStatus::Running if r.saving => ("saving", String::new()),
+            RunStatus::Running if r.reach.as_deref() == Some("ok") => (if players > 0 { "running" } else { "ready" }, String::new()),
+            RunStatus::Running => ("preparing", "Comprobando la conexión".into()),
+            RunStatus::Stopping if r.restarting => ("restarting", "Guardando y deteniendo".into()),
+            RunStatus::Stopping => ("saving", "Guardando y deteniendo".into()),
+            RunStatus::Crashed => ("error", r.last_error.clone().unwrap_or_default()),
+            _ => ("stopped", String::new()),
+        };
+        (st.into(), detail, players)
+    }
     fn op(&self, server: &str, title: &str, stage: &str, fraction: Option<f64>) {
         let mut m = self.1.lock().unwrap();
         let op = m.entry((server.to_string(), title.to_string())).or_insert_with(|| self.0.state::<crate::ops::Ops>().begin(&self.0, server, title, stage, false));
@@ -416,6 +434,15 @@ pub async fn group_options(id: String, auto_failover: bool, handover_on_quit: bo
 pub async fn group_handover(id: String, target: Option<String>, cluster: State<'_, Cluster>) -> AppResult<String> {
     let node = cluster.node().await?.clone();
     node.handover(&id, target.as_deref()).await.map_err(|e| AppError::new("handover", e.to_string()))
+}
+
+#[tauri::command]
+pub async fn group_mc_op(id: String, node: String, mc_name: Option<String>, cluster: State<'_, Cluster>) -> AppResult<()> {
+    let n = cluster.node().await?;
+    match mc_name {
+        Some(name) => n.grant_mc_op(&id, &node, name.trim()),
+        None => n.revoke_mc_op(&id, &node),
+    }.map_err(|e| AppError::invalid(e.to_string()))
 }
 
 #[tauri::command]
