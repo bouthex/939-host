@@ -2151,7 +2151,10 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
                 return Resp::Err { msg: "Solo las PCs coanfitrionas pueden alojar el servidor.".into() };
             }
             if inner.with_state(&server, |s| s.infos.get(remote).map(|i| !i.can_host).unwrap_or(false)) {
-                return Resp::Err { msg: "Esa PC no tiene copia del servidor o tiene desactivado hostear.".into() };
+                // Lo guardado puede ser de antes de que esa PC terminara de copiar la configuración:
+                // se le pregunta de nuevo antes de rechazar.
+                let fresh_ok = matches!(inner.rpc_timeout(remote, &Req::Info { server: server.clone() }, Duration::from_secs(4)).await, Ok(Resp::Info(i)) if i.can_host);
+                if !fresh_ok { return Resp::Err { msg: "Esa PC no tiene copia del servidor o tiene desactivado hostear.".into() }; }
             }
             let name: String = pcname_or(&name);
             let symbol = if host939_core::pcname::valid_symbol(&symbol) { symbol } else { String::new() };
