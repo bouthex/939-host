@@ -31,6 +31,9 @@ fn canon(v: &serde_json::Value, out: &mut String) {
     }
 }
 
+/// JSON canónico como bytes.
+pub fn canonical(v: &serde_json::Value) -> Vec<u8> { let mut out = String::new(); canon(v, &mut out); out.into_bytes() }
+
 /// Lo que se firma: servidor, integrantes con sus roles, opciones y datos públicos (con la revisión).
 pub fn payload(server: &str, s: &ShareConfig) -> Vec<u8> {
     let v = serde_json::json!({

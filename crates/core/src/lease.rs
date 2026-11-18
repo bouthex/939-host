@@ -41,6 +41,46 @@ pub struct Lease {
     /// perder progreso. Lo fija quien suelta, con su último punto.
     #[serde(default)]
     pub required: (u64, u64),
+    /// Cómo se obtuvo este permiso (ver `LeaseKind`). Vacío solo en permisos anteriores a las firmas.
+    #[serde(default)]
+    pub kind: LeaseKind,
+    /// PC que emitió y firmó este permiso.
+    #[serde(default)]
+    pub issuer: String,
+    /// Permiso al que reemplaza (época, anfitriona, estado): la firma lo cubre, así que no se
+    /// puede encadenar a un estado que no existió.
+    #[serde(default)]
+    pub prev: Option<(u64, String, LeaseState)>,
+    /// Votos firmados de la elección (solo `Elected`): (PC que votó, firma).
+    #[serde(default)]
+    pub votes: Vec<(String, String)>,
+    /// Firma ed25519 de `issuer` sobre todo lo anterior (salvo los votos, que se firman aparte).
+    #[serde(default)]
+    pub sig: Option<String>,
+}
+
+/// Origen de un permiso. Cada tipo tiene su regla de autoridad (se verifica en el grupo):
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum LeaseKind {
+    /// Anterior a las firmas (solo se acepta el que ya estaba en disco).
+    #[default]
+    Legacy,
+    /// Época 1: lo emite la propietaria al compartir.
+    Genesis,
+    /// La anfitriona actual se lo entrega a otra PC.
+    Handover,
+    /// La anfitriona actual lo suelta (misma época).
+    Release,
+    /// Una PC que puede hostear toma un permiso soltado.
+    Claim,
+    /// Elegida por mayoría con votos firmados porque la anfitriona dejó de responder.
+    Elected,
+    /// «Recuperar aquí» de una coanfitriona: solo lo acepta quien tampoco tiene contacto con la
+    /// anfitriona anterior; una anfitriona que funciona lo rechaza.
+    Takeover,
+    /// La propietaria lo reasigna (control total del grupo).
+    Owner,
 }
 
 impl Lease {
@@ -78,18 +118,51 @@ pub fn claim(id: &str, expected: u64, host_name: &str) -> AppResult<Lease> {
     if cur_epoch != expected {
         return Err(AppError::busy("El estado del grupo cambió mientras tanto; se volvió a consultar."));
     }
-    let l = Lease { epoch: cur_epoch + 1, host: me, host_name: host_name.into(), state: LeaseState::Hosting, since: chrono::Local::now().to_rfc3339(), required: (0, 0) };
+    let prev = cur.as_ref().map(|c| (c.epoch, c.host.clone(), c.state));
+    let kind = match &cur { None => LeaseKind::Genesis, Some(c) if c.state == LeaseState::Released => LeaseKind::Claim, Some(_) => LeaseKind::Takeover };
+    let l = Lease { epoch: cur_epoch + 1, host: me.clone(), host_name: host_name.into(), state: LeaseState::Hosting, since: chrono::Local::now().to_rfc3339(), required: (0, 0), kind, issuer: me, prev, votes: vec![], sig: None };
     write(id, &l)?;
     Ok(l)
 }
+
+/// Permiso nuevo para esta PC sin escribirlo (lo firma y lo guarda el grupo con `store`).
+pub fn draft_claim(id: &str, expected: u64, host_name: &str, kind: LeaseKind) -> AppResult<Lease> {
+    let me = local_node().ok_or_else(|| AppError::new("lease", "Falta la identidad de esta PC."))?;
+    let cur = read(id);
+    let cur_epoch = cur.as_ref().map(|l| l.epoch).unwrap_or(0);
+    if cur_epoch != expected {
+        return Err(AppError::busy("El estado del grupo cambió mientras tanto; se volvió a consultar."));
+    }
+    let prev = cur.as_ref().map(|c| (c.epoch, c.host.clone(), c.state));
+    Ok(Lease { epoch: cur_epoch + 1, host: me.clone(), host_name: host_name.into(), state: LeaseState::Hosting, since: chrono::Local::now().to_rfc3339(), required: (0, 0), kind, issuer: me, prev, votes: vec![], sig: None })
+}
+
+/// Guarda un permiso ya verificado (o firmado por esta PC) y lo agrega al historial.
+pub fn store(id: &str, l: &Lease) -> AppResult<()> {
+    write(id, l)?;
+    let mut log = history(id);
+    if log.last() != Some(l) { log.push(l.clone()); }
+    let n = log.len();
+    if n > HISTORY_MAX { log.drain(0..n - HISTORY_MAX); }
+    paths::write_json(&paths::server_dir(id).join("lease-log.json"), &log)
+}
+
+/// Permisos verificados en orden (para que una PC atrasada pueda comprobar la cadena completa).
+pub fn history(id: &str) -> Vec<Lease> { paths::read_json(&paths::server_dir(id).join("lease-log.json")).unwrap_or_default() }
+const HISTORY_MAX: usize = 4096;
 
 /// Suelta el permiso de forma ordenada (después de apagar y de dejar el último punto).
 pub fn release(id: &str, required: (u64, u64)) -> AppResult<Option<Lease>> {
     let Some(mut l) = read(id) else { return Ok(None) };
     if Some(&l.host) != local_node().as_ref() { return Ok(Some(l)); }
+    l.prev = Some((l.epoch, l.host.clone(), l.state));
     l.state = LeaseState::Released;
     l.required = required;
     l.since = chrono::Local::now().to_rfc3339();
+    l.kind = LeaseKind::Release;
+    l.issuer = l.host.clone();
+    l.votes.clear();
+    l.sig = None;
     write(id, &l)?;
     Ok(Some(l))
 }
@@ -98,8 +171,10 @@ pub fn release(id: &str, required: (u64, u64)) -> AppResult<Option<Lease>> {
 /// Permiso que se le entregaría a otra PC (traspaso planificado). No se escribe: quien lo
 /// recibe lo adopta y recién entonces quien lo entrega lo adopta también.
 pub fn next_for(id: &str, to: &str, to_name: &str) -> Lease {
-    let cur_epoch = read(id).map(|l| l.epoch).unwrap_or(0);
-    Lease { epoch: cur_epoch + 1, host: to.into(), host_name: to_name.into(), state: LeaseState::Hosting, since: chrono::Local::now().to_rfc3339(), required: (0, 0) }
+    let cur = read(id);
+    let cur_epoch = cur.as_ref().map(|l| l.epoch).unwrap_or(0);
+    let prev = cur.as_ref().map(|c| (c.epoch, c.host.clone(), c.state));
+    Lease { epoch: cur_epoch + 1, host: to.into(), host_name: to_name.into(), state: LeaseState::Hosting, since: chrono::Local::now().to_rfc3339(), required: (0, 0), kind: LeaseKind::Handover, issuer: local_node().unwrap_or_default(), prev, votes: vec![], sig: None }
 }
 
 /// Toma forzada ("Recuperar aquí"): sube la época sin importar quién lo tenía. Si el anfitrión
@@ -118,7 +193,7 @@ pub fn adopt(id: &str, remote: &Lease) -> AppResult<bool> {
         Some(c) => remote.epoch > c.epoch
             || (remote.epoch == c.epoch && c.host == remote.host && c.state == LeaseState::Hosting && remote.state == LeaseState::Released),
     };
-    if newer { write(id, remote)?; }
+    if newer { store(id, remote)?; }
     Ok(newer)
 }
 
@@ -140,6 +215,7 @@ mod tests {
         std::fs::create_dir_all(paths::server_dir(&id)).unwrap();
         id
     }
+    fn blank() -> Lease { Lease { epoch: 0, host: String::new(), host_name: String::new(), state: LeaseState::Hosting, since: String::new(), required: (0, 0), kind: LeaseKind::Legacy, issuer: String::new(), prev: None, votes: vec![], sig: None } }
     fn rand_suffix() -> u64 { let mut b = [0u8; 8]; getrandom::getrandom(&mut b).unwrap(); u64::from_le_bytes(b) }
 
     #[test]
@@ -150,11 +226,11 @@ mod tests {
         assert_eq!(l.epoch, 1);
         assert!(can_start(&id).is_ok());
         // Otra PC toma el permiso (llega por la red con época mayor)
-        let remote = Lease { epoch: 2, host: "nodo-b".into(), host_name: "PC B".into(), state: LeaseState::Hosting, since: "x".into(), required: (0, 0) };
+        let remote = Lease { epoch: 2, host: "nodo-b".into(), host_name: "PC B".into(), state: LeaseState::Hosting, since: "x".into(), required: (0, 0), ..blank() };
         assert!(adopt(&id, &remote).unwrap());
         assert!(can_start(&id).is_err(), "con el permiso en otra PC no se enciende");
         // Un permiso viejo no pisa al nuevo
-        let stale = Lease { epoch: 1, host: "nodo-a".into(), host_name: "".into(), state: LeaseState::Hosting, since: "x".into(), required: (0, 0) };
+        let stale = Lease { epoch: 1, host: "nodo-a".into(), host_name: "".into(), state: LeaseState::Hosting, since: "x".into(), required: (0, 0), ..blank() };
         assert!(!adopt(&id, &stale).unwrap());
         assert_eq!(read(&id).unwrap().host, "nodo-b");
         // Claim con época desactualizada falla
@@ -167,7 +243,7 @@ mod tests {
         assert_eq!(mine.epoch, 3);
         assert!(mine.held_by("nodo-a"));
         // Un "soltado" de otro anfitrión con la misma época no se acepta
-        let fake = Lease { epoch: 3, host: "nodo-b".into(), host_name: "".into(), state: LeaseState::Released, since: "x".into(), required: (0, 0) };
+        let fake = Lease { epoch: 3, host: "nodo-b".into(), host_name: "".into(), state: LeaseState::Released, since: "x".into(), required: (0, 0), ..blank() };
         assert!(!adopt(&id, &fake).unwrap());
     }
 }

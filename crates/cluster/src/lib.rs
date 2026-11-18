@@ -17,13 +17,14 @@
 //!   otra PC del grupo si no hay camino directo). Si nadie está hosteando, el puerto responde con
 //!   un mensaje claro en la lista de servidores de Minecraft.
 
+pub mod cert;
 pub mod files;
 pub mod moving;
 pub mod signed;
 pub mod wire;
 
 use anyhow::{anyhow, bail, Context, Result};
-use host939_core::lease::{self, Lease, LeaseState};
+use host939_core::lease::{self, Lease, LeaseKind, LeaseState};
 use host939_core::network::{self, Invite, Member, ShareConfig};
 use host939_core::snapshots::{self, SnapshotInfo};
 use host939_p2p::Relays;
@@ -139,6 +140,8 @@ enum Req {
     Prefetch { server: String, snapshot: String },
     /// Una PC se va del grupo: se lo avisa a la propietaria, que firma la lista sin ella.
     Leave { server: String },
+    /// Cadena de permisos firmados posteriores a la época `after` (para PCs atrasadas).
+    LeaseChain { server: String, after: u64 },
 }
 
 impl Req {
@@ -146,7 +149,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } => server,
         }
     }
 }
@@ -177,7 +180,8 @@ enum Resp {
     Info(Info),
     Config { config: Option<serde_json::Value>, share: ShareConfig },
     Ok,
-    Vote { agree: bool },
+    Vote { agree: bool, #[serde(default)] sig: Option<String> },
+    Leases(Vec<Lease>),
     Err { msg: String },
 }
 
@@ -220,6 +224,8 @@ struct SrvState {
     inflight: HashSet<String>,
     /// Respuestas recibidas que todavía no se procesaron (permiso, grupo, nombres).
     inbox: Vec<(String, Info)>,
+    /// Permisos rechazados por firma, autoridad o encadenamiento (para diagnóstico y pruebas).
+    rejected: u32,
 }
 
 #[derive(Clone)]
@@ -436,7 +442,7 @@ impl GroupNode {
         let prev_rev = rev(&s).unwrap_or(0);
         s.card = Some(card_for(&cfg, prev_rev));
         self.inner.commit(server, &mut s)?;
-        lease::ensure(server, &self.inner.name()).map_err(|e| anyhow!(e.message))?;
+        if lease::read(server).is_none() { self.inner.new_lease(server, 0, LeaseKind::Genesis)?; }
         Ok(s)
     }
 
@@ -654,7 +660,8 @@ impl GroupNode {
         let share = network::load_share(server);
         if !share.enabled { return Ok(()); }
         let Some(l) = lease::read(server) else {
-            lease::ensure(server, &self.inner.name()).map_err(|e| anyhow!(e.message))?;
+            if !self.inner.is_owner(server) { bail!("Todavía no llegaron los datos del grupo. Esperá unos segundos con la anfitriona conectada."); }
+            self.inner.new_lease(server, 0, LeaseKind::Genesis)?;
             return Ok(());
         };
         if l.held_by(&self.inner.me) {
@@ -674,7 +681,7 @@ impl GroupNode {
                 if mine < l.required {
                     bail!("La última versión del mundo quedó en la PC de {}, que no está conectada. Esperá a que se conecte para copiarla, o usá «Recuperar aquí» con la versión que tenés.", nice(&l.host_name));
                 }
-                lease::claim(server, l.epoch, &self.inner.name()).map_err(|e| anyhow!(e.message))?;
+                self.inner.new_lease(server, l.epoch, LeaseKind::Claim)?;
                 self.inner.place_latest(server).await?;
                 self.inner.broadcast_lease(server).await;
                 Ok(())
@@ -734,7 +741,8 @@ impl GroupNode {
                 bail!("{} no pudo copiar el último estado ({e}). El servidor siguió en esta PC.", info.name);
             }
             if !still_mine() { bail!("El servidor cambió de anfitriona durante el traspaso; esta PC no lo vuelve a encender."); }
-            let next = lease::next_for(server, &target, &info.name);
+            let mut next = lease::next_for(server, &target, &info.name);
+            cert::sign(&inner.key, server, &mut next);
             let sent = inner.rpc(&target, &Req::Handover { server: server.into(), lease: next.clone(), snapshot: Some(snap.id.clone()) }).await;
             let accepted = match sent {
                 Ok(Resp::Ok) => true,
@@ -754,7 +762,7 @@ impl GroupNode {
                 }
             };
             let _ = accepted;
-            lease::adopt(server, &next).map_err(|e| anyhow!(e.message))?;
+            lease::store(server, &next).map_err(|e| anyhow!(e.message))?;
             inner.broadcast_lease(server).await;
             inner.local.note(server, &format!("Servidor pasado a {} (época {}).", info.name, next.epoch));
             Ok(info.name.clone())
@@ -790,7 +798,12 @@ impl GroupNode {
                 if confirmed > 0 || others.is_empty() { break; }
                 tokio::time::sleep(Duration::from_millis(1500)).await;
             }
-            lease::release(server, need).map_err(|e| anyhow!(e.message))?;
+            if let Some(mut l) = lease::release(server, need).map_err(|e| anyhow!(e.message))? {
+                if l.held_by(&inner.me) || (l.is_free() && l.host == inner.me) {
+                    cert::sign(&inner.key, server, &mut l);
+                    lease::store(server, &l).map_err(|e| anyhow!(e.message))?;
+                }
+            }
             inner.broadcast_lease(server).await;
             Ok(confirmed)
         }.await;
@@ -805,13 +818,15 @@ impl GroupNode {
         let inner = &self.inner;
         if !has_copy(server) { bail!("Esta PC no tiene copia de este servidor."); }
         if let Some(l) = lease::read(server) {
-            if l.state == LeaseState::Hosting && l.host != inner.me && inner.recently_ok(server, &l.host, Duration::from_secs(10)) {
+            if l.state == LeaseState::Hosting && l.host != inner.me && inner.recently_ok(server, &l.host, inner.timing.host_dead) {
                 bail!("{} está respondiendo: pedile que te lo pase.", nice(&l.host_name));
             }
         }
         inner.set_busy(server, Some("Recuperando el servidor en esta PC".into()));
         let r = async {
-            lease::force_claim(server, &inner.name()).map_err(|e| anyhow!(e.message))?;
+            let cur = lease::read(server).map(|l| l.epoch).unwrap_or(0);
+            let kind = if inner.is_owner(server) { LeaseKind::Owner } else if cur == 0 { bail!("Todavía no llegaron los datos del grupo.") } else { LeaseKind::Takeover };
+            inner.new_lease(server, cur, kind)?;
             inner.broadcast_lease(server).await;
             inner.place_latest(server).await?;
             inner.blocking(server, |l, s| l.prepare(s)).await?;
@@ -1062,6 +1077,77 @@ impl Inner {
         s.owner_pin = signed::owner_of(s);
         network::save_share(server, s).map_err(|e| anyhow!(e.message))
     }
+    /// Emite un permiso nuevo para esta PC (firmado) a partir de la época `expected`.
+    fn new_lease(&self, server: &str, expected: u64, kind: LeaseKind) -> Result<Lease> {
+        let mut l = lease::draft_claim(server, expected, &self.name(), kind).map_err(|e| anyhow!(e.message))?;
+        cert::sign(&self.key, server, &mut l);
+        lease::store(server, &l).map_err(|e| anyhow!(e.message))?;
+        Ok(l)
+    }
+
+    fn witnesses(&self, server: &str, l: &Lease) -> usize {
+        let share = network::load_share(server);
+        self.with_state(server, |s| s.infos.iter().filter(|(n, i)| share.member(n).is_some() && i.lease.as_ref() == Some(l)).count())
+    }
+
+    fn lease_verdict(&self, server: &str, share: &ShareConfig, cur: Option<&Lease>, next: &Lease) -> cert::Verdict {
+        let alive = |n: &str| self.recently_ok(server, n, self.timing.host_dead);
+        let wit = |l: &Lease| self.witnesses(server, l);
+        cert::check(server, cur, next, share, &cert::View { me: &self.me, host_alive: &alive, witnesses: &wit })
+    }
+
+    /// Verifica y, si corresponde, adopta un permiso informado por `from`. Si esta PC está
+    /// atrasada, pide la cadena a `from` y verifica cada eslabón. Devuelve si cambió.
+    async fn accept_lease(self: &Arc<Self>, server: &str, next: &Lease, from: &str) -> bool {
+        let share = network::load_share(server);
+        let cur = lease::read(server);
+        match self.lease_verdict(server, &share, cur.as_ref(), next) {
+            cert::Verdict::Accept => lease::store(server, next).is_ok(),
+            cert::Verdict::Stale => false,
+            cert::Verdict::Reject(why) => {
+                debug(&format!("{} rechazó un permiso de {}: {why}", self.name(), &from[..8.min(from.len())]));
+                self.with_state(server, |s| s.rejected += 1);
+                false
+            }
+            cert::Verdict::Gap => {
+                let after = cur.as_ref().map(|c| c.epoch).unwrap_or(0);
+                let chain = match self.rpc_timeout(from, &Req::LeaseChain { server: server.into(), after }, Duration::from_secs(6)).await {
+                    Ok(Resp::Leases(v)) => v,
+                    _ => vec![],
+                };
+                let alive = |n: &str| self.recently_ok(server, n, self.timing.host_dead);
+                let wit = |l: &Lease| self.witnesses(server, l);
+                let view = cert::View { me: &self.me, host_alive: &alive, witnesses: &wit };
+                match cert::check_chain(server, cur.as_ref(), &chain, next, &share, &view) {
+                    Ok(()) => {
+                        let mut at = cur.clone();
+                        for l in &chain {
+                            if at.as_ref().map(|a| l.epoch < a.epoch || l == a).unwrap_or(false) { continue; }
+                            if cert::check(server, at.as_ref(), l, &share, &view) == cert::Verdict::Accept {
+                                if lease::store(server, l).is_err() { return false; }
+                                at = Some(l.clone());
+                            }
+                            if l == next { break; }
+                        }
+                        true
+                    }
+                    Err(why) => {
+                        // Ancla de confianza: lo que informa directamente la propietaria (conexión
+                        // autenticada), si está bien firmado por quien lo emitió.
+                        let from_owner = signed::pin(&share).as_deref() == Some(from);
+                        let sig_ok = next.sig.as_deref().map(|s| cert::verify_sig(&next.issuer, &cert::payload(server, next), s)).unwrap_or(false);
+                        if from_owner && sig_ok && cur.as_ref().map(|c| next.epoch > c.epoch).unwrap_or(true) {
+                            return lease::store(server, next).is_ok();
+                        }
+                        debug(&format!("{} no pudo verificar la cadena de {}: {why}", self.name(), &from[..8.min(from.len())]));
+                        self.with_state(server, |s| s.rejected += 1);
+                        false
+                    }
+                }
+            }
+        }
+    }
+
     fn is_owner(&self, server: &str) -> bool { network::load_share(server).member(&self.me).map(|m| m.role == "propietario").unwrap_or(false) }
 
     fn name(&self) -> String { self.name.read().unwrap().0.clone() }
@@ -1352,7 +1438,7 @@ impl Inner {
             if let Some(a) = &info.addr { self.learn(a.clone()); }
             for p in &info.peers { self.learn(p.clone()); }
             if let Some(remote) = &info.lease {
-                if lease::adopt(server, remote).unwrap_or(false) { self.after_lease_change(server).await; }
+                if self.accept_lease(server, remote, &node).await { self.after_lease_change(server).await; }
             }
             if info.share_rev > rev(&share).unwrap_or(0) && newest_share.as_ref().map(|(r, _)| info.share_rev > *r).unwrap_or(true) {
                 newest_share = Some((info.share_rev, node.clone()));
@@ -1478,17 +1564,24 @@ impl Inner {
         let need = majority(share.members.len());
         let mut votes = 1;
         let mut voters = vec![self.name()];
+        let mut signed_votes: Vec<(String, String)> = vec![];
+        let msg = cert::vote_payload(server, l.epoch, &self.me);
         for m in share.members.iter().filter(|m| m.node_id != self.me && m.node_id != l.host) {
             let req = Req::Vote { server: server.into(), epoch: l.epoch, candidate: self.me.clone(), fresh: my_fresh };
-            if let Ok(Resp::Vote { agree: true }) = self.rpc_timeout(&m.node_id, &req, Duration::from_secs(4)).await {
+            if let Ok(Resp::Vote { agree: true, sig: Some(sig) }) = self.rpc_timeout(&m.node_id, &req, Duration::from_secs(4)).await {
+                if !cert::verify_sig(&m.node_id, &msg, &sig) { continue; }
                 votes += 1;
                 voters.push(m.name.clone());
+                signed_votes.push((m.node_id.clone(), sig));
             }
         }
         debug(&format!("{}: votos {votes}/{need} ({})", self.name(), voters.join(", ")));
         if votes < need { return; }
-        // Puede que otra PC haya avanzado mientras tanto: `claim` falla si la época cambió.
-        if lease::claim(server, l.epoch, &self.name()).is_err() { return; }
+        // Puede que otra PC haya avanzado mientras tanto: falla si la época cambió.
+        let Ok(mut next) = lease::draft_claim(server, l.epoch, &self.name(), LeaseKind::Elected) else { return };
+        next.votes = signed_votes;
+        cert::sign(&self.key, server, &mut next);
+        if lease::store(server, &next).is_err() { return; }
         self.local.note(server, &format!("{} no responde. Elegida esta PC por mayoría ({}): levantando el servidor acá.", nice(&l.host_name), voters.join(", ")));
         self.broadcast_lease(server).await;
         self.become_host(server, None, None).await;
@@ -1602,20 +1695,21 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             Resp::Config { config, share }
         }
         Req::Lease { server, lease: l } => {
-            match lease::adopt(&server, &l) {
-                Ok(true) => { inner.after_lease_change(&server).await; Resp::Ok }
-                Ok(false) => Resp::Ok,
-                Err(e) => Resp::Err { msg: e.message },
-            }
+            if inner.accept_lease(&server, &l, remote).await { inner.after_lease_change(&server).await; }
+            Resp::Ok
+        }
+        Req::LeaseChain { server, after } => {
+            Resp::Leases(lease::history(&server).into_iter().filter(|l| l.epoch > after || (l.epoch == after && l.state == LeaseState::Released)).take(512).collect())
         }
         Req::Handover { server, lease: l, snapshot } => {
             if l.host != inner.me { return Resp::Err { msg: "El permiso no es para esta PC.".into() }; }
-            let cur = lease::read(&server);
-            if cur.as_ref().map(|c| !c.held_by(remote) || l.epoch <= c.epoch).unwrap_or(false) {
+            if l.kind != LeaseKind::Handover || l.issuer != remote {
                 return Resp::Err { msg: "Quien pasa el servidor no es la anfitriona actual según esta PC.".into() };
             }
             if !has_copy(&server) || !inner.local.allow_hosting(&server) { return Resp::Err { msg: "Esta PC no puede hostear este servidor.".into() }; }
-            if let Err(e) = lease::adopt(&server, &l) { return Resp::Err { msg: e.message }; }
+            if !inner.accept_lease(&server, &l, remote).await || lease::read(&server).as_ref() != Some(&l) {
+                return Resp::Err { msg: "Quien pasa el servidor no es la anfitriona actual según esta PC.".into() };
+            }
             let inner2 = inner.clone();
             let from = remote.to_string();
             tokio::spawn(async move { inner2.become_host(&server, Some(from), snapshot).await; });
@@ -1630,12 +1724,15 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
                 let host_seen = s.last_ok.get(&l.host).copied().unwrap_or(inner.started);
                 if host_seen.elapsed() < inner.timing.host_dead.mul_f32(0.8) { return false; }
                 if cand < mine { return false; }
+                if !network::load_share(&server).member(&candidate).map(|m| m.can_host()).unwrap_or(false) { return false; }
+                if candidate != remote { return false; }
                 match &s.voted {
                     Some((e, c)) if *e == epoch && *c != candidate => false,
                     _ => { s.voted = Some((epoch, candidate.clone())); true }
                 }
             });
-            Resp::Vote { agree }
+            let sig = agree.then(|| cert::sign_vote(&inner.key, &server, epoch, &candidate));
+            Resp::Vote { agree, sig }
         }
         Req::SyncNow { server } => {
             let inner2 = inner.clone();
