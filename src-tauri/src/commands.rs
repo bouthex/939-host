@@ -379,6 +379,7 @@ pub async fn mods_plan(id: String, project_id: String, version_id: Option<String
 #[tauri::command]
 pub async fn mods_install(app: AppHandle, id: String, project_id: String, version_id: Option<String>) -> AppResult<Vec<mods::InstalledMod>> {
     let cfg = instance::load(&id)?;
+    mods_writable(&id)?;
     let plan = mods::plan_install(&Modrinth, &cfg, &project_id, version_id.as_deref()).await?;
     let ev = app.state::<Manager>().events.clone();
     let res = mods::apply_plan(&cfg, &plan, |msg, f| ev.mods_progress(&id, msg, f)).await?;
@@ -389,12 +390,94 @@ pub async fn mods_install(app: AppHandle, id: String, project_id: String, versio
 #[tauri::command]
 pub async fn mods_list(id: String, online: bool) -> AppResult<Vec<ModFileStatus>> {
     let cfg = instance::load(&id)?;
-    mods::scan(&Modrinth, &cfg, online).await
+    let list = mods::scan(&Modrinth, &cfg, online).await?;
+    // Un archivo agregado desde la PC que Modrinth reconoce se vincula solo (antes había que tocar
+    // «Vincular»): así recibe actualizaciones y se ve con su nombre. Los que no están en ningún
+    // catálogo quedan como mods locales; funcionan igual.
+    let to_link: Vec<String> = list.iter().filter(|x| !x.managed && x.project_id.is_some() && !x.issues.iter().any(|i| i == "duplicate" || i == "client_only")).map(|x| x.file_name.clone()).collect();
+    if online && !to_link.is_empty() {
+        let mut linked = false;
+        for f in &to_link { linked |= mods::link_file(&Modrinth, &cfg, f).await.is_ok(); }
+        if linked { return mods::scan(&Modrinth, &cfg, online).await; }
+    }
+    Ok(list)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModsSettings { pub auto_updates: bool }
+
+#[tauri::command]
+pub fn mods_settings(id: String) -> AppResult<ModsSettings> {
+    instance::load(&id)?;
+    Ok(ModsSettings { auto_updates: mods::load_manifest(&id).auto_updates })
+}
+
+#[tauri::command]
+pub fn mods_set_auto_updates(id: String, on: bool) -> AppResult<()> {
+    instance::load(&id)?;
+    let mut m = mods::load_manifest(&id);
+    m.auto_updates = on;
+    mods::save_manifest(&id, &m)
+}
+
+/// Mods de un servidor compartido: solo los cambia la PC que lo aloja (en otra PC se pisarían con
+/// el estado del grupo y, al llegar a las demás, quedarían en cuarentena).
+fn mods_writable(id: &str) -> AppResult<()> {
+    if snapshots::writes_line(id) { Ok(()) } else { Err(AppError::invalid("Este servidor lo aloja otra PC del grupo: los mods se cambian desde la PC anfitriona.")) }
+}
+
+/// Quita todos los mods (con punto de recuperación previo).
+#[tauri::command]
+pub async fn mods_remove_all(app: AppHandle, id: String) -> AppResult<Vec<String>> {
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        let mgr = app.state::<Manager>();
+        if mgr.runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de quitar los mods.")); }
+        mods_writable(&id)?;
+        mgr.note(&id, "Creando un punto de recuperación antes de quitar todos los mods…");
+        if paths::server_run_dir(&id).join("world").join("level.dat").exists() {
+            snapshots::take(&mgr, &id, "Antes de quitar todos los mods", "manual", &cfg.mc_version)?;
+        }
+        let moved = mods::remove_all(&cfg)?;
+        mgr.note(&id, &format!("Se quitaron {} mods (están en la Papelera de 939 Host).", moved.len()));
+        mark_restart(&app, &id);
+        mgr.changed(&id);
+        Ok(moved)
+    }).await
+}
+
+/// Aplica las actualizaciones elegidas (ya revisadas en la interfaz) con un punto previo.
+#[tauri::command]
+pub async fn mods_update_apply(app: AppHandle, id: String, project_ids: Vec<String>) -> AppResult<Vec<String>> {
+    let cfg = instance::load(&id)?;
+    mods_writable(&id)?;
+    {
+        let (app2, id2, mc) = (app.clone(), id.clone(), cfg.mc_version.clone());
+        blocking(move || {
+            if paths::server_run_dir(&id2).join("world").join("level.dat").exists() {
+                snapshots::take(&app2.state::<Manager>(), &id2, "Antes de actualizar mods", "manual", &mc)?;
+            }
+            Ok(())
+        }).await?;
+    }
+    let ev = app.state::<Manager>().events.clone();
+    let mut done = vec![];
+    for pid in project_ids.iter().take(500) {
+        // Se recalcula todo: versión compatible con esta versión de Minecraft y este loader,
+        // dependencias y hash verificado (no se confía en lo que manda la interfaz).
+        let plan = mods::plan_install(&Modrinth, &cfg, pid, None).await?;
+        mods::apply_plan(&cfg, &plan, |msg, f| ev.mods_progress(&id, msg, f)).await?;
+        done.extend(plan.items.iter().filter(|i| i.project_id == *pid).map(|i| format!("{} {}", i.title, i.version.version_number)));
+    }
+    mark_restart(&app, &id);
+    Ok(done)
 }
 
 #[tauri::command]
 pub async fn mods_remove(app: AppHandle, id: String, project_id: String) -> AppResult<Vec<String>> {
     let cfg = instance::load(&id)?;
+    mods_writable(&id)?;
     let r = mods::remove(&cfg, &project_id)?;
     mark_restart(&app, &id);
     Ok(r)
@@ -403,6 +486,7 @@ pub async fn mods_remove(app: AppHandle, id: String, project_id: String) -> AppR
 #[tauri::command]
 pub async fn mods_set_aside(app: AppHandle, id: String, file_name: String) -> AppResult<()> {
     let cfg = instance::load(&id)?;
+    mods_writable(&id)?;
     mods::set_aside_file(&cfg, &file_name)?;
     mark_restart(&app, &id);
     Ok(())

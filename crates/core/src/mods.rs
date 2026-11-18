@@ -34,6 +34,10 @@ pub struct InstalledMod {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Manifest {
     pub mods: Vec<InstalledMod>,
+    /// «Buscar actualizaciones compatibles automáticamente»: al abrir los mods se buscan versiones
+    /// nuevas para esta versión de Minecraft y este loader. Nunca se instalan sin revisarlas.
+    #[serde(default)]
+    pub auto_updates: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -400,8 +404,12 @@ pub async fn check_updates<S: Source>(src: &S, cfg: &ServerConfig) -> AppResult<
     let mut out = HashMap::new();
     for m in load_manifest(&cfg.id).mods {
         if let Ok(list) = src.project_versions(&m.project_id, &cfg.mc_version, loader).await {
+            let installed_date = list.iter().find(|v| v.id == m.version_id).map(|v| v.date_published.clone());
             if let Some(best) = modrinth::best_version(list, &cfg.mc_version, loader) {
-                if best.id != m.version_id { out.insert(m.project_id.clone(), best); }
+                // Nunca se propone volver atrás (por ejemplo, de una beta nueva a una versión
+                // estable más vieja): solo versiones posteriores a la instalada.
+                let newer = installed_date.map(|d| best.date_published > d).unwrap_or(true);
+                if best.id != m.version_id && newer { out.insert(m.project_id.clone(), best); }
             }
         }
     }
@@ -484,7 +492,7 @@ mod tests {
     #[tokio::test]
     async fn plan_rejects_incompatible_with_installed() {
         let cfg = server(&root());
-        save_manifest(&cfg.id, &Manifest { mods: vec![InstalledMod { project_id: "bad".into(), version_id: "bad1".into(), title: "BAD".into(), version_number: "1".into(), file_name: "bad1.jar".into(), sha1: "x".into(), side: "both".into(), explicit: true, required_by: vec![], depends_on: vec![], origin: None }] }).unwrap();
+        save_manifest(&cfg.id, &Manifest { mods: vec![InstalledMod { project_id: "bad".into(), version_id: "bad1".into(), title: "BAD".into(), version_number: "1".into(), file_name: "bad1.jar".into(), sha1: "x".into(), side: "both".into(), explicit: true, required_by: vec![], depends_on: vec![], origin: None }], auto_updates: false }).unwrap();
         let err = plan_install(&fake(), &cfg, "a", None).await.unwrap_err();
         assert!(err.message.contains("incompatible"), "{}", err.message);
     }
@@ -555,6 +563,10 @@ pub struct ImportReport {
     pub skipped_duplicate: Vec<String>,
     pub skipped_existing: Vec<String>,
     pub not_mods: Vec<String>,
+    /// No se copiaron porque no pueden funcionar en este servidor (otro loader u otra versión de
+    /// Minecraft), con el motivo.
+    #[serde(default)]
+    pub skipped_incompatible: Vec<String>,
     /// Mods del servidor que declaraban como obligatoria una dependencia de cliente (por ejemplo,
     /// Mod Menu): se ajustó con el archivo oficial de Fabric para que el servidor no la exija.
     #[serde(default)]
@@ -579,14 +591,17 @@ pub fn import_files(cfg: &ServerConfig, files: &[PathBuf]) -> AppResult<ImportRe
         for e in rd.flatten() { if let Some(m) = jar_meta(&e.path()) { present.insert(m.id); } }
     }
     let mut best: HashMap<String, (std::time::SystemTime, PathBuf, String)> = HashMap::new();
-    let mut r = ImportReport { copied: vec![], skipped_client: vec![], skipped_duplicate: vec![], skipped_existing: vec![], not_mods: vec![], client_deps_ignored: vec![] };
+    let mut r = ImportReport { copied: vec![], skipped_client: vec![], skipped_duplicate: vec![], skipped_existing: vec![], not_mods: vec![], skipped_incompatible: vec![], client_deps_ignored: vec![] };
     let mut metas = vec![];
     for p in files {
         if !p.is_file() { continue; }
         let name = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
         if !name.to_lowercase().ends_with(".jar") { if !name.is_empty() { r.not_mods.push(name); } continue; }
         let mtime = std::fs::metadata(p).and_then(|x| x.modified()).unwrap_or(std::time::UNIX_EPOCH);
-        match jar_meta(p) { Some(m) => metas.push((mtime, p.clone(), name, m)), None => r.not_mods.push(name) }
+        let Some(m) = jar_meta(p) else { r.not_mods.push(name); continue };
+        // Compatibilidad antes de copiar: loader y versión de Minecraft que declara el propio mod.
+        if let Some(why) = incompatibility(cfg, p) { r.skipped_incompatible.push(format!("{} ({name}): {why}", if m.name.is_empty() { &m.id } else { &m.name })); continue; }
+        metas.push((mtime, p.clone(), name, m));
     }
     // Un mod «solo de cliente» nunca se copia al servidor. Si un mod del servidor lo declara como
     // obligatorio (pasa con Mod Menu), en Fabric se usa el archivo oficial de dependencias para
@@ -619,6 +634,46 @@ pub fn import_files(cfg: &ServerConfig, files: &[PathBuf]) -> AppResult<ImportRe
     }
     r.copied.sort();
     Ok(r)
+}
+
+/// ¿Por qué este jar no puede funcionar en el servidor? (None = puede)
+pub fn incompatibility(cfg: &ServerConfig, jar: &Path) -> Option<String> {
+    let j = crate::repair::read_jar(jar);
+    if j.corrupt { return Some("el archivo está dañado".into()); }
+    let want = match cfg.loader { Loader::Fabric => "fabric", Loader::Forge => "forge", Loader::NeoForge => "neoforge", Loader::Vanilla => return Some("el servidor es Vanilla (no carga mods)".into()) };
+    if j.kind.is_empty() { return None; }
+    let fabric_jar = j.kind == "fabric";
+    if fabric_jar != (want == "fabric") {
+        let name = |k: &str| match k { "fabric" => "Fabric", "neoforge" => "NeoForge", _ => "Forge" };
+        return Some(format!("es para {}, y este servidor usa {}", name(&j.kind), name(want)));
+    }
+    if let Some(conds) = j.depends.get("minecraft") {
+        let ok = if fabric_jar { conds.iter().any(|c| crate::repair::fabric_matches(c, &cfg.mc_version)) } else { conds.iter().any(|c| crate::repair::maven_matches(c, &cfg.mc_version)) };
+        if !ok { return Some(format!("pide Minecraft {}, y este servidor usa {}", conds.join(" o "), cfg.mc_version)); }
+    }
+    None
+}
+
+/// Quita todos los mods del servidor: los archivos van juntos a la Papelera de 939 Host (se
+/// pueden recuperar) y el registro de mods queda vacío. No toca el mundo, las configuraciones,
+/// la cuarentena ni las aprobaciones. Devuelve los archivos apartados.
+pub fn remove_all(cfg: &ServerConfig) -> AppResult<Vec<String>> {
+    let dir = mods_dir(&cfg.id);
+    let jars: Vec<PathBuf> = std::fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().map(|x| x.eq_ignore_ascii_case("jar")).unwrap_or(false)).collect()).unwrap_or_default();
+    if jars.is_empty() { return Ok(vec![]); }
+    let slot = paths::trash_slot(&format!("{}-mods-todos", cfg.id));
+    std::fs::create_dir_all(&slot).map_err(|e| AppError::io("No se pudo preparar la Papelera", e))?;
+    let mut moved = vec![];
+    for p in jars {
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        paths::rename_retry(&p, slot.join(&name)).map_err(|e| AppError::io("No se pudo apartar un mod", e))?;
+        moved.push(name);
+    }
+    let mut m = load_manifest(&cfg.id);
+    m.mods.clear();
+    save_manifest(&cfg.id, &m)?;
+    moved.sort();
+    Ok(moved)
 }
 
 /// Vincula un archivo agregado a mano con su proyecto de Modrinth (identificado por hash), para

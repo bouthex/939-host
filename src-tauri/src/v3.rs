@@ -280,6 +280,7 @@ pub async fn mods_project(project: String) -> AppResult<ProjectDetail> {
 pub async fn mods_import_files(app: AppHandle, id: String, paths: Vec<String>) -> AppResult<mods::ImportReport> {
     let cfg = instance::load(&id)?;
     if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de importar mods.")); }
+    if !host939_core::snapshots::writes_line(&id) { return Err(AppError::invalid("Este servidor lo aloja otra PC del grupo: los mods se cambian desde la PC anfitriona.")); }
     let files: Vec<std::path::PathBuf> = paths.into_iter().take(200).map(std::path::PathBuf::from).collect();
     let r = blocking(move || mods::import_files(&cfg, &files)).await?;
     app.state::<Manager>().changed(&id);

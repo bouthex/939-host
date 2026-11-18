@@ -899,4 +899,43 @@ version="2.0"
         assert!(maven_matches("[47,)", "52.0.1") && maven_matches("(,2.0]", "2.0") && !maven_matches("(,2.0)", "2.0"));
         assert!(maven_matches("[1.20.1,1.21),[1.21.4,1.22)", "1.21.5") && !maven_matches("[1.20.1,1.21),[1.21.4,1.22)", "1.21.2"));
     }
+
+    /// Importar desde cualquier carpeta: un mod que no está en ningún catálogo entra igual; uno para
+    /// otro loader u otra versión de Minecraft no se copia y se explica por qué.
+    #[test]
+    fn importar_desde_cualquier_carpeta_con_compatibilidad() {
+        let cfg = cfg_fabric();
+        let src = tempfile::tempdir().unwrap();
+        let sub = src.path().join("Descargas").join("mis mods");
+        std::fs::create_dir_all(&sub).unwrap();
+        jar(&sub, "mi-mod-propio.jar", "fabric.mod.json", r#"{"id":"mimodpropio","name":"Mi mod propio","version":"0.1","depends":{"minecraft":"~26.2"}}"#);
+        jar(&sub, "viejo.jar", "fabric.mod.json", r#"{"id":"viejo","name":"Mod viejo","version":"1","depends":{"minecraft":"1.20.1"}}"#);
+        jar(&sub, "forge.jar", "META-INF/mods.toml", "[[mods]]\nmodId=\"deforge\"\nversion=\"1\"\n");
+        let files: Vec<std::path::PathBuf> = ["mi-mod-propio.jar", "viejo.jar", "forge.jar"].iter().map(|f| sub.join(f)).collect();
+        let r = mods::import_files(&cfg, &files).unwrap();
+        assert_eq!(r.copied, vec!["mi-mod-propio.jar".to_string()]);
+        assert_eq!(r.skipped_incompatible.len(), 2, "{:?}", r.skipped_incompatible);
+        assert!(r.skipped_incompatible.iter().any(|x| x.contains("1.20.1")));
+        assert!(r.skipped_incompatible.iter().any(|x| x.contains("Forge")));
+        assert!(sub.join("viejo.jar").exists(), "los originales no se tocan");
+    }
+
+    #[test]
+    fn eliminar_todos_los_mods_sin_tocar_lo_demas() {
+        let cfg = cfg_fabric();
+        let run = paths::server_run_dir(&cfg.id);
+        let dir = mods::mods_dir(&cfg.id);
+        mods_like_the_real_ones(&dir, true);
+        std::fs::write(dir.join("notas.txt"), "no es un mod").unwrap();
+        std::fs::create_dir_all(run.join("config")).unwrap();
+        std::fs::write(run.join("config/stonevaults.json"), "{}").unwrap();
+        std::fs::create_dir_all(run.join("world")).unwrap();
+        std::fs::write(run.join("world/level.dat"), "mundo").unwrap();
+        let moved = mods::remove_all(&cfg).unwrap();
+        assert_eq!(moved.len(), 4);
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".jar")));
+        assert!(dir.join("notas.txt").exists() && run.join("config/stonevaults.json").exists() && run.join("world/level.dat").exists());
+        assert!(mods::load_manifest(&cfg.id).mods.is_empty());
+        assert!(mods::remove_all(&cfg).unwrap().is_empty(), "sin mods no hace nada");
+    }
 }
