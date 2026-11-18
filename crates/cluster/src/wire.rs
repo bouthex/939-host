@@ -24,6 +24,14 @@ pub async fn write_msg<W: AsyncWrite + Unpin, T: Serialize>(w: &mut W, v: &T) ->
     write_frame(w, &serde_json::to_vec(v)?).await
 }
 
+/// Pedidos entrantes (lo que manda otra PC antes de saber si es del grupo): mucho más chico que
+/// una respuesta, para que nadie pueda hacer reservar 8 MB por pedido.
+pub const MAX_REQ: usize = 512 * 1024;
+
+pub async fn read_req<R: AsyncRead + Unpin, T: DeserializeOwned>(r: &mut R) -> Result<T> {
+    Ok(serde_json::from_slice(&read_frame(r, MAX_REQ).await?)?)
+}
+
 pub async fn read_msg<R: AsyncRead + Unpin, T: DeserializeOwned>(r: &mut R) -> Result<T> {
     Ok(serde_json::from_slice(&read_frame(r, MAX_MSG).await?)?)
 }

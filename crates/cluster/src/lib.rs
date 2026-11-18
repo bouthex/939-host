@@ -2022,7 +2022,7 @@ impl ProtocolHandler for Handler {
             let learn = !std::mem::replace(&mut learned, true);
             let rid = conn.remote_id();
             tokio::spawn(async move {
-                let Ok(req) = wire::read_msg::<_, Req>(&mut recv).await else { return };
+                let Ok(req) = wire::read_req::<_, Req>(&mut recv).await else { return };
                 if !host939_core::paths::valid_server_id(req.server()) {
                     let _ = wire::write_msg(&mut send, &Resp::Err { msg: "Servidor inválido.".into() }).await;
                     let _ = send.finish();
@@ -2273,7 +2273,7 @@ impl ProtocolHandler for SyncH {
             let inner = self.0.clone();
             let remote = remote.clone();
             tokio::spawn(async move {
-                let Ok(req) = wire::read_msg::<_, SyncReq>(&mut recv).await else { return };
+                let Ok(req) = wire::read_req::<_, SyncReq>(&mut recv).await else { return };
                 match req {
                     SyncReq::Manifest { server, snap } => {
                         let bytes = if inner.may_sync(&server, &remote) { snapshots::manifest_bytes(&server, &snap).unwrap_or_default() } else { vec![] };
@@ -2338,7 +2338,7 @@ impl ProtocolHandler for BridgeH {
             let inner = self.0.clone();
             let remote = remote.clone();
             tokio::spawn(async move {
-                let Ok(req) = wire::read_msg::<_, BridgeReq>(&mut recv).await else { return };
+                let Ok(req) = wire::read_req::<_, BridgeReq>(&mut recv).await else { return };
                 if !inner.local.allow_bridge() || !inner.is_member(&req.server, &remote) || !inner.is_member(&req.server, &req.target) || req.target == inner.me {
                     let _ = send.reset(1u32.into());
                     return;
@@ -2360,7 +2360,7 @@ impl ProtocolHandler for JoinH {
         let remote = conn.remote_id().to_string();
         let Ok((mut send, mut recv)) = conn.accept_bi().await else { return Ok(()) };
         let inner = &self.0;
-        let reply = match wire::read_msg::<_, JoinReq>(&mut recv).await {
+        let reply = match wire::read_req::<_, JoinReq>(&mut recv).await {
             Ok(req) => {
                 // Límite de intentos antes de autenticar (por PC y en total): adivinar un secreto de
                 // 128 bits no es viable, pero así tampoco se puede usar para cargar a esta PC.

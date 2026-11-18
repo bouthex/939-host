@@ -338,3 +338,36 @@ mod t {
         assert!(check_chain("srv", Some(&gen), &[h3.clone()], &h3, &g, &v).is_err());
     }
 }
+
+#[cfg(test)]
+mod costo {
+    /// Costo de verificar un permiso y una lista firmada (se corre con --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn medir_verificacion() {
+        use super::*;
+        use host939_core::network::Member;
+        let k = |n: u8| SecretKey::from_bytes(&[n; 32]);
+        let (o, c) = (k(1), k(2));
+        let mut g = ShareConfig { enabled: true, ..Default::default() };
+        for (key, r) in [(&o, "propietario"), (&c, "coanfitrion")] { g.members.push(Member { node_id: key.public().to_string(), name: "x".into(), joined_at: "t".into(), role: r.into() }); }
+        for i in 0..18u8 { g.members.push(Member { node_id: k(10 + i).public().to_string(), name: "x".into(), joined_at: "t".into(), role: "jugador".into() }); }
+        g.owner_pin = Some(o.public().to_string());
+        g.card = Some(serde_json::json!({ "rev": 1 }));
+        let mut gen = Lease { epoch: 1, host: o.public().to_string(), host_name: "h".into(), state: LeaseState::Hosting, since: "t".into(), required: (0, 0), kind: LeaseKind::Genesis, issuer: String::new(), prev: None, votes: vec![], sig: None };
+        sign(&o, "s", &mut gen);
+        let mut h = Lease { epoch: 2, host: c.public().to_string(), kind: LeaseKind::Handover, prev: Some((1, o.public().to_string(), LeaseState::Hosting)), ..gen.clone() };
+        sign(&o, "s", &mut h);
+        let alive = |_: &str| true; let wit = |_: &Lease| 0usize;
+        let v = View { me: "x", host_alive: &alive, witnesses: &wit };
+        let n = 2000;
+        let t = std::time::Instant::now();
+        for _ in 0..n { assert_eq!(check("s", Some(&gen), &h, &g, &v), Verdict::Accept); }
+        let lease_us = t.elapsed().as_micros() as f64 / n as f64;
+        let mut g2 = g.clone(); g2.card = Some(serde_json::json!({ "rev": 2 })); crate::signed::sign(&o, "s", &mut g2);
+        let t = std::time::Instant::now();
+        for _ in 0..n { assert!(crate::signed::accept("s", &g, &g2)); }
+        let list_us = t.elapsed().as_micros() as f64 / n as f64;
+        println!("verificar un permiso: {lease_us:.1} µs · verificar una lista de 20 PCs: {list_us:.1} µs");
+    }
+}

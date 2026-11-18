@@ -102,6 +102,17 @@ pub fn write_for(cfg: &ServerConfig) -> AppResult<()> {
         ("server-ip", if crate::settings::load().lan_access { String::new() } else { "127.0.0.1".to_string() }),
     ];
     for (k, v) in managed { map.insert(k.to_string(), v); }
+    // Servidores compartidos: server.properties viaja entre las PCs del grupo con cada punto de
+    // restauración. Para que otra PC no pueda abrir por ahí un acceso remoto a la consola de la
+    // anfitriona (RCON, query o el protocolo de administración con una clave que ella conoce),
+    // en una PC que aloja un servidor del grupo esos accesos quedan apagados o solo locales.
+    // 939 Host maneja la consola por la entrada estándar: no los necesita.
+    if crate::network::load_share(&cfg.id).enabled {
+        map.insert("enable-rcon".into(), "false".into());
+        map.insert("enable-query".into(), "false".into());
+        map.insert("management-server-host".into(), "localhost".into());
+        if map.get("management-server-enabled").map(|v| v == "true").unwrap_or(false) { map.insert("management-server-enabled".into(), "false".into()); }
+    }
 
     let mut text = String::from("# Generado por 939 Host. Los cambios hechos desde la app reemplazan las claves administradas.\n");
     for (k, v) in &map {

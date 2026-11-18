@@ -354,7 +354,7 @@ pub fn manifest_bytes(id: &str, snap_id: &str) -> AppResult<Vec<u8>> {
 fn decode_manifest(bytes: &[u8]) -> AppResult<Snapshot> {
     if bytes.len() > 64 * 1024 * 1024 { return Err(AppError::invalid("Índice demasiado grande.")); }
     let mut json = vec![];
-    flate2::read::GzDecoder::new(bytes).take(512 * 1024 * 1024).read_to_end(&mut json).map_err(|e| AppError::io("Índice recibido dañado", e))?;
+    flate2::read::GzDecoder::new(bytes).take(128 * 1024 * 1024).read_to_end(&mut json).map_err(|e| AppError::io("Índice recibido dañado", e))?;
     let s: Snapshot = serde_json::from_slice(&json)?;
     if s.info.id.contains(['/', '\\', '.']) || s.info.id.is_empty() { return Err(AppError::invalid("Identificador de punto inválido.")); }
     for f in &s.files {

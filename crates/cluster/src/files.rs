@@ -63,7 +63,7 @@ impl ProtocolHandler for FilesH {
             let inner = self.0.clone();
             let remote = remote.clone();
             tokio::spawn(async move {
-                let Ok(req) = wire::read_msg::<_, FileReq>(&mut recv).await else { return };
+                let Ok(req) = wire::read_req::<_, FileReq>(&mut recv).await else { return };
                 let _ = inner.serve_files(&remote, req, &mut send, &mut recv).await;
                 let _ = send.finish();
                 let _ = send.stopped().await;
