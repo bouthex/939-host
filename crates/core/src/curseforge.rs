@@ -23,6 +23,18 @@ pub const CLASS_MODPACKS: u32 = 4471;
 pub fn key() -> Option<String> { crate::settings::curseforge_key().filter(|k| k.len() > 20) }
 pub fn available() -> bool { key().is_some() }
 
+/// Nombre de archivo que viene de la API: tiene que ser un nombre simple (sin carpetas, `..`
+/// ni nombres especiales de Windows), para que nunca se escriba fuera de la carpeta destino.
+pub fn safe_name(name: &str) -> AppResult<&str> {
+    let ok = !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != ".." && crate::files::clean(name).map(|p| p.components().count() == 1).unwrap_or(false);
+    if ok { Ok(name) } else { Err(AppError::invalid("CurseForge devolvió un nombre de archivo inválido.")) }
+}
+
+/// Huella obligatoria: sin SHA-1 publicado por CurseForge no se descarga.
+pub fn required_sha1(f: &CfFile) -> AppResult<net::Hash<'_>> {
+    f.sha1().map(net::Hash::Sha1).ok_or_else(|| AppError::new("cf_hash", format!("CurseForge no publicó la huella de «{}»: no se descarga sin poder verificarlo.", f.file_name)))
+}
+
 pub fn loader_type(l: Loader) -> Option<u32> {
     match l { Loader::Forge => Some(1), Loader::Fabric => Some(4), Loader::NeoForge => Some(6), Loader::Vanilla => None }
 }
@@ -195,11 +207,12 @@ pub async fn apply(cfg: &ServerConfig, plan: &CfPlan) -> AppResult<Vec<String>> 
     let mut done = vec![];
     for it in &plan.items {
         let url = it.file.download_url.clone().unwrap();
-        let staging = paths::cache().join("curseforge").join(format!("{}-{}", it.file.id, it.file.file_name));
-        let hash = it.file.sha1().map(net::Hash::Sha1).unwrap_or(net::Hash::None);
+        let fname = safe_name(&it.file.file_name)?;
+        let staging = paths::cache().join("curseforge").join(format!("{}-{}", it.file.id, fname));
+        let hash = required_sha1(&it.file)?;
         net::download(&url, &staging, hash, |_, _| {}).await?;
         if let Some(old) = manifest.mods.iter().find(|m| m.project_id == manifest_id(it.mod_id)) { let _ = std::fs::remove_file(dir.join(&old.file_name)); }
-        std::fs::copy(&staging, dir.join(&it.file.file_name)).map_err(|e| AppError::io("No se pudo copiar el mod", e))?;
+        std::fs::copy(&staging, dir.join(fname)).map_err(|e| AppError::io("No se pudo copiar el mod", e))?;
         manifest.mods.retain(|m| m.project_id != manifest_id(it.mod_id));
         manifest.mods.push(mods::InstalledMod {
             project_id: manifest_id(it.mod_id), version_id: it.file.id.to_string(), title: it.title.clone(), version_number: it.file.display_name.clone(),

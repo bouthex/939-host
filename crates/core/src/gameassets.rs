@@ -39,7 +39,7 @@ pub fn extract(jar: &Path, out: &Path) -> AppResult<usize> {
     let mut n = 0;
     for i in 0..z.len() {
         let mut e = match z.by_index(i) { Ok(e) => e, Err(_) => continue };
-        let name = e.name().to_string();
+        let Ok(name) = e.name().map(|n| n.to_string()) else { continue };
         let Some(prefix) = PREFIXES.iter().find(|p| name.starts_with(**p)) else { continue };
         if !name.ends_with(".png") || name.contains("..") || e.size() > 512 * 1024 { continue; }
         let rel = &name["assets/minecraft/textures/".len()..];

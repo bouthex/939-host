@@ -70,6 +70,9 @@ fn webview_memory(window: &tauri::Window) {
 /// una sola página: un único proceso de render alcanza.
 fn browser_args() -> String {
     let mut a = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,OptimizationHints,MediaRouter,msEdgeTranslate,AutofillServerCommunication         --disable-background-networking --disable-component-update --disable-sync --no-pings --renderer-process-limit=1");
+    // Puerto de depuración de WebView2 solo en la compilación de prueba de la CI (característica
+    // `pruebas`): la app que se entrega no lo abre aunque exista la variable de entorno.
+    #[cfg(feature = "pruebas")]
     if let Some(port) = std::env::var("H939_E2E_DEVTOOLS_PORT").ok().and_then(|p| p.parse::<u16>().ok()) { a.push_str(&format!(" --remote-debugging-port={port}")); }
     a
 }

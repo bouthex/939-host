@@ -86,7 +86,7 @@ fn extract_dir(path: &Path, prefix: &str, run: &Path) -> AppResult<usize> {
     let mut n = 0;
     for i in 0..z.len() {
         let mut e = z.by_index(i).map_err(|e| AppError::invalid("Modpack dañado").with_detail(e))?;
-        let name = e.name().to_string();
+        let name = e.name().map(|n| n.to_string()).map_err(|e| AppError::invalid("Modpack dañado").with_detail(e))?;
         let Some(rel) = name.strip_prefix(prefix) else { continue };
         if rel.is_empty() || e.is_dir() { continue; }
         let rel = files::clean(rel)?;
@@ -140,7 +140,8 @@ pub async fn apply(id: &str, pack: &Path, mut progress: impl FnMut(&str, f64)) -
             let cf = crate::curseforge::file(pid, fid).await?;
             progress(&format!("Descargando {}", cf.file_name), i as f64 / total);
             let Some(url) = cf.download_url.clone() else { rep.blocked.push(cf.display_name.clone()); continue };
-            net::download(&url, &dir.join(&cf.file_name), cf.sha1().map(net::Hash::Sha1).unwrap_or(net::Hash::None), |_, _| {}).await?;
+            let fname = crate::curseforge::safe_name(&cf.file_name)?;
+            net::download(&url, &dir.join(fname), crate::curseforge::required_sha1(&cf)?, |_, _| {}).await?;
             rep.downloaded += 1;
             manifest.mods.retain(|x| x.project_id != crate::curseforge::manifest_id(pid));
             manifest.mods.push(mods::InstalledMod { project_id: crate::curseforge::manifest_id(pid), version_id: fid.to_string(), title: cf.display_name.clone(), version_number: cf.display_name.clone(),

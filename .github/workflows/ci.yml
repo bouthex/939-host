@@ -18,31 +18,31 @@ jobs:
     name: Pruebas
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Pruebas del núcleo, la red P2P y el grupo
-        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster --features host939-cluster/pruebas
 
   windows:
     name: Compilar Windows x64
     runs-on: ubuntu-24.04
     needs: pruebas
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Herramientas
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
           rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: windows-gnu
       - name: Compilar
         run: scripts/compilar-windows.sh
       - name: Instalador, portable y SHA-256
         run: scripts/empaquetar.sh "$(scripts/version.sh)"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: 939Host-windows-${{ github.sha }}
           path: |

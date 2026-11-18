@@ -34,3 +34,7 @@ sysinfo = "0.33"
 # Misma versión que usa Tauri (wry): para bajar la memoria de WebView2 con la ventana minimizada.
 webview2-com = "0.39"
 windows-core = "0.62"
+
+[features]
+# Compilación de prueba de la CI (puerto de depuración para la prueba de interfaz). Nunca en releases.
+pruebas = []

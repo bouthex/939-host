@@ -19,22 +19,24 @@ jobs:
     name: Compilar instalador y portable
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Herramientas
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
           rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: windows-gnu
       - run: scripts/compilar-windows.sh
         env:
-          # Clave de la API de CurseForge (secreto del repositorio; si no existe, queda vacía y la
-          # app explica cómo configurarla). Nunca va en el código.
-          H939_CURSEFORGE_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+          # Compilación de prueba: habilita el puerto de depuración para la prueba de interfaz.
+          # Los releases se compilan sin esta característica.
+          CARGO_FEATURES: pruebas
+      - name: Sin secretos en el ejecutable
+        run: scripts/verificar-secretos.sh target/x86_64-pc-windows-gnu/release/939Host.exe
       - run: scripts/empaquetar.sh "$(scripts/version.sh)"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: 939Host-windows-prueba
           path: |
@@ -48,13 +50,13 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: windows-msvc
       - name: Pruebas automáticas (incluye PCs congeladas y recuperación)
-        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster -- --test-threads 1
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster --features host939-cluster/pruebas -- --test-threads 1
       - name: Loaders reales (Vanilla, Fabric, Forge, NeoForge)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_loaders -- --ignored --nocapture
@@ -95,7 +97,7 @@ jobs:
         run: cargo test --locked -p host939-core --test v3_features -- --ignored --nocapture
       - name: Traspaso de anfitrión con servidores reales (dos PCs por P2P)
         if: ${{ !cancelled() }}
-        run: cargo test --locked -p host939-cluster --test multi_node real_minecraft_handover -- --ignored --nocapture
+        run: cargo test --locked -p host939-cluster --features pruebas --test multi_node real_minecraft_handover -- --ignored --nocapture
 
   app-windows:
     name: App instalada en Windows (interfaz real)
@@ -103,8 +105,8 @@ jobs:
     needs: compilar
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: 939Host-windows-prueba
           path: dist
@@ -119,7 +121,7 @@ jobs:
           $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
           if (!(Test-Path $exe)) { throw "No se instaló en $exe" }
           Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
       - run: pip install playwright==1.48.0 pillow psutil
@@ -147,7 +149,7 @@ jobs:
           Get-Process java -ErrorAction SilentlyContinue | Format-Table Id, CPU, WS
           python ci/windows/volcar_capturas.py capturas
           if ($code -ne 0) { exit $code }
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: capturas-windows
@@ -193,29 +195,29 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: windows-msvc-node
-      - run: cargo build --locked --release -p host939-cluster --bin 939node
+      - run: cargo build --locked --release -p host939-cluster --features pruebas --bin 939node
       - name: Arrancar la PC anfitriona
         shell: bash
         run: |
           mkdir -p sig
           NODE_BIN="$PWD/target/release/939node.exe" nohup python ci/dos-pcs/pc.py anfitriona sig > anfitriona.log 2>&1 &
           ci/dos-pcs/esperar_archivo.sh sig/invitacion.txt 600 anfitriona.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with: { name: dos-pcs-invitacion, path: sig/invitacion.txt, retention-days: 1 }
       - name: Esperar el servidor encendido
         shell: bash
         run: ci/dos-pcs/esperar_archivo.sh sig/encendido.txt 1500 anfitriona.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with: { name: dos-pcs-encendido, path: sig/encendido.txt, retention-days: 1 }
       - name: Esperar el traspaso
         shell: bash
         run: ci/dos-pcs/esperar_archivo.sh sig/anfitriona-fin.txt 1500 anfitriona.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with: { name: dos-pcs-anfitriona-fin, path: sig/anfitriona-fin.txt, retention-days: 1 }
       - name: Esperar a la otra PC y resultado
         if: always()
@@ -235,12 +237,12 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: windows-msvc-node
-      - run: cargo build --locked --release -p host939-cluster --bin 939node
+      - run: cargo build --locked --release -p host939-cluster --features pruebas --bin 939node
       - name: Esperar la invitación de la otra PC
         shell: bash
         run: ci/dos-pcs/artefacto.sh dos-pcs-invitacion sig 2400
@@ -251,7 +253,7 @@ jobs:
           ci/dos-pcs/artefacto.sh dos-pcs-encendido sig 1500 invitada.log
           ci/dos-pcs/artefacto.sh dos-pcs-anfitriona-fin sig 1500 invitada.log
           ci/dos-pcs/esperar_archivo.sh sig/invitada-fin.txt 300 invitada.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with: { name: dos-pcs-invitada-fin, path: sig/invitada-fin.txt, retention-days: 1, if-no-files-found: ignore }
       - name: Resultado
@@ -268,17 +270,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Pantalla virtual y OpenGL por software
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xvfb libgl1 libgl1-mesa-dri libglx-mesa0 libegl1 libxrandr2 libxcursor1 libxi6 libxxf86vm1 libxtst6 libasound2t64 libpulse0
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "25"
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: linux-cliente
       - name: Entrar con el cliente real (Vanilla y Fabric)

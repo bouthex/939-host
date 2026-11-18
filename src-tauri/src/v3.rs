@@ -549,8 +549,8 @@ pub async fn modpack_prepare(path: Option<String>, modrinth_project: Option<Stri
         fs.sort_by(|a, b| a.release_type.cmp(&b.release_type).then(b.file_date.cmp(&a.file_date)));
         let f = fs.into_iter().next().ok_or_else(|| AppError::invalid("Ese modpack no tiene archivos."))?;
         let url = f.download_url.clone().filter(|_| p.allow_mod_distribution != Some(false)).ok_or_else(|| AppError::new("cf_blocked", "El autor de este modpack no permite descargarlo desde otras apps. Bajalo desde CurseForge y elegí el archivo con «Desde un archivo»."))?;
-        let dst = host939_core::paths::cache().join("modpacks").join(&f.file_name);
-        host939_core::net::download(&url, &dst, f.sha1().map(host939_core::net::Hash::Sha1).unwrap_or(host939_core::net::Hash::None), |_, _| {}).await?;
+        let dst = host939_core::paths::cache().join("modpacks").join(cf::safe_name(&f.file_name)?);
+        host939_core::net::download(&url, &dst, cf::required_sha1(&f)?, |_, _| {}).await?;
         dst
     } else { return Err(AppError::invalid("Elegí un modpack.")); };
     let info = modpack::inspect(&file)?;

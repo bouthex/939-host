@@ -16,10 +16,10 @@ jobs:
     name: Pruebas
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup toolchain install
       - name: Pruebas del núcleo, la red P2P y el grupo
-        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster --features host939-cluster/pruebas
 
   compilar:
     name: Compilar Windows x64
@@ -28,7 +28,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verificar etiqueta y versión
         id: version
         run: |
@@ -50,11 +50,11 @@ jobs:
       # Sin caché en las versiones publicadas: compilación limpia y reproducible.
       - name: Compilar
         run: scripts/compilar-windows.sh
-        env:
-          H939_CURSEFORGE_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+      - name: Sin secretos ni ganchos de prueba en el ejecutable
+        run: scripts/verificar-secretos.sh target/x86_64-pc-windows-gnu/release/939Host.exe --release
       - name: Instalador, portable y SHA-256
         run: scripts/empaquetar.sh "${{ steps.version.outputs.version }}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: entrega
           path: |
@@ -62,7 +62,7 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS.txt
       # Binarios sueltos para la versión firmada (mismo commit, misma compilación).
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: binarios
           path: |
@@ -78,12 +78,12 @@ jobs:
       id-token: write        # atestación de procedencia
       attestations: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: entrega
           path: dist
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
             dist/*.exe

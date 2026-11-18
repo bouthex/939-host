@@ -226,9 +226,15 @@ pub async fn install(mgr: &Manager, id: String) {
             let lv = cfg.loader_version.clone().ok_or_else(|| AppError::invalid(format!("Falta la versión de {name}")))?;
             let url = meta::installer_url(cfg.loader, &cfg.mc_version, &lv).ok_or_else(|| AppError::invalid("Loader sin instalador"))?;
             let installer = paths::cache().join("installers").join(format!("{}-{}-{}-installer.jar", name.to_lowercase(), cfg.mc_version, lv));
+            // Huella SHA-1 que publica el repositorio Maven oficial junto al instalador: se exige
+            // siempre (también para uno ya descargado antes, por si se alteró en la caché).
+            let sha = net::get_text(&format!("{url}.sha1"), &format!("la huella del instalador de {name}")).await?;
+            let sha = sha.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+            if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(AppError::new("install", format!("El repositorio de {name} no publicó una huella válida del instalador."))); }
+            if installer.exists() && !net::sha1_file(&installer).map(|h| h.eq_ignore_ascii_case(&sha)).unwrap_or(false) { let _ = std::fs::remove_file(&installer); }
             if !installer.exists() {
                 report(&format!("Descargando el instalador de {name}"), 0.62);
-                net::download(&url, &installer, net::Hash::None, |_, _| {}).await?;
+                net::download(&url, &installer, net::Hash::Sha1(&sha), |_, _| {}).await?;
             }
             report(&format!("Instalando {name} (descarga sus librerías; puede tardar unos minutos)"), 0.7);
             let java = java::installed_java(jv).ok_or_else(|| AppError::new("java", "Falta Java para el instalador."))?;
@@ -258,16 +264,18 @@ pub async fn install(mgr: &Manager, id: String) {
         if cfg.loader == Loader::Fabric {
             report("Instalando Fabric", 0.92);
             let lv = cfg.loader_version.clone().ok_or_else(|| AppError::invalid("Falta la versión de Fabric"))?;
-            let official = async {
-                let url = meta::fabric_server_launcher_url(&cfg.mc_version, &lv).await?;
-                net::download(&url, &run.join("fabric-server-launch.jar"), net::Hash::None, |_, _| {}).await?;
-                paths::write_atomic(&run.join("fabric-server-launcher.properties"), b"serverJar=server.jar\n")
-            }.await;
-            if let Err(e) = official {
-                // Plan B: si el servicio de Fabric no responde, se arma desde su repositorio Maven.
-                report("Instalando Fabric desde su repositorio", 0.93);
-                let _ = std::fs::remove_file(run.join("fabric-server-launch.jar"));
-                meta::fabric_install_maven(&run, &cfg.mc_version, &lv).await.map_err(|e2| AppError::new("install", "No se pudo instalar Fabric.").with_detail(format!("{} / {}", e.message, e2.message)))?;
+            // Desde el repositorio Maven oficial de Fabric, con cada librería verificada por la
+            // huella SHA-1 que publica. El lanzador generado por meta.fabricmc.net no tiene huella
+            // publicada: queda solo como respaldo si el repositorio no responde.
+            let _ = std::fs::remove_file(run.join("fabric-server-launch.jar"));
+            if let Err(e) = meta::fabric_install_maven(&run, &cfg.mc_version, &lv).await {
+                report("Instalando Fabric con su lanzador oficial", 0.93);
+                let official = async {
+                    let url = meta::fabric_server_launcher_url(&cfg.mc_version, &lv).await?;
+                    net::download(&url, &run.join("fabric-server-launch.jar"), net::Hash::None, |_, _| {}).await?;
+                    paths::write_atomic(&run.join("fabric-server-launcher.properties"), b"serverJar=server.jar\n")
+                }.await;
+                official.map_err(|e2| AppError::new("install", "No se pudo instalar Fabric.").with_detail(format!("{} / {}", e.message, e2.message)))?;
             }
         }
 

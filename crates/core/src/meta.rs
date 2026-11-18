@@ -284,10 +284,11 @@ pub async fn fabric_install_maven(run: &std::path::Path, mc: &str, loader: &str)
         let rel = maven_path(&coord).ok_or_else(|| AppError::invalid(format!("Coordenada inválida: {coord}")))?;
         let url = format!("{}/{}", base.trim_end_matches('/'), rel);
         let sha = net::get_text(&format!("{url}.sha1"), "la huella de una librería").await?;
-        let sha = sha.split_whitespace().next().unwrap_or("").to_string();
+        let sha = sha.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(AppError::invalid(format!("El repositorio de Fabric no publicó una huella válida para {coord}."))); }
         let dest = run.join("libraries").join(&rel);
-        if !(dest.exists() && net::sha1_file(&dest).map(|h| h == sha).unwrap_or(false)) {
-            net::download(&url, &dest, if sha.len() == 40 { net::Hash::Sha1(&sha) } else { net::Hash::None }, |_, _| {}).await?;
+        if !(dest.exists() && net::sha1_file(&dest).map(|h| h.eq_ignore_ascii_case(&sha)).unwrap_or(false)) {
+            net::download(&url, &dest, net::Hash::Sha1(&sha), |_, _| {}).await?;
         }
         cp.push(format!("libraries/{rel}"));
     }

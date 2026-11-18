@@ -2004,6 +2004,7 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
     match req {
         Req::Info { server } => {
             // Solo pruebas: simula una PC que responde lento (por ejemplo, ocupada apagando).
+            #[cfg(feature = "pruebas")]
             if let Some(ms) = std::env::var("H939_TEST_SLOW_INFO_MS").ok().and_then(|v| v.parse::<u64>().ok()) { tokio::time::sleep(Duration::from_millis(ms)).await; }
             Resp::Info(inner.my_info(&server, remote))
         }
@@ -2159,8 +2160,12 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             let cur = lease::read(&server);
             if !cur.as_ref().map(|c| c.held_by(remote)).unwrap_or(false) { return Resp::Err { msg: "Quien pide copiar no es la anfitriona según esta PC.".into() }; }
             if !has_copy(&server) || !inner.local.allow_hosting(&server) { return Resp::Err { msg: "Esta PC no puede hostear este servidor.".into() }; }
-            if std::env::var("H939_TEST_FAIL_PREFETCH").is_ok() { return Resp::Err { msg: "falla simulada al copiar".into() }; }
-            if let Some(secs) = std::env::var("H939_TEST_SLOW_PREFETCH").ok().and_then(|v| v.parse::<u64>().ok()) { tokio::time::sleep(Duration::from_secs(secs)).await; }
+            // Solo en compilaciones de prueba (característica `pruebas`): nunca en la app que se entrega.
+            #[cfg(feature = "pruebas")]
+            {
+                if std::env::var("H939_TEST_FAIL_PREFETCH").is_ok() { return Resp::Err { msg: "falla simulada al copiar".into() }; }
+                if let Some(secs) = std::env::var("H939_TEST_SLOW_PREFETCH").ok().and_then(|v| v.parse::<u64>().ok()) { tokio::time::sleep(Duration::from_secs(secs)).await; }
+            }
             // Una sola copia a la vez (la sincronización periódica espera).
             for _ in 0..600 {
                 if inner.with_state(&server, |s| if s.syncing { false } else { s.syncing = true; true }) { break; }
