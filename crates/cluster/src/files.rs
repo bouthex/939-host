@@ -100,9 +100,10 @@ impl Inner {
             Ok(a) => a,
             Err(e) => return wire::write_msg(send, &FileResp { ok: false, error: Some(e), code: Some("denied".into()), ..Default::default() }).await,
         };
-        // Lo que llega por acá a `mods/` viene de otra PC: queda marcado como recibido y no se
-        // ejecuta sin la aprobación de la propietaria (`modguard`).
-        let mods_before = if write { Some(host939_core::modguard::snapshot(&server)) } else { None };
+        // Lo que llega por acá a `mods/` viene de otra PC: se coloca y queda marcado como recibido
+        // en un solo paso (`modguard::foreign_write`), y no se ejecuta sin la aprobación de la
+        // propietaria.
+        let mut received_n = 0usize;
         let _g = if write {
             match write_lock(&server) { Some(g) => Some(g), None => return wire::write_msg(send, &FileResp { ok: false, error: Some("Hay otra operación con archivos en curso en este servidor.".into()), code: Some("busy".into()), ..Default::default() }).await }
         } else { None };
@@ -123,7 +124,10 @@ impl Inner {
             FileReq::Search { q, .. } => lf::search(&server, &q, active, 200).map(|entries| FileResp { ok: true, entries, ..Default::default() }).unwrap_or_else(fail),
             FileReq::Mkdir { path, .. } => lf::mkdir(&server, &path, active).map(|_| ok()).unwrap_or_else(fail),
             FileReq::Delete { path, .. } => { let r = lf::delete(&server, &path, active).map(|_| ok()).unwrap_or_else(fail); if r.ok { self.local.note(&server, &format!("Una PC del grupo mandó «{path}» a la Papelera.")); } r }
-            FileReq::Transfer { from, to, mv, replace, .. } => lf::transfer(&server, &from, &to, mv, replace, active).map(|_| ok()).unwrap_or_else(fail),
+            FileReq::Transfer { from, to, mv, replace, .. } => match host939_core::modguard::foreign_write(&server, || lf::transfer(&server, &from, &to, mv, replace, active)) {
+                Ok((_, n)) => { received_n += n; ok() }
+                Err(e) => fail(e),
+            },
             FileReq::Download { path, .. } => {
                 // Primero el tamaño; después las partes. Si el cliente corta, se deja de leer.
                 let first = match lf::read_chunk(&server, &path, 0, 0, active) { Ok((_, total)) => total, Err(e) => return wire::write_msg(send, &fail(e)).await };
@@ -156,14 +160,17 @@ impl Inner {
                     Ok(())
                 }.await;
                 match res {
-                    Ok(()) => lf::commit_upload(&server, &path, &tmp, replace, self.local.is_running(&server)).map(|_| ok()).unwrap_or_else(fail),
+                    Ok(()) => match host939_core::modguard::foreign_write(&server, || lf::commit_upload(&server, &path, &tmp, replace, self.local.is_running(&server))) {
+                        Ok((_, n)) => { received_n += n; ok() }
+                        Err(e) => fail(e),
+                    },
                     Err(e) => { let _ = std::fs::remove_file(&tmp); FileResp { ok: false, error: Some(format!("La subida no terminó: {e}")), ..Default::default() } }
                 }
             }
         };
-        if let Some(b) = mods_before {
-            let n = host939_core::modguard::record_received(&server, &b);
-            if n > 0 { self.local.note(&server, &format!("Una PC del grupo agregó {n} mod(s): no se cargan hasta que la propietaria los apruebe.")); super::audit(&server, "mods-received", remote); }
+        if received_n > 0 {
+            self.local.note(&server, &format!("Una PC del grupo agregó {received_n} mod(s): no se cargan hasta que la propietaria los apruebe."));
+            super::audit(&server, "mods-received", remote);
         }
         wire::write_msg(send, &resp).await
     }

@@ -20,13 +20,13 @@ no las haya.
 
 | Concepto | Cantidad |
 |---|---|
-| Vueltas de red team | 6 (la sexta no encontró fallas nuevas en el código; agregó las pruebas que faltaban) |
-| Pruebas automáticas que corren sin red (Linux) | 98, todas pasan |
+| Vueltas de red team | 7 (la sexta no encontró fallas nuevas; la séptima encontró una carrera en la cuarentena de mods) |
+| Pruebas automáticas que corren sin red (Linux) | 100, todas pasan |
 | Pruebas que necesitan servidores reales, relays o Windows (CI de Windows) | 21, pasan en la CI |
 | Pruebas ofensivas de grupo (`crates/cluster/tests/seguridad.rs`) | 10 pruebas con 28 comprobaciones de ataque |
 | Variantes de permiso de anfitrión falsificado | 9 |
-| Fallas nuevas encontradas por el red team (además de R1–R7) | 15 |
-| Fallas nuevas corregidas | 15 |
+| Fallas nuevas encontradas por el red team (además de R1–R7) | 16 |
+| Fallas nuevas corregidas | 16 |
 | Fallas nuevas sin corregir | 0 (los riesgos de diseño que quedan están en «Riesgos residuales») |
 | Regresiones de funcionamiento introducidas por las correcciones | 2, corregidas (ver abajo) |
 
@@ -84,6 +84,7 @@ aprovechar o de efecto acotado.
 | 13 | 4 | Desvío de la cuarentena: desde su PC, una coanfitriona reemplazaba los argumentos de Java de Forge, una librería, `server.jar` o el lanzador de Fabric, y su código corría en la anfitriona | Alta | Coanfitriona | Nada de lo que decide qué programa arranca se toca desde otra PC | `mods_de_otra_pc_necesitan_aprobacion` |
 | 14 | 4 | Inundación de pedidos: solo la unión tenía límite | Media (DoS) | Cualquier integrante | Límites por PC y por canal | `mensajes_malformados_y_enormes` |
 | 15 | 5 | Envenenamiento de direcciones: cualquier integrante podía reemplazar la dirección de otra PC por un relay propio o una IP ajena | Media (privacidad y DoS) | Jugadora | Dirección propia solo de esa PC; las de terceros solo de quien puede hostear y con relays de n0 | `direcciones_falsas_de_otras_pcs_no_se_aceptan` |
+| 16 | 7 | Carrera en la cuarentena: un `.jar` de otra PC ya estaba en `mods/` pero todavía no figuraba como recibido; si en ese instante corría la aprobación automática de la propietaria, lo aprobaba (firmado y para siempre) y se ejecutaba en su PC. Además, un mod cuya huella no se podía leer se salteaba en silencio | Alta | Coanfitriona (repitiendo subidas hasta ganar la carrera) | Colocar y registrar van juntos dentro de un candado que también toman la aprobación automática y el control antes de encender; falla cerrado si no se puede leer un mod o guardar el registro | `modguard::t::aprobacion_automatica_no_ve_lo_que_esta_entrando`, `modguard::t::registro_que_no_se_guarda_falla_cerrado` |
 
 **Regresiones de funcionamiento introducidas por las correcciones, ya corregidas:**
 
@@ -105,6 +106,42 @@ función sin estado (`vote_conditions`), con el mismo comportamiento.
 | Abrir sitios externos desde la interfaz | Solo dominios exactos de una lista (ya corregido en R15). |
 | Subida de RAM de una jugadora (de 15 a 49 MB) en la medición | **Falsa alarma.** El entorno de pruebas tenía `RUST_BACKTRACE=1`, y un error esperado cargaba los símbolos de depuración. Sin esa variable: 15 MB. |
 | Sincronización más lenta (0,60 a 0,80 s) | **No es una regresión.** La versión anterior a la vuelta 3 también da 0,80 s, y una posterior da 0,60 s. El valor salta de a 0,2 s según cuándo cae la consulta periódica. |
+
+## Séptima vuelta: carrera en la cuarentena de mods
+
+La encontró la CI de Windows. La prueba de grupo `mods_de_otra_pc_necesitan_aprobacion` falló una
+vez: después de un traspaso, un mod que la coanfitriona había puesto en su PC quedó cargado en la
+PC de la propietaria sin aprobación. En Linux y en las corridas anteriores de Windows pasaba.
+
+- **Causa raíz:** al restaurar un punto de otra PC, primero se colocaba la carpeta `mods/` y
+  después se registraban sus `.jar` como recibidos. La propietaria aprueba sola, cada pocos
+  segundos, los `.jar` de `mods/` que no figuran como recibidos (los instaló ella). Si esa
+  aprobación caía en el medio, aprobaba el mod ajeno. La subida y la copia por el administrador
+  remoto tenían la misma ventana: una coanfitriona podía repetir subidas hasta ganar la carrera.
+- **Segundo defecto en el mismo lugar:** un `.jar` cuya huella no se podía calcular se salteaba
+  sin aviso, tanto al registrar como al apartar antes de encender, y quedaba en `mods/`. En
+  Windows, un archivo recién copiado puede estar bloqueado un instante, por ejemplo por el
+  antivirus. Además, el registro de recibidos se reemplazaba sin reintentos y un error al
+  guardarlo se ignoraba.
+- **Corrección:**
+  - lo que entra desde otra PC se coloca y se registra dentro de un candado
+    (`modguard::foreign_write`), que también toman la aprobación automática (si está ocupado,
+    espera a la vuelta siguiente) y el control antes de encender;
+  - la huella se reintenta; si no se puede leer, o si no se puede guardar el registro, el mod va
+    a la cuarentena; si ni siquiera se puede apartar, el servidor no se enciende;
+  - las escrituras atómicas reintentan el reemplazo en Windows.
+- **Prueba:** la aprobación automática se ejecuta justo mientras entra un `.jar` de otra PC.
+  **Sin el candado, la prueba falla** (se comprobó quitándolo); con el candado, pasa. La prueba de
+  grupo pasó 5 veces seguidas en Linux y vuelve a correr en Windows con cada cambio.
+
+## CI de Windows: compilación del instalador
+
+El paso que instala las herramientas de compilación se trababa más de 30 minutos en los runners
+que usan el espejo de Ubuntu `us-east-2.ec2.archive.ubuntu.com`. Ahora `scripts/ci-apt.sh` fija
+espejos oficiales de Ubuntu (el de Azure y, de respaldo, `archive.ubuntu.com`), con reintentos, y
+esos pasos tienen un límite de 15 minutos. apt sigue verificando la firma de Ubuntu de cada
+índice y el hash de cada paquete, así que cambiar de espejo no cambia la seguridad. Con el cambio,
+el paso tardó 74 s.
 
 ## Rendimiento antes y después
 

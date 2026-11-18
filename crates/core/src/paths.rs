@@ -77,7 +77,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> AppResult<()> {
     std::fs::create_dir_all(dir).map_err(|e| AppError::io("No se pudo crear la carpeta", e))?;
     let tmp = path.with_extension("tmp-939");
     std::fs::write(&tmp, bytes).map_err(|e| AppError::io("No se pudo escribir el archivo", e))?;
-    std::fs::rename(&tmp, path).map_err(|e| AppError::io("No se pudo reemplazar el archivo", e))?;
+    // En Windows, reemplazar un archivo que otro hilo está leyendo en ese instante falla con
+    // «acceso denegado»: se reintenta en lugar de perder la escritura.
+    rename_retry(&tmp, path).map_err(|e| { let _ = std::fs::remove_file(&tmp); AppError::io("No se pudo reemplazar el archivo", e) })?;
     Ok(())
 }
 

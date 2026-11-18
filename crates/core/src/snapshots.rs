@@ -288,7 +288,9 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
     std::fs::create_dir_all(&run).ok();
     // Lo que viene de un punto creado en otra PC cuenta como recibido (ver `modguard`).
     let foreign = crate::lease::local_node().map(|me| !snap.info.origin.is_empty() && snap.info.origin != me).unwrap_or(false);
-    let before = if foreign { Some(crate::modguard::snapshot(id)) } else { None };
+    // Colocar las carpetas y registrar los mods recibidos va junto, sin que la aprobación
+    // automática de la propietaria pueda mirar en el medio (`modguard::foreign_write`).
+    let place = || -> AppResult<()> {
     for d in STATE_DIRS {
         let cur = run.join(d);
         let st = staging.join(d);
@@ -308,9 +310,11 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
         let p = staging.join(f);
         if p.exists() { let _ = std::fs::rename(&p, run.join(f)); }
     }
-    let _ = std::fs::remove_dir_all(&staging);
-    if let Some(b) = before { crate::modguard::record_received(id, &b); }
     Ok(())
+    };
+    let placed = if foreign { crate::modguard::foreign_write(id, place).map(|_| ()) } else { place() };
+    let _ = std::fs::remove_dir_all(&staging);
+    placed
 }
 
 /// Los puntos desde v0.3 (con `seq`) incluyen siempre mods/ y config/ aunque estén vacíos.
