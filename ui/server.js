@@ -83,7 +83,7 @@ function drawHeader() {
   }
   const changed = state.lastState && state.lastState.id === c.id && state.lastState.key !== s.key;
   state.lastState = { id: c.id, key: s.key };
-  const meta = [`${loaderName(c.loader)} ${esc(c.mcVersion)}${c.javaMajor ? ` · Java ${c.javaMajor}` : ''}`, `<span class="mono">localhost:${c.port}</span>`];
+  const meta = [`${versionLabel(c)}${c.javaMajor ? ` · Java ${c.javaMajor}` : ''}`, `<span class="mono">localhost:${c.port}</span>`];
   if (v.status === 'running') meta.push(`Encendido hace ${fmtUptime(v.startedAt)}`);
   if (s.detail && !OPS[s.key]) meta.push(esc(s.detail));
   el.innerHTML = `<div class="srv-head">

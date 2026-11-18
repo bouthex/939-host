@@ -715,3 +715,14 @@ input[type="checkbox"], input[type="radio"], input[type="range"], progress { acc
 .lp.skin { position: relative; }
 .lp .lp-name { position: absolute; left: 0; right: 0; bottom: 3px; font-size: 9px; text-align: center; color: #e8e8e4; text-shadow: 0 1px 2px #000; pointer-events: none; }
 .lp:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Operaciones en curso: discreto, monocromático, sin animaciones llamativas. */
+.ops { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 55; width: 340px; pointer-events: none; }
+.ops:not(:empty) + .toasts { bottom: auto; top: 20px; }
+.op { pointer-events: auto; background: var(--bg); border: 1px solid var(--line2); border-radius: 12px; padding: 10px 12px; display: grid; gap: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.08); }
+.op.error { border-color: var(--text); }
+.op .bar { height: 3px; }
+.op-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line2); border-top-color: var(--text); flex: none; margin-top: 2px; animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .op-spin { animation: none; border-top-color: var(--text3); } }
+html.reduce-motion .op-spin { animation: none; }

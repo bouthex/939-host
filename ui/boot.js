@@ -22,6 +22,7 @@ async function boot() {
   refreshTrashCount();
   setInterval(() => { if (!document.hidden) refreshFootState(); }, 30000);
 
+  await setupOps();
   await listen('server-changed', (ev) => scheduleRefresh(ev.payload.id));
   await listen('console-line', (ev) => { if (state.route === 'server' && state.tab === 'console' && state.params.id === ev.payload.id) appendConsole(ev.payload.line); });
   await listen('install-progress', (ev) => {

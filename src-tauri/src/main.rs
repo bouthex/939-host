@@ -5,6 +5,7 @@ mod aliases;
 mod files;
 mod commands;
 mod network;
+mod ops;
 mod v3;
 
 use host939_core::events::{Events, InstallProgress};
@@ -33,6 +34,10 @@ impl Events for TauriEvents {
     fn console_line(&self, id: &str, line: &str) { let _ = self.0.emit("console-line", LinePayload { id, line }); }
     fn install_progress(&self, p: &InstallProgress) { let _ = self.0.emit("install-progress", p); }
     fn mods_progress(&self, id: &str, message: &str, fraction: f64) { let _ = self.0.emit("mods-progress", ModsPayload { id, message, fraction }); }
+    fn server_ready(&self, id: &str) {
+        if settings::load().start_sound { host939_core::sound::play_start_chime(); }
+        let _ = self.0.emit("server-ready", IdPayload { id });
+    }
 }
 
 /// Fondo de la ventana según el tema elegido, para que no destelle blanco en modo oscuro.
@@ -211,6 +216,7 @@ fn main() {
                 tauri::async_runtime::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(3)).await; aliases::sync(&h).await; });
             }
             app.manage(network::Cluster::default());
+            app.manage(ops::Ops::default());
 
             let open = MenuItem::with_id(app, "open", "Abrir 939 Host", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Salir de 939 Host…", true, None::<&str>)?;
@@ -312,6 +318,9 @@ fn main() {
             commands::list_runtimes,
             commands::jvm_preview,
             commands::quit_app,
+            commands::ops_running,
+            commands::op_cancel,
+            commands::play_start_sound,
             v3::image_read,
             v3::profile_photo_get,
             v3::profile_photo_set,

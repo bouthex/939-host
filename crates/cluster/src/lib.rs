@@ -77,6 +77,10 @@ pub trait LocalHost: Send + Sync + 'static {
     /// ¿El servidor terminó (detención, cierre forzado o caída) sin que después se tomara un
     /// punto? Devuelve true una sola vez por salida.
     fn exited_unsaved(&self, _server: &str) -> bool { false }
+    /// Operación larga del grupo en curso (traspaso, sincronización…), para mostrarla en la
+    /// interfaz: etapa y progreso real si se conoce. `op_end` la cierra (con error o no).
+    fn op(&self, _server: &str, _title: &str, _stage: &str, _fraction: Option<f64>) {}
+    fn op_end(&self, _server: &str, _title: &str, _error: Option<&str>) {}
 }
 
 /// Lo que una PC cuenta de sí misma al pedir ser anfitriona (solo para mostrar y advertir).
@@ -1064,6 +1068,7 @@ impl GroupNode {
         let l = lease::read(server).ok_or_else(|| anyhow!("Este servidor no está compartido."))?;
         if !l.held_by(&inner.me) { bail!("Esta PC no es la anfitriona."); }
         inner.set_busy(server, Some("Guardando y soltando el servidor".into()));
+        inner.local.op(server, "Guardando y soltando el servidor", "Guardando el mundo y esperando que otra PC copie el último estado…", None);
         let r = async {
             if inner.local.is_running(server) { inner.blocking(server, |l, s| l.stop(s)).await?; }
             let snap = { let l2 = inner.local.clone(); let s2 = server.to_string(); tokio::task::spawn_blocking(move || l2.snapshot(&s2, "Al soltar el servidor", "auto")).await?.map_err(|e| anyhow!(e))? };
@@ -1095,6 +1100,7 @@ impl GroupNode {
             inner.broadcast_lease(server).await;
             Ok(confirmed)
         }.await;
+        inner.local.op_end(server, "Guardando y soltando el servidor", r.as_ref().err().map(|e: &anyhow::Error| e.to_string()).as_deref());
         inner.set_busy(server, None);
         inner.local.changed(server);
         r
@@ -1316,7 +1322,7 @@ fn card_for(cfg: &host939_core::model::ServerConfig, rev: u64) -> serde_json::Va
     let icon = std::fs::read(host939_core::paths::server_run_dir(&cfg.id).join("server-icon.png")).ok()
         .filter(|b| cfg.logo.is_some() && b.len() < 64 * 1024 && host939_core::logo::png_size(b).map(|s| s == (64, 64)).unwrap_or(false))
         .map(|b| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(b)));
-    serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "rev": rev, "logo": icon })
+    serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "loaderVersion": cfg.loader_version, "rev": rev, "logo": icon })
 }
 
 fn bump_rev(s: &mut ShareConfig) {
@@ -1366,23 +1372,27 @@ impl Inner {
             // Fase 1, con el servidor todavía encendido: la otra PC copia casi todo el mundo.
             // Si falla acá, nadie se desconectó y el servidor sigue en esta PC.
             if was_running {
+                inner.local.op(server, &label_busy, "Copiando el mundo sin apagar el servidor…", None);
                 inner.local.note(server, &format!("Preparando el traspaso a {}: copiando el mundo sin apagar…", info.name));
                 let pre = take(format!("Antes del traspaso a {}", info.name)).await?;
                 if let Err(e) = prefetch(pre.id.clone()).await {
                     bail!("{} no pudo copiar el mundo ({e}). El servidor sigue en esta PC.", info.name);
                 }
                 if !still_mine() { bail!("El servidor cambió de anfitriona mientras se preparaba el traspaso."); }
+                inner.local.op(server, &label_busy, "Guardando el mundo y apagando…", None);
                 inner.local.note(server, &format!("Pasando el servidor a {}: guardando y apagando…", info.name));
                 inner.blocking(server, |l, s| l.stop(s)).await?;
             }
             // Fase 2: punto final y copia de lo que cambió (poco). Recién con todo copiado se
             // entrega el permiso: así nunca queda una PC con permiso y sin mundo.
+            inner.local.op(server, &label_busy, "Copiando el último estado a la otra PC…", None);
             let snap = take(format!("Traspaso a {}", info.name)).await?;
             if let Err(e) = prefetch(snap.id.clone()).await {
                 if was_running && still_mine() { let _ = inner.blocking(server, |l, s| l.start(s)).await; }
                 bail!("{} no pudo copiar el último estado ({e}). El servidor siguió en esta PC.", info.name);
             }
             if !still_mine() { bail!("El servidor cambió de anfitriona durante el traspaso; esta PC no lo vuelve a encender."); }
+            inner.local.op(server, &label_busy, "Entregando el permiso de anfitriona…", None);
             let mut next = lease::next_for(server, &target, &info.name);
             cert::sign(&inner.key, server, &mut next);
             let sent = inner.rpc(&target, &Req::Handover { server: server.into(), lease: next.clone(), snapshot: Some(snap.id.clone()) }).await;
@@ -1410,6 +1420,7 @@ impl Inner {
             Ok(info.name.clone())
         }.await;
         inner.set_busy(server, None);
+        inner.local.op_end(server, &label_busy, result.as_ref().err().map(|e| e.to_string()).as_deref());
         inner.local.changed(server);
         result
     }
@@ -1769,6 +1780,8 @@ impl Inner {
     /// Esta PC pasó a ser la anfitriona: copia lo que falte, coloca el estado y enciende.
     async fn become_host(self: &Arc<Self>, server: &str, from: Option<String>, snap: Option<String>) {
         self.set_busy(server, Some("Recibiendo el servidor".into()));
+        const T: &str = "Recibiendo el servidor";
+        self.local.op(server, T, "Copiando el último estado del mundo…", None);
         let r = async {
             if let (Some(from), Some(snap)) = (&from, &snap) {
                 let mut last = None;
@@ -1777,13 +1790,16 @@ impl Inner {
                 }
                 if let Some(e) = last { bail!("no se pudo copiar el último estado: {e}"); }
             }
+            self.local.op(server, T, "Colocando y verificando el mundo…", None);
             self.place_latest(server).await?;
+            self.local.op(server, T, "Encendiendo el servidor…", None);
             self.local.note(server, "Preparando el servidor en esta PC…");
             self.blocking(server, |l, s| l.prepare(s)).await?;
             self.blocking(server, |l, s| l.start(s)).await?;
             Ok(())
         }.await;
         self.set_busy(server, None);
+        self.local.op_end(server, T, r.as_ref().err().map(|e| e.to_string()).as_deref());
         match r {
             Ok(()) => self.local.note(server, "Esta PC es ahora la anfitriona y el servidor está en línea."),
             Err(e) => self.local.note(server, &format!("Esta PC tiene el permiso de anfitriona pero no pudo encender: {e}. Probá encenderlo a mano.")),
@@ -1811,7 +1827,11 @@ impl Inner {
         let missing = snapshots::missing_blobs(server, &man).map_err(|e| anyhow!(e.message))?;
         let total = missing.len();
         let started = Instant::now();
+        let title = format!("Sincronizando «{}»", server_name(server));
+        let mut got = 0usize;
         for chunk in missing.chunks(128) {
+            if total > 256 { self.local.op(server, &title, &format!("{} de {} bloques del mundo", got, total), Some(got as f64 / total as f64)); }
+            got += chunk.len();
             let (mut send, mut recv) = c.open_bi().await?;
             wire::write_msg(&mut send, &SyncReq::Blobs { server: server.into(), hashes: chunk.to_vec() }).await?;
             send.finish()?;
@@ -1822,6 +1842,7 @@ impl Inner {
             }
         }
         let info = snapshots::import_manifest(server, &man, from).map_err(|e| anyhow!(e.message))?;
+        if total > 256 { self.local.op_end(server, &title, None); }
         if total > 0 {
             self.local.note(server, &format!("Sincronizado «{}»: {} bloques nuevos en {:.1} s.", info.label, total, started.elapsed().as_secs_f32()));
         }

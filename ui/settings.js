@@ -33,6 +33,7 @@ routes.settings = async function renderSettings() {
           <div class="switch" style="cursor:default;align-items:center"><div class="row" style="gap:14px">${pcAvatar(s.nodeSymbol, 44, 'inv lg', state.photo)}<div class="grow"><b>${esc(s.nodeName)}</b><span class="sm t2" style="display:block">Así te ven tus amigos en el grupo: nombre y foto. Es solo cómo se muestra: no cambia la identidad ni los permisos de esta PC.</span></div></div><div class="btns"><button class="btn" data-a="photo-edit">${icon('user', 16)}${state.photo ? 'Cambiar foto' : 'Foto de perfil'}</button><button class="btn" data-a="identity">${icon('edit', 16)}Nombre</button></div></div>
           ${sw('startWithWindows', 'Iniciar con Windows', 'Arranca en la bandeja, sin abrir la ventana, para que tus servidores compartidos estén disponibles.')}
           ${sw('closeToTray', 'Seguir en la bandeja al cerrar la ventana', 'Sin servidores encendidos, cerrar la ventana también puede cerrar 939 Host. Con un servidor encendido, cerrar la ventana nunca lo detiene.')}
+          ${sw('startSound', 'Sonido al iniciar un servidor', 'Tres notas breves cuando el servidor quedó listo y respondió de verdad. Suena una vez por arranque, nunca si falla.', '<button class="btn s ghost" data-a="sound-test" style="margin-top:8px">Probar sonido</button>')}
           ${sw('keepAwakeWhileHosting', 'No suspender la PC mientras aloja un servidor', 'Windows puede apagar la pantalla, pero no suspende la PC mientras haya un servidor encendido. Un servidor no puede seguir funcionando en una PC suspendida o apagada.')}
           <div class="switch" style="cursor:default"><div class="grow"><b>Salir de 939 Host</b><span class="sm t2">Guarda y detiene todos los servidores (los compartidos pasan a otra PC si lo activaste) y deja de participar en el grupo. Para que un servidor siga funcionando, cerrá solo la ventana.</span></div><button class="btn" data-a="quit">${icon('logout', 16)}Salir</button></div>
         </div></section>
@@ -189,3 +190,5 @@ A['photo-edit'] = async () => {
   paintFoot?.();
   routes.settings();
 };
+
+A['sound-test'] = (el, ev) => { ev?.preventDefault?.(); invoke('play_start_sound').catch(fail); };

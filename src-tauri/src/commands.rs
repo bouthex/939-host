@@ -148,8 +148,14 @@ pub async fn server_properties_extra(id: String) -> AppResult<std::collections::
 
 #[tauri::command]
 pub async fn delete_server(app: AppHandle, id: String, confirm_name: String) -> AppResult<()> {
-    blocking(move || instance::delete(&app.state::<Manager>(), &id, &confirm_name)).await
+    blocking(move || {
+        let op = op(&app, &id, "Eliminando el servidor", "Deteniendo y moviendo a la Papelera de 939 Host…");
+        op.finish(instance::delete(&app.state::<Manager>(), &id, &confirm_name), "Servidor movido a la Papelera")
+    }).await
 }
+
+/// Operación larga visible en la interfaz (ver `ops`).
+pub fn op(app: &AppHandle, server: &str, title: &str, stage: &str) -> crate::ops::Op { app.state::<crate::ops::Ops>().begin(app, server, title, stage, false) }
 
 #[tauri::command]
 pub async fn start_server(app: AppHandle, id: String) -> AppResult<()> {
@@ -175,7 +181,8 @@ pub async fn restart_server(app: AppHandle, id: String) -> AppResult<()> {
     blocking(move || {
         let mgr = app.state::<Manager>();
         mgr.stop(&id)?;
-        if !mgr.wait_inactive(&id, Duration::from_secs(100)) {
+        // Misma espera que la detención (no se corta un guardado que avanza).
+        if !mgr.wait_inactive(&id, Duration::from_secs(620)) {
             return Err(AppError::new("timeout", "El servidor tardó demasiado en detenerse."));
         }
         let cfg = instance::load(&id)?;
@@ -203,7 +210,8 @@ pub async fn create_backup(app: AppHandle, id: String, label: String) -> AppResu
     blocking(move || {
         let cfg = instance::load(&id)?;
         let mgr = app.state::<Manager>();
-        let r = backup::create(&mgr, &id, &label, "manual", &cfg.mc_version);
+        let op = op(&app, &id, "Creando una copia de seguridad", "Guardando el mundo y comprimiendo…");
+        let r = op.finish(backup::create(&mgr, &id, &label, "manual", &cfg.mc_version), "Copia de seguridad creada");
         mgr.changed(&id);
         r
     }).await
@@ -213,7 +221,8 @@ pub async fn create_backup(app: AppHandle, id: String, label: String) -> AppResu
 pub async fn restore_backup(app: AppHandle, id: String, file: String) -> AppResult<()> {
     blocking(move || {
         let cfg = instance::load(&id)?;
-        backup::restore(&app.state::<Manager>(), &id, &file, &cfg.mc_version)?;
+        let op = op(&app, &id, "Restaurando una copia de seguridad", "Guardando el estado actual y colocando la copia…");
+        op.finish(backup::restore(&app.state::<Manager>(), &id, &file, &cfg.mc_version), "Copia restaurada")?;
         // La configuración de la app manda sobre la que traía el backup.
         host939_core::properties::write_for(&cfg)
     }).await
@@ -227,7 +236,8 @@ pub async fn delete_backup(id: String, file: String) -> AppResult<()> {
 #[tauri::command]
 pub async fn import_world(app: AppHandle, id: String, path: String) -> AppResult<f64> {
     blocking(move || {
-        let bytes = instance::import_world(&app.state::<Manager>(), &id, std::path::Path::new(&path))?;
+        let op = op(&app, &id, "Cargando un mundo", "Copiando los archivos del mundo…");
+        let bytes = op.finish(instance::import_world(&app.state::<Manager>(), &id, std::path::Path::new(&path)), "Mundo cargado")?;
         Ok(bytes as f64 / 1_048_576.0)
     }).await
 }
@@ -325,6 +335,10 @@ pub fn jvm_preview(config: ServerConfig) -> String { process::jvm_args(&config).
 #[tauri::command]
 pub fn quit_app(app: AppHandle) { crate::begin_quit(&app); }
 
+/// Prueba del sonido de inicio (desde Configuración).
+#[tauri::command]
+pub fn play_start_sound() { host939_core::sound::play_start_chime(); }
+
 /// Cierra la ventana dejando los servidores funcionando (después de explicarlo una vez).
 #[tauri::command]
 pub fn close_to_background(app: AppHandle) -> AppResult<()> {
@@ -382,7 +396,8 @@ pub async fn mods_install(app: AppHandle, id: String, project_id: String, versio
     mods_writable(&id)?;
     let plan = mods::plan_install(&Modrinth, &cfg, &project_id, version_id.as_deref()).await?;
     let ev = app.state::<Manager>().events.clone();
-    let res = mods::apply_plan(&cfg, &plan, |msg, f| ev.mods_progress(&id, msg, f)).await?;
+    let op = op(&app, &id, "Instalando mods", "Descargando y verificando…");
+    let res = op.finish(mods::apply_plan(&cfg, &plan, |msg, f| { ev.mods_progress(&id, msg, f); op.stage(msg, Some(f)); }).await, "Mods instalados")?;
     mark_restart(&app, &id);
     Ok(res)
 }
@@ -436,10 +451,12 @@ pub async fn mods_remove_all(app: AppHandle, id: String) -> AppResult<Vec<String
         if mgr.runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de quitar los mods.")); }
         mods_writable(&id)?;
         mgr.note(&id, "Creando un punto de recuperación antes de quitar todos los mods…");
+        let op = op(&app, &id, "Quitando todos los mods", "Creando un punto de recuperación…");
         if paths::server_run_dir(&id).join("world").join("level.dat").exists() {
             snapshots::take(&mgr, &id, "Antes de quitar todos los mods", "manual", &cfg.mc_version)?;
         }
-        let moved = mods::remove_all(&cfg)?;
+        op.stage("Moviendo los mods a la Papelera…", None);
+        let moved = op.finish(mods::remove_all(&cfg), "Mods quitados")?;
         mgr.note(&id, &format!("Se quitaron {} mods (están en la Papelera de 939 Host).", moved.len()));
         mark_restart(&app, &id);
         mgr.changed(&id);
@@ -452,6 +469,8 @@ pub async fn mods_remove_all(app: AppHandle, id: String) -> AppResult<Vec<String
 pub async fn mods_update_apply(app: AppHandle, id: String, project_ids: Vec<String>) -> AppResult<Vec<String>> {
     let cfg = instance::load(&id)?;
     mods_writable(&id)?;
+    // Se puede cancelar entre un mod y el siguiente: cada uno se aplica completo o no se aplica.
+    let op = app.state::<crate::ops::Ops>().begin(&app, &id, "Actualizando mods", "Creando un punto de recuperación…", true);
     {
         let (app2, id2, mc) = (app.clone(), id.clone(), cfg.mc_version.clone());
         blocking(move || {
@@ -459,20 +478,30 @@ pub async fn mods_update_apply(app: AppHandle, id: String, project_ids: Vec<Stri
                 snapshots::take(&app2.state::<Manager>(), &id2, "Antes de actualizar mods", "manual", &mc)?;
             }
             Ok(())
-        }).await?;
+        }).await.inspect_err(|e| op.fail(&e.message))?;
     }
     let ev = app.state::<Manager>().events.clone();
     let mut done = vec![];
-    for pid in project_ids.iter().take(500) {
+    let total = project_ids.len().clamp(1, 500);
+    for (i, pid) in project_ids.iter().take(500).enumerate() {
+        if op.cancelled() { break; }
+        op.stage(&format!("Actualizando {} de {total}", i + 1), Some(i as f64 / total as f64));
         // Se recalcula todo: versión compatible con esta versión de Minecraft y este loader,
         // dependencias y hash verificado (no se confía en lo que manda la interfaz).
-        let plan = mods::plan_install(&Modrinth, &cfg, pid, None).await?;
-        mods::apply_plan(&cfg, &plan, |msg, f| ev.mods_progress(&id, msg, f)).await?;
+        let plan = mods::plan_install(&Modrinth, &cfg, pid, None).await.inspect_err(|e| op.fail(&e.message))?;
+        mods::apply_plan(&cfg, &plan, |msg, f| ev.mods_progress(&id, msg, f)).await.inspect_err(|e| op.fail(&e.message))?;
         done.extend(plan.items.iter().filter(|i| i.project_id == *pid).map(|i| format!("{} {}", i.title, i.version.version_number)));
     }
     mark_restart(&app, &id);
+    op.done(&if op.cancelled() { format!("Cancelado: se actualizaron {} y el resto quedó como estaba", done.len()) } else { format!("{} mods actualizados", done.len()) });
     Ok(done)
 }
+
+#[tauri::command]
+pub fn ops_running(ops: State<'_, crate::ops::Ops>) -> Vec<crate::ops::OpView> { ops.running() }
+
+#[tauri::command]
+pub fn op_cancel(id: u64, ops: State<'_, crate::ops::Ops>) -> bool { ops.cancel(id) }
 
 #[tauri::command]
 pub async fn mods_remove(app: AppHandle, id: String, project_id: String) -> AppResult<Vec<String>> {
@@ -517,7 +546,8 @@ pub async fn snapshot_take(app: AppHandle, id: String, label: String) -> AppResu
     blocking(move || {
         let cfg = instance::load(&id)?;
         let mgr = app.state::<Manager>();
-        let info = snapshots::take(&mgr, &id, &label, "manual", &cfg.mc_version)?;
+        let op = op(&app, &id, "Creando un punto de restauración", "Guardando el mundo…");
+        let info = op.finish(snapshots::take(&mgr, &id, &label, "manual", &cfg.mc_version), "Punto de restauración creado")?;
         mgr.note(&id, &format!("punto de restauración creado ({} nuevos, pausa {} ms)", human_bytes(info.new_bytes), info.pause_ms));
         Ok(info)
     }).await
@@ -533,7 +563,8 @@ pub async fn snapshot_restore(app: AppHandle, id: String, snap_id: String) -> Ap
             return Err(AppError::invalid("Este servidor lo aloja otra PC del grupo. Para volver a un punto, primero pedí el servidor (o pedile a quien lo aloja que restaure)."));
         }
         let mgr = app.state::<Manager>();
-        snapshots::restore(&mgr, &id, &snap_id, &cfg.mc_version)?;
+        let op = op(&app, &id, "Restaurando un punto", "Verificando y colocando los archivos…");
+        op.finish(snapshots::restore(&mgr, &id, &snap_id, &cfg.mc_version), "Punto restaurado")?;
         host939_core::properties::write_for(&cfg)?;
         // Lo restaurado pasa a ser el estado más reciente del servidor (y lo copian las demás PCs).
         if host939_core::network::load_share(&id).enabled {
@@ -662,7 +693,10 @@ pub async fn world_new(app: AppHandle, id: String, seed: Option<String>, confirm
     if host939_core::network::load_share(&id).enabled {
         return Err(AppError::invalid("Este servidor está compartido con el grupo: dejá de compartirlo antes de cambiar de mundo, para que ninguna PC siga con el anterior."));
     }
-    blocking(move || host939_core::diagnostics::new_world(&app.state::<Manager>(), &mut cfg, seed)).await
+    blocking(move || {
+        let op = op(&app, &id, "Creando un mundo nuevo", "Guardando el actual y apartándolo a la Papelera…");
+        op.finish(host939_core::diagnostics::new_world(&app.state::<Manager>(), &mut cfg, seed), "Listo: el mundo nuevo se genera al encender")
+    }).await
 }
 
 #[tauri::command]

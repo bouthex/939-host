@@ -34,7 +34,7 @@ impl Cluster {
 }
 
 /// Lo que el nodo necesita de esta app.
-struct AppLocal(AppHandle);
+struct AppLocal(AppHandle, std::sync::Mutex<HashMap<(String, String), crate::ops::Op>>);
 
 impl LocalHost for AppLocal {
     fn is_running(&self, server: &str) -> bool {
@@ -72,6 +72,16 @@ impl LocalHost for AppLocal {
         if mgr.wait_inactive(server, Duration::from_secs(620)) { Ok(()) } else { Err("El servidor no se detuvo a tiempo.".into()) }
     }
     fn exited_unsaved(&self, server: &str) -> bool { self.0.state::<Manager>().take_exit_unsaved(server) }
+    fn op(&self, server: &str, title: &str, stage: &str, fraction: Option<f64>) {
+        let mut m = self.1.lock().unwrap();
+        let op = m.entry((server.to_string(), title.to_string())).or_insert_with(|| self.0.state::<crate::ops::Ops>().begin(&self.0, server, title, stage, false));
+        op.stage(stage, fraction);
+    }
+    fn op_end(&self, server: &str, title: &str, error: Option<&str>) {
+        if let Some(op) = self.1.lock().unwrap().remove(&(server.to_string(), title.to_string())) {
+            match error { Some(e) => op.fail(e), None => op.done("Listo") }
+        }
+    }
     fn snapshot(&self, server: &str, label: &str, kind: &str) -> Result<SnapshotInfo, String> {
         let mc = instance::load(server).map(|c| c.mc_version).unwrap_or_default();
         snapshots::take(&self.0.state::<Manager>(), server, label, kind, &mc).map_err(|e| e.message)
@@ -140,7 +150,7 @@ pub fn start(app: AppHandle) {
             // Modo privado: solo relays (gana sobre el ajuste de relays públicos, porque sin
             // relay no hay forma de conectarse sin mostrar la IP).
             let relays = if s.private_mode { host939_p2p::Relays::Private } else if s.allow_public_relays { host939_p2p::Relays::PublicFallback } else { host939_p2p::Relays::Disabled };
-            GroupNode::start(secret, &node_name(), relays, Arc::new(AppLocal(app.clone())), Timing::default()).await
+            GroupNode::start(secret, &node_name(), relays, Arc::new(AppLocal(app.clone(), Default::default())), Timing::default()).await
         }.await;
         match r {
             Ok(node) => {
@@ -437,6 +447,7 @@ pub struct JoinedView {
     pub mc_version: String,
     pub loader: String,
     pub has_copy: bool,
+    pub loader_version: Option<String>,
     pub route_port: u16,
     pub host_name: String,
     pub host_online: bool,
@@ -459,7 +470,7 @@ pub async fn remote_list(cluster: State<'_, Cluster>) -> AppResult<Vec<JoinedVie
             None => (String::new(), false, false),
         };
         out.push(JoinedView {
-            id: sid.clone(), name: get("name"), mc_version: get("mcVersion"), loader: get("loader"), has_copy: instance::load(&sid).is_ok(),
+            id: sid.clone(), name: get("name"), mc_version: get("mcVersion"), loader: get("loader"), loader_version: Some(get("loaderVersion")).filter(|v| !v.is_empty()), has_copy: instance::load(&sid).is_ok(),
             route_port: route_port(&sid), host_name, host_online, i_am_host,
             logo: card.get("logo").and_then(|v| v.as_str()).filter(|u| u.starts_with("data:image/png;base64,")).map(String::from),
         });

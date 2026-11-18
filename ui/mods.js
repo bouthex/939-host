@@ -48,7 +48,7 @@ function paintMods() {
   root.innerHTML = `
     ${md.offline ? `<div class="note">${icon('alert')}<div class="grow"><b>Sin conexión con Modrinth</b><span class="sm t2">Se muestran los archivos locales. Para buscar, instalar o identificar mods hace falta internet.</span></div><button class="btn s" data-a="mods-reload">${icon('refresh', 14)}Reintentar</button></div>` : ''}
     <div class="spread" style="flex-wrap:wrap"><div class="seg" role="tablist">${subs.map(([k, l]) => `<button class="${md.sub === k ? 'on' : ''}" data-a="msub" data-v="${k}" role="tab" aria-selected="${md.sub === k}">${l}${counts[k] ? ` <span class="t3">${counts[k]}</span>` : ''}</button>`).join('')}</div>
-      <div class="btns"><span class="chip soft">${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)}</span><button class="btn s ghost" data-a="folder" data-which="mods">${icon('folder', 14)}Carpeta de mods</button></div></div>
+      <div class="btns"><span class="chip soft">${versionLabel(state.server.config)}</span><button class="btn s ghost" data-a="folder" data-which="mods">${icon('folder', 14)}Carpeta de mods</button></div></div>
     <div id="mods-progress"></div>
     <div id="mods-sub"></div>`;
   const sub = $('#mods-sub');
@@ -174,7 +174,7 @@ function paintInstalled(el) {
       ${active ? `<div class="note">${icon('info')}<div class="grow"><span class="sm t2">Los cambios en mods se aplican al reiniciar el servidor. Para agregar o quitar archivos, detenelo primero.</span></div></div>` : ''}
     </div>
     <div class="stack" style="gap:16px">
-      <div class="card pad stack"><label class="switch" style="padding:0"><div class="grow"><b>Buscar actualizaciones compatibles automáticamente</b><span class="sm t2">Al abrir los mods, 939 Host busca versiones nuevas para ${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)}. Nada se instala sin que revises los cambios, y antes se crea un punto de recuperación.</span></div><input type="checkbox" data-a="mods-auto" ${md.auto ? 'checked' : ''}></label>
+      <div class="card pad stack"><label class="switch" style="padding:0"><div class="grow"><b>Buscar actualizaciones compatibles automáticamente</b><span class="sm t2">Al abrir los mods, 939 Host busca versiones nuevas para ${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)}. Nada se instala sin que revises los cambios, y antes se crea un punto de recuperación.</span></div><input type="checkbox" id="mods-auto" ${md.auto ? 'checked' : ''}></label>
         ${Object.keys(md.updates).length ? `<button class="btn s" data-a="msub" data-v="updates">${icon('download', 14)}${Object.keys(md.updates).length} ${Object.keys(md.updates).length === 1 ? 'actualización' : 'actualizaciones'} para revisar</button>` : ''}</div>
       <div class="card pad stack"><div class="row" style="gap:8px">${icon('gauge')}<h2>Rendimiento</h2></div>
         <p class="sm t2" style="margin:0">939 Host consulta qué mods de optimización existen para ${loaderName(state.server.config.loader)} ${esc(state.server.config.mcVersion)} y te propone una selección estable. Antes de instalar se guarda una copia de seguridad.</p>
@@ -184,10 +184,11 @@ function paintInstalled(el) {
       ${hasChunky(list) ? `<div class="card pad stack"><h3>Pregenerar el mundo</h3><p class="sm t2" style="margin:0">Chunky está instalado. La pregeneración se maneja desde la pestaña Mundo.</p><button class="btn s" data-a="tab" data-v="world">Ir a Mundo</button></div>` : ''}
     </div>
   </div>`;
+  el.querySelector('#mods-auto')?.addEventListener('change', (e) => autoUpdatesChanged(e.target));
 }
-A['mods-auto'] = async (el) => {
-  try { await invoke('mods_set_auto_updates', { id: state.params.id, on: el.checked }); md.auto = el.checked; toast(el.checked ? 'Se buscarán actualizaciones compatibles al abrir los mods' : 'Búsqueda automática desactivada'); if (el.checked && !md.offline) A['mod-check'](el); } catch (e) { el.checked = !el.checked; fail(e); }
-};
+async function autoUpdatesChanged(el) {
+  try { await invoke('mods_set_auto_updates', { id: state.params.id, on: el.checked }); md.auto = el.checked; toast(el.checked ? 'Se buscarán actualizaciones compatibles al abrir los mods' : 'Búsqueda automática desactivada'); if (el.checked && !md.offline) A['mod-check']({}); } catch (e) { el.checked = !el.checked; fail(e); }
+}
 A['mods-remove-all'] = async () => {
   const list = md.list;
   const libs = list.filter((x) => x.managed && !x.explicit).length;

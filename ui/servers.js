@@ -32,7 +32,7 @@ function serverRow(s) {
   const away = elsewhere(s);
   return `<div class="li click" data-a="open" data-id="${esc(c.id)}" role="button" tabindex="0">
     ${srvLogo(s.logoUrl)}
-    <div class="grow"><div class="b ellipsis">${esc(c.name)}</div><div class="sm t3 ellipsis">${loaderName(c.loader)} ${esc(c.mcVersion)}${c.description ? ` · ${esc(c.description)}` : ''}</div></div>
+    <div class="grow"><div class="b ellipsis">${esc(c.name)}</div><div class="sm t3 ellipsis">${versionLabel(c)}${c.description ? ` · ${esc(c.description)}` : ''}</div></div>
     <div class="cols">
       <div class="c" style="min-width:132px">${away ? `<span class="st">${away.hostOnline ? SHAPES.dot : SHAPES.off}En otra PC</span><span class="xs t3 ellipsis">Lo aloja ${esc(away.hostName || 'otra PC')}</span>` : `${stateHTML(s)}${st.detail ? `<span class="xs t3 ellipsis">${esc(st.detail)}</span>` : ''}`}</div>
       <div class="c"><span class="xs t3">Jugadores</span><span class="mono sm">${s.status === 'running' ? `${s.players.length}/${c.maxPlayers}` : '—'}</span></div>
@@ -247,7 +247,7 @@ routes.friends = async function renderFriends() {
       <p class="sm t2" style="margin:0">Pegá el código que te mandaron (empieza con <span class="mono">939-</span>). Cada código sirve para una sola PC y la PC de tu amigo tiene que tener 939 Host abierto.</p>
       <div class="row"><input class="input mono" id="join-code" placeholder="939-…" autocomplete="off" spellcheck="false" aria-label="Código de invitación"><button class="btn pri" data-a="join">${icon('link')}Unirme</button></div></div>
     ${remotes.length ? `<div class="grid2">${remotes.map((r) => `<div class="card pad stack">
-        <div class="spread"><div class="row">${srvLogo(r.logo)}<div><div class="b">${esc(r.name || 'Servidor')}</div><div class="sm t3">${esc(loaderName(r.loader))} ${esc(r.mcVersion)} · ${r.hasCopy ? 'coanfitrión' : 'jugador'}</div></div></div>
+        <div class="spread"><div class="row">${srvLogo(r.logo)}<div><div class="b">${esc(r.name || 'Servidor')}</div><div class="sm t3">${versionLabel(r)} · ${r.hasCopy ? 'coanfitrión' : 'jugador'}</div></div></div>
           <span class="st">${r.iAmHost ? SHAPES.dot + 'En esta PC' : r.hostOnline ? SHAPES.dot + 'En línea' : SHAPES.off + 'Sin anfitrión'}</span></div>
         <div class="addr"><span>127.0.0.1:${r.routePort}</span><button class="btn s" data-a="copy" data-text="127.0.0.1:${r.routePort}" data-msg="Dirección copiada">${icon('copy', 14)}Copiar</button></div>
         <p class="sm t2" style="margin:0">En Minecraft: Multijugador → Agregar servidor → esta dirección. Siempre lleva a la PC que lo esté alojando${r.hostName ? `: ahora, <b>${esc(r.hostName)}</b>` : ''}. Si cambia de PC, no tenés que tocar nada.</p>

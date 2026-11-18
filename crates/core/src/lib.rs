@@ -41,5 +41,6 @@ pub mod repair;
 pub mod settings;
 pub mod skins;
 pub mod snapshots;
+pub mod sound;
 pub mod trash;
 pub mod version_change;

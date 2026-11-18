@@ -118,6 +118,15 @@ function ago(iso) {
   return m < 1 ? 'recién' : m < 60 ? `hace ${m} min` : m < 1440 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} d`;
 }
 const loaderName = (l) => ({ fabric: 'Fabric', forge: 'Forge', neoforge: 'NeoForge' }[l] || 'Vanilla');
+/* Versión completa y sin confusiones: «Minecraft 26.2 — Fabric Loader 0.17.3». La versión de
+   Minecraft y la del loader son cosas distintas (antes se veía «Fabric 26.2»). */
+const LOADER_FULL = { fabric: 'Fabric Loader', forge: 'Forge', neoforge: 'NeoForge' };
+function versionLabel(c, { short = false } = {}) {
+  const mc = `Minecraft ${esc(c.mcVersion || '?')}`;
+  if (!c.loader || c.loader === 'vanilla') return short ? mc : `${mc} — Vanilla`;
+  const lv = c.loaderVersion ? ` ${esc(c.loaderVersion)}` : '';
+  return `${mc} — ${LOADER_FULL[c.loader] || loaderName(c.loader)}${lv}`;
+}
 const DIFF = { peaceful: 'Pacífico', easy: 'Fácil', normal: 'Normal', hard: 'Difícil' };
 const MODE = { survival: 'Supervivencia', creative: 'Creativo', adventure: 'Aventura', spectator: 'Espectador' };
 const initials = (name) => (name || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '?';
@@ -453,4 +462,50 @@ function scrollSpy(tocSel, prefix) {
   toc.addEventListener('click', onClick);
   update();
   onLeave(() => { main.removeEventListener('scroll', onScroll); toc.removeEventListener('click', onClick); if (raf) cancelAnimationFrame(raf); });
+}
+
+/* ───────── operaciones en curso ─────────
+   Indicador discreto de lo que tarda: qué se hace, la etapa, el progreso real (si no se puede
+   medir no hay porcentaje), cuándo terminó y, si falló, el motivo. Viene del backend (`op`) y
+   también de los avisos de instalación, cambio de versión y reparación. */
+const OPS = new Map();
+function serverName(id) { return (state.servers || []).find((x) => x.config?.id === id)?.config?.name || ''; }
+function opUpsert(o) {
+  const prev = OPS.get(o.id);
+  OPS.set(o.id, { ...prev, ...o, at: Date.now() });
+  if (o.state === 'done' || o.state === 'cancelled') setTimeout(() => { const x = OPS.get(o.id); if (x && x.state !== 'running' && x.state !== 'error') { OPS.delete(o.id); paintOps(); } }, 4000);
+  paintOps();
+}
+function paintOps() {
+  const root = document.getElementById('ops');
+  if (!root) return;
+  const list = [...OPS.values()].slice(-4);
+  root.innerHTML = list.map((o) => {
+    const pct = o.state === 'running' && typeof o.fraction === 'number' ? Math.round(o.fraction * 100) : null;
+    const who = o.server ? serverName(o.server) : '';
+    const mark = o.state === 'running' ? '<span class="op-spin" aria-hidden="true"></span>' : o.state === 'error' ? icon('alert', 15) : icon('check', 15);
+    return `<div class="op ${o.state}" role="${o.state === 'error' ? 'alert' : 'status'}">
+      <div class="row" style="gap:10px;align-items:flex-start">${mark}<div class="grow" style="min-width:0"><b class="ellipsis" style="display:block">${esc(o.title)}${who ? ` <span class="t3" style="font-weight:400">· ${esc(who)}</span>` : ''}</b>
+        <span class="xs t2" style="display:block">${esc(o.state === 'error' ? (o.error || 'Falló') : o.stage || '')}${pct !== null ? ` · ${pct} %` : ''}</span></div>
+        ${o.state === 'running' && o.cancellable ? `<button class="btn s ghost" data-a="op-cancel" data-op="${o.id}">Cancelar</button>` : ''}
+        ${o.state === 'error' ? `<button class="btn s icon ghost" data-a="op-dismiss" data-op="${o.id}" aria-label="Cerrar">${icon('x', 14)}</button>` : ''}</div>
+      ${o.state === 'running' ? `<div class="bar${pct === null ? ' indet' : ''}"><i style="${pct !== null ? `width:${pct}%` : ''}"></i></div>` : ''}
+    </div>`;
+  }).join('');
+}
+A['op-cancel'] = async (el) => { el.disabled = true; el.textContent = 'Cancelando…'; await invoke('op_cancel', { id: Number(el.dataset.op) }).catch(fail); };
+A['op-dismiss'] = (el) => { OPS.delete(Number(el.dataset.op)) || OPS.delete(el.dataset.op); paintOps(); };
+async function setupOps() {
+  for (const o of await invoke('ops_running').catch(() => [])) opUpsert(o);
+  await listen('op', (ev) => opUpsert(ev.payload));
+  const bridge = (key, title) => (ev) => {
+    const p = ev.payload;
+    const id = `${key}:${p.id}`;
+    if (p.done || p.fraction >= 1) opUpsert({ id, server: p.id, title, stage: p.message, state: p.error ? 'error' : 'done', error: p.error || null });
+    else opUpsert({ id, server: p.id, title, stage: p.message, fraction: typeof p.fraction === 'number' && p.fraction > 0 ? p.fraction : null, state: 'running' });
+  };
+  await listen('install-progress', bridge('install', 'Instalando el servidor'));
+  await listen('version-progress', bridge('version', 'Cambiando archivos del servidor'));
+  await listen('repair-progress', bridge('repair', 'Reparando'));
+  await listen('server-ready', (ev) => { const n = serverName(ev.payload.id); toast(n ? `«${n}» está listo para jugar` : 'El servidor está listo para jugar'); });
 }

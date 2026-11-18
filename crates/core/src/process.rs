@@ -69,6 +69,8 @@ pub struct Runtime {
     last_output: Option<Instant>,
     /// La última detención terminó con cierre forzado (el mundo puede no estar guardado).
     pub forced_stop: bool,
+    /// Ya se avisó que este arranque quedó listo (sonido y aviso: una sola vez por arranque).
+    ready_announced: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -328,6 +330,7 @@ impl Manager {
             rt.needs_restart = false;
             rt.stop_requested = false;
             rt.forced_stop = false;
+            rt.ready_announced = false;
             rt.last_output = Some(Instant::now());
             rt.mspt = None;
             rt.mspt_p95 = None;
@@ -644,6 +647,7 @@ pub fn spawn_reach_check(ev: Arc<dyn Events>, rt: Arc<Mutex<Runtime>>, id: Strin
         { let mut r = rt.lock().unwrap(); r.reach = Some("checking".into()); r.reach_error = None; }
         ev.server_changed(&id);
         let res = crate::reach::status_retry_for("127.0.0.1", port, Duration::from_secs(60));
+        let mut ready = false;
         {
             let mut r = rt.lock().unwrap();
             if r.status() != RunStatus::Running { return; }
@@ -651,6 +655,7 @@ pub fn spawn_reach_check(ev: Arc<dyn Events>, rt: Arc<Mutex<Runtime>>, id: Strin
                 Ok(info) => {
                     r.push_log(format!("── 939 Host: conexión comprobada · Minecraft {} (protocolo {}) responde en 127.0.0.1:{port} en {} ms ──", info.version, info.protocol, info.latency_ms));
                     r.reach = Some("ok".into()); r.reach_info = Some(info); r.reach_error = None;
+                    ready = !std::mem::replace(&mut r.ready_announced, true);
                 }
                 Err(e) => {
                     r.push_log(format!("── 939 Host: el servidor dice estar listo pero no atiende conexiones en el puerto {port}: {e} ──"));
@@ -659,6 +664,7 @@ pub fn spawn_reach_check(ev: Arc<dyn Events>, rt: Arc<Mutex<Runtime>>, id: Strin
             }
         }
         ev.server_changed(&id);
+        if ready { ev.server_ready(&id); }
     });
 }
 

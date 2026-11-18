@@ -282,7 +282,8 @@ pub async fn mods_import_files(app: AppHandle, id: String, paths: Vec<String>) -
     if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de importar mods.")); }
     if !host939_core::snapshots::writes_line(&id) { return Err(AppError::invalid("Este servidor lo aloja otra PC del grupo: los mods se cambian desde la PC anfitriona.")); }
     let files: Vec<std::path::PathBuf> = paths.into_iter().take(200).map(std::path::PathBuf::from).collect();
-    let r = blocking(move || mods::import_files(&cfg, &files)).await?;
+    let op = crate::commands::op(&app, &id, if files.len() == 1 { "Agregando 1 mod" } else { "Agregando mods" }, "Revisando compatibilidad y copiando…");
+    let r = op.finish(blocking(move || mods::import_files(&cfg, &files)).await, "Mods agregados")?;
     app.state::<Manager>().changed(&id);
     Ok(r)
 }
@@ -562,8 +563,9 @@ pub async fn cf_plan(id: String, mod_id: u64) -> AppResult<cf::CfPlan> { cf::pla
 pub async fn cf_install(app: AppHandle, id: String, mod_id: u64) -> AppResult<Vec<String>> {
     let cfg = instance::load(&id)?;
     if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor para instalar mods: se cargan al arrancar.")); }
-    let p = cf::plan(&cfg, mod_id).await?;
-    let r = cf::apply(&cfg, &p).await;
+    let op = crate::commands::op(&app, &id, "Instalando desde CurseForge", "Descargando y verificando…");
+    let p = cf::plan(&cfg, mod_id).await.inspect_err(|e| op.fail(&e.message))?;
+    let r = op.finish(cf::apply(&cfg, &p).await, "Instalado");
     app.state::<Manager>().changed(&id);
     r
 }
