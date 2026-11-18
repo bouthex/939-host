@@ -570,6 +570,10 @@ pub async fn cf_install(app: AppHandle, id: String, mod_id: u64) -> AppResult<Ve
     r
 }
 
+/// Ficha de un proyecto de CurseForge (necesita la clave de CurseForge de esta PC).
+#[tauri::command]
+pub async fn cf_project(mod_id: u64) -> AppResult<cf::CfMod> { cf::project(mod_id).await }
+
 #[tauri::command]
 pub async fn cf_updates(id: String) -> AppResult<Vec<(String, String)>> { cf::updates(&instance::load(&id)?).await }
 
@@ -578,8 +582,9 @@ pub async fn modrinth_modpacks(query: String, offset: u32) -> AppResult<host939_
 
 /// Descarga el pack (si viene de Modrinth o CurseForge) y dice qué es, sin instalar nada.
 #[tauri::command]
-pub async fn modpack_prepare(path: Option<String>, modrinth_project: Option<String>, cf_mod: Option<u64>) -> AppResult<(String, modpack::PackInfo)> {
+pub async fn modpack_prepare(path: Option<String>, modrinth_project: Option<String>, cf_mod: Option<u64>, version_id: Option<String>) -> AppResult<(String, modpack::PackInfo)> {
     let file = if let Some(p) = path { std::path::PathBuf::from(p) }
+    else if let Some(v) = version_id.filter(|v| valid_project(v)) { modpack::download_modrinth(&v).await? }
     else if let Some(proj) = modrinth_project {
         let v = Modrinth.modpack_versions(&proj).await?;
         let first = v.into_iter().find(|v| v.files.iter().any(|f| f.filename.ends_with(".mrpack"))).ok_or_else(|| AppError::invalid("Ese modpack no tiene versiones descargables."))?;
@@ -597,6 +602,83 @@ pub async fn modpack_prepare(path: Option<String>, modrinth_project: Option<Stri
     } else { return Err(AppError::invalid("Elegí un modpack.")); };
     let info = modpack::inspect(&file)?;
     Ok((file.display().to_string(), info))
+}
+
+fn valid_project(p: &str) -> bool { !p.is_empty() && p.len() <= 64 && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackVersion { id: String, number: String, name: String, game_versions: Vec<String>, loaders: Vec<String>, date: String, kind: String, size: u64 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackDetail { project: host939_core::modrinth::ProjectDetail, authors: Vec<String>, versions: Vec<PackVersion> }
+
+/// Ficha de un modpack de Modrinth para verla dentro de 939 Host (datos de la API oficial; la
+/// descripción se muestra como texto, nunca como HTML).
+#[tauri::command]
+pub async fn modpack_detail(project: String) -> AppResult<PackDetail> {
+    if !valid_project(&project) { return Err(AppError::invalid("Modpack inválido.")); }
+    let p = Modrinth.project_detail(&project).await?;
+    let authors = Modrinth.team_names(&p.team).await.unwrap_or_default();
+    let versions = Modrinth.modpack_versions(&p.id).await.unwrap_or_default().into_iter().take(40).map(|v| PackVersion {
+        size: v.files.iter().find(|f| f.filename.ends_with(".mrpack")).map(|f| f.size).unwrap_or(0),
+        id: v.id, number: v.version_number, name: v.name, game_versions: v.game_versions, loaders: v.loaders, date: v.date_published, kind: v.version_type,
+    }).collect();
+    Ok(PackDetail { project: p, authors, versions })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackContents { mods: Vec<(String, bool, bool)>, other_files: usize }
+
+/// Qué mods incluye una versión de un modpack de Modrinth (descarga el .mrpack verificado y lee
+/// su índice; no instala nada). Los nombres salen de Modrinth por huella cuando se puede.
+#[tauri::command]
+pub async fn modpack_contents(version_id: String) -> AppResult<PackContents> {
+    if !valid_project(&version_id) { return Err(AppError::invalid("Versión inválida.")); }
+    let file = modpack::download_modrinth(&version_id).await?;
+    let files = modpack::contents(&file)?;
+    let (mods_f, other): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.path.starts_with("mods/"));
+    let hashes: Vec<String> = mods_f.iter().map(|f| f.sha1.clone()).filter(|h| !h.is_empty()).take(400).collect();
+    use host939_core::modrinth::Source;
+    let by_hash = Modrinth.versions_by_sha1(&hashes).await.unwrap_or_default();
+    let ids: Vec<String> = by_hash.values().map(|v| v.project_id.clone()).collect();
+    let titles: HashMap<String, String> = Modrinth.projects(&ids).await.unwrap_or_default().into_iter().map(|p| (p.id, p.title)).collect();
+    let mut mods: Vec<(String, bool, bool)> = mods_f.iter().map(|f| {
+        let t = by_hash.get(&f.sha1).and_then(|v| titles.get(&v.project_id)).cloned().unwrap_or_else(|| f.path.trim_start_matches("mods/").trim_end_matches(".jar").to_string());
+        (t, f.server, f.client)
+    }).collect();
+    mods.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    Ok(PackContents { mods, other_files: other.len() })
+}
+
+/// Incorpora un modpack a un servidor que ya existe (misma versión de Minecraft y mismo loader).
+/// Antes crea un punto de recuperación. Los mods quedan editables como cualquier otro.
+#[tauri::command]
+pub async fn modpack_apply(app: AppHandle, id: String, path: String) -> AppResult<modpack::PackReport> {
+    let cfg = instance::load(&id)?;
+    let file = std::path::PathBuf::from(&path);
+    let info = modpack::inspect(&file)?;
+    if info.mc_version != cfg.mc_version || info.loader != cfg.loader {
+        return Err(AppError::invalid(format!("Este modpack es para Minecraft {} con {}, y el servidor usa {} con {}. Creá un servidor nuevo con el modpack (o cambiá primero la versión del servidor).",
+            info.mc_version, info.loader.name(), cfg.mc_version, cfg.loader.name())));
+    }
+    if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de incorporar el modpack.")); }
+    if !host939_core::snapshots::writes_line(&id) { return Err(AppError::invalid("Este servidor lo aloja otra PC del grupo: el modpack se incorpora desde la PC anfitriona.")); }
+    let op = crate::commands::op(&app, &id, &format!("Incorporando «{}»", info.name), "Creando un punto de recuperación…");
+    {
+        let (app2, id2, mc, label) = (app.clone(), id.clone(), cfg.mc_version.clone(), format!("Antes de incorporar {}", info.name));
+        blocking(move || {
+            if host939_core::paths::server_run_dir(&id2).join("world").join("level.dat").exists() {
+                host939_core::snapshots::take(&app2.state::<Manager>(), &id2, &label, "manual", &mc)?;
+            }
+            Ok(())
+        }).await.inspect_err(|e| op.fail(&e.message))?;
+    }
+    let r = op.finish(modpack::apply(&id, &file, |m, f| op.stage(m, Some(f))).await, "Modpack incorporado");
+    app.state::<Manager>().changed(&id);
+    r
 }
 
 /// Crea el servidor con la versión y el loader del pack; el contenido se agrega al terminar la instalación.

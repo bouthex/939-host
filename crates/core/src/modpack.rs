@@ -152,8 +152,52 @@ pub async fn apply(id: &str, pack: &Path, mut progress: impl FnMut(&str, f64)) -
         if !rep.blocked.is_empty() { rep.warnings.push(format!("{} archivos no permiten descarga desde otras apps: bajalos desde CurseForge y agregalos en Archivos → mods.", rep.blocked.len())); }
     }
     mods::save_manifest(id, &manifest)?;
+    progress("Vinculando los mods con Modrinth", 0.99);
+    link_pack_mods(id).await;
     progress("Listo", 1.0);
     Ok(rep)
+}
+
+/// Un archivo que trae el modpack (para mostrar qué incluye antes de instalarlo).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackFile { pub path: String, pub server: bool, pub client: bool, pub sha1: String }
+
+/// Lo que incluye un `.mrpack` (sin instalar nada).
+pub fn contents(path: &Path) -> AppResult<Vec<PackFile>> {
+    if !is_mrpack(path) { return Err(AppError::invalid("Solo los modpacks de Modrinth (.mrpack) dicen su contenido de antemano.")); }
+    let idx = zip_json(path, "modrinth.index.json")?;
+    Ok(idx["files"].as_array().cloned().unwrap_or_default().iter().take(2000).map(|f| PackFile {
+        path: f["path"].as_str().unwrap_or("").to_string(),
+        server: f["env"]["server"].as_str() != Some("unsupported"),
+        client: f["env"]["client"].as_str() != Some("unsupported"),
+        sha1: f["hashes"]["sha1"].as_str().unwrap_or("").to_string(),
+    }).collect())
+}
+
+/// Los mods que vinieron con un modpack quedan vinculados con su proyecto de Modrinth cuando se
+/// puede (por huella): así se pueden actualizar, ver su ficha y quitar como cualquier otro. El
+/// modpack no queda bloqueado. Sin conexión quedan como estaban.
+pub async fn link_pack_mods(id: &str) {
+    use crate::modrinth::Source;
+    let mut m = mods::load_manifest(id);
+    let hashes: Vec<String> = m.mods.iter().filter(|x| x.project_id.starts_with("pack:") && !x.sha1.is_empty()).map(|x| x.sha1.clone()).collect();
+    if hashes.is_empty() { return; }
+    let Ok(found) = crate::modrinth::Modrinth.versions_by_sha1(&hashes).await else { return };
+    let ids: Vec<String> = found.values().map(|v| v.project_id.clone()).collect();
+    let titles: std::collections::HashMap<String, String> = crate::modrinth::Modrinth.projects(&ids).await.unwrap_or_default().into_iter().map(|p| (p.id, p.title)).collect();
+    for x in m.mods.iter_mut().filter(|x| x.project_id.starts_with("pack:")) {
+        if let Some(v) = found.get(&x.sha1) {
+            x.project_id = v.project_id.clone();
+            x.version_id = v.id.clone();
+            x.version_number = v.version_number.clone();
+            if let Some(t) = titles.get(&v.project_id) { x.title = t.clone(); }
+        }
+    }
+    // Un mismo proyecto no puede quedar dos veces (el pack trae un archivo por mod).
+    let mut seen = std::collections::HashSet::new();
+    m.mods.retain(|x| seen.insert(x.project_id.clone()));
+    let _ = mods::save_manifest(id, &m);
 }
 
 /* El pack se aplica cuando termina la instalación del servidor. */
@@ -208,5 +252,27 @@ mod t {
         std::fs::create_dir_all(&run).unwrap();
         assert!(extract_dir(&a, "overrides/", &run).is_err());
         assert!(!d.path().join("fuera.txt").exists());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn contenido_del_mrpack_sin_instalar() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("pack.mrpack");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
+        z.start_file("modrinth.index.json", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(br#"{"formatVersion":1,"name":"Zombis","versionId":"1.0","dependencies":{"minecraft":"26.2","fabric-loader":"0.17.3"},
+          "files":[{"path":"mods/lithium.jar","hashes":{"sha1":"aa"},"env":{"client":"optional","server":"required"},"downloads":["https://cdn.modrinth.com/x"]},
+                   {"path":"mods/sodium.jar","hashes":{"sha1":"bb"},"env":{"client":"required","server":"unsupported"},"downloads":["https://cdn.modrinth.com/y"]}]}"#).unwrap();
+        z.finish().unwrap();
+        let c = contents(&p).unwrap();
+        assert_eq!(c.len(), 2);
+        assert!(c.iter().any(|f| f.path == "mods/sodium.jar" && !f.server && f.client));
+        let i = inspect(&p).unwrap();
+        assert_eq!((i.mc_version.as_str(), i.loader, i.server_files, i.client_only), ("26.2", Loader::Fabric, 1, 1));
     }
 }

@@ -105,6 +105,12 @@ pub struct ProjectDetail {
     pub wiki_url: Option<String>,
     #[serde(default)]
     pub gallery: Vec<GalleryImage>,
+    #[serde(default)]
+    pub team: String,
+    #[serde(default)]
+    pub game_versions: Vec<String>,
+    #[serde(default)]
+    pub loaders: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,6 +250,18 @@ impl Modrinth {
     /// Versiones de un modpack (la más nueva primero).
     pub async fn modpack_versions(&self, project: &str) -> AppResult<Vec<Version>> {
         net::get_json(&format!("{API}/project/{}/version", enc(project)), "Modrinth").await
+    }
+
+    /// Nombres de quienes forman el equipo de un proyecto (la persona dueña primero).
+    pub async fn team_names(&self, team: &str) -> AppResult<Vec<String>> {
+        if team.is_empty() || !team.chars().all(|c| c.is_ascii_alphanumeric()) { return Ok(vec![]); }
+        let v: Vec<serde_json::Value> = net::get_json(&format!("{API}/team/{}/members", enc(team)), "Modrinth").await?;
+        let mut out: Vec<(bool, String)> = v.iter().filter_map(|m| {
+            let name = m["user"]["username"].as_str()?.to_string();
+            Some((m["role"].as_str() != Some("Owner"), name))
+        }).collect();
+        out.sort();
+        Ok(out.into_iter().map(|(_, n)| n).take(8).collect())
     }
 
     /// Ficha completa de un proyecto para la página de detalle.

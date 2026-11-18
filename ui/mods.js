@@ -2,7 +2,7 @@
 /* Mods: Instalados, Explorar Modrinth (categorías y lado), Actualizaciones, Archivos agregados a
    mano, página de detalle e importación arrastrando o eligiendo .jar. */
 
-const MSUB = [['installed', 'Instalados'], ['explore', 'Explorar Modrinth'], ['curseforge', 'CurseForge'], ['updates', 'Actualizaciones']];
+const MSUB = [['installed', 'Instalados'], ['explore', 'Explorar Modrinth'], ['curseforge', 'CurseForge'], ['modpacks', 'Modpacks'], ['updates', 'Actualizaciones']];
 const CATS = [['', 'Todas'], ['optimization', 'Optimización'], ['utility', 'Utilidades'], ['library', 'Bibliotecas'], ['game-mechanics', 'Mecánicas'], ['adventure', 'Aventura'],
   ['worldgen', 'Generación de mundo'], ['mobs', 'Criaturas'], ['magic', 'Magia'], ['technology', 'Tecnología'], ['storage', 'Almacenamiento'], ['equipment', 'Equipamiento'],
   ['decoration', 'Decoración'], ['food', 'Comida'], ['transportation', 'Transporte'], ['management', 'Administración'], ['social', 'Social'], ['economy', 'Economía'], ['minigame', 'Minijuegos']];
@@ -58,7 +58,7 @@ function paintMods() {
   else if (md.sub === 'curseforge') paintCurseForge(sub);
   else paintUpdates(sub);
 }
-A.msub = (el) => { md.sub = el.dataset.v; paintMods(); if (md.sub === 'explore' && !md.results && !md.offline) runSearch(); };
+A.msub = (el) => { if (el.dataset.v === 'modpacks') { Object.assign(mp, { target: state.params.id, detail: null, results: null, src: 'modrinth' }); go('modpack'); return; } md.sub = el.dataset.v; paintMods(); if (md.sub === 'explore' && !md.results && !md.offline) runSearch(); };
 A['mods-reload'] = async () => { await loadMods(); paintMods(); };
 
 /* ── Solicitudes: mods que llegaron de otra PC y esperan la decisión de la propietaria ── */

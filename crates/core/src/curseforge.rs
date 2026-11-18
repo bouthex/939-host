@@ -68,7 +68,18 @@ pub struct CfMod {
     pub allow_mod_distribution: Option<bool>,
     #[serde(default)]
     pub class_id: Option<u32>,
+    #[serde(default)]
+    pub authors: Vec<CfAuthor>,
+    #[serde(default)]
+    pub screenshots: Vec<CfShot>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CfAuthor { #[serde(default)] pub name: String }
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CfShot { #[serde(default)] pub url: String, #[serde(default)] pub title: String, #[serde(default)] pub thumbnail_url: String }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

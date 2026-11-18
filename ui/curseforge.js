@@ -66,13 +66,14 @@ A['cf-install'] = async (el) => {
 };
 
 /* ── Servidor desde un modpack ── */
-const mp = { src: 'modrinth', q: '', results: null, busy: false, error: null };
+const mp = { src: 'modrinth', q: '', results: null, busy: false, error: null, detail: null, target: null };
 routes.modpack = async function renderModpack() {
+  if (mp.detail) { paintPackDetail(); return; }
   const st = await cfStatus();
   main.innerHTML = `<div class="page">
     <div class="crumbs"><button data-a="nav" data-route="servers">Servidores</button><span>/</span><span>Desde un modpack</span></div>
-    <div class="head"><h1>Crear un servidor desde un modpack</h1></div>
-    <p class="t2" style="margin-top:-8px">939 Host lee el modpack, crea el servidor con su versión de Minecraft y su loader, e instala solo lo que el servidor necesita.</p>
+    <div class="head"><h1>${mp.target ? `Modpacks para «${esc(serverName(mp.target) || 'tu servidor')}»` : 'Modpacks'}</h1></div>
+    <p class="t2" style="margin-top:-8px">Tocá un modpack para ver sus detalles. 939 Host lo instala con su versión de Minecraft y su loader, solo con lo que el servidor necesita, y después lo podés modificar como cualquier servidor (agregar, quitar o actualizar mods).</p>
     <div class="seg" role="tablist">${[['modrinth', 'Modrinth'], ['curseforge', 'CurseForge'], ['file', 'Desde un archivo']].map(([k, t]) => `<button class="${mp.src === k ? 'on' : ''}" data-a="mp-src" data-v="${k}">${t}</button>`).join('')}</div>
     <div id="mp-body" class="stack" style="gap:14px;margin-top:14px"></div></div>`;
   const body = $('#mp-body');
@@ -87,8 +88,8 @@ routes.modpack = async function renderModpack() {
   body.innerHTML = `<label class="fm-search" style="width:min(520px,100%)">${icon('search', 14)}<input class="input" id="mp-q" placeholder="Buscar modpacks en ${mp.src === 'modrinth' ? 'Modrinth' : 'CurseForge'}" value="${esc(mp.q)}"></label>
     ${mp.error ? `<div class="issue">${icon('alert', 18)}<div class="sm">${esc(mp.error)}</div><span></span></div>` : ''}
     <div class="card list">${mp.busy ? '<div class="pad sm t2">Buscando…</div>' : !mp.results ? '<div class="pad sm t2">Escribí el nombre y apretá Enter.</div>' : !mp.results.length ? '<div class="pad sm t2">Sin resultados.</div>'
-      : mp.results.map((m) => `<div class="li">${m.icon ? `<img class="mod-ic" src="${esc(m.icon)}" alt="" loading="lazy">` : `<span class="srv-ic">${icon('layers', 16)}</span>`}
-        <div class="grow" style="min-width:0"><b>${esc(m.title)}</b><div class="sm t2 ellipsis">${esc(m.desc)}</div><div class="xs t3">${fmtNum(m.downloads)} descargas${m.blocked ? ' · el autor no permite descargarlo desde otras apps' : ''}</div></div>
+      : mp.results.map((m) => `<div class="li"><button class="link-plain" data-a="mp-detail" data-id="${esc(m.id)}" aria-label="Ver ${esc(m.title)}">${m.icon ? `<img class="mod-ic" src="${esc(m.icon)}" alt="" loading="lazy">` : `<span class="srv-ic">${icon('layers', 16)}</span>`}</button>
+        <div class="grow" style="min-width:0"><button class="link" data-a="mp-detail" data-id="${esc(m.id)}"><b>${esc(m.title)}</b></button><div class="sm t2 ellipsis">${esc(m.desc)}</div><div class="xs t3">${fmtNum(m.downloads)} descargas${m.blocked ? ' · el autor no permite descargarlo desde otras apps' : ''}</div></div>
         ${m.blocked ? `<button class="btn s" data-a="link" data-url="${esc(m.page)}">Abrir en CurseForge</button>` : `<button class="btn s pri" data-a="mp-pick" data-id="${esc(m.id)}">Elegir</button>`}</div>`).join('')}</div>`;
   $('#mp-q')?.addEventListener('keydown', async (ev) => {
     if (ev.key !== 'Enter') return;
@@ -103,12 +104,74 @@ routes.modpack = async function renderModpack() {
 A['mp-src'] = (el) => { mp.src = el.dataset.v; mp.results = null; mp.error = null; routes.modpack(); };
 A['mp-file'] = async () => { const p = await TAURI.dialog.open({ multiple: false, filters: [{ name: 'Modpack', extensions: ['mrpack', 'zip'] }] }); if (p) mpPrepare({ path: p }); };
 A['mp-pick'] = (el) => mpPrepare(mp.src === 'modrinth' ? { modrinthProject: el.dataset.id } : { cfMod: Number(el.dataset.id) });
+A['mp-detail'] = async (el) => {
+  const id = el.dataset.id;
+  if (mp.src !== 'modrinth') {
+    // CurseForge: ficha desde su API oficial (lo que haya: resumen, autores, capturas).
+    mp.detail = { src: 'curseforge', id, loading: true }; routes.modpack();
+    try { const p = await invoke('cf_project', { modId: Number(id) }); if (mp.detail?.id === id) mp.detail = { src: 'curseforge', id, p }; } catch (e) { fail(e); mp.detail = null; }
+    routes.modpack(); return;
+  }
+  mp.detail = { src: 'modrinth', id, loading: true }; routes.modpack();
+  try { const d = await invoke('modpack_detail', { project: id }); if (mp.detail?.id === id) mp.detail = { src: 'modrinth', id, d, contents: {} }; } catch (e) { fail(e); mp.detail = null; }
+  routes.modpack();
+};
+A['mp-back'] = () => { mp.detail = null; routes.modpack(); };
+A['mp-contents'] = async (el) => {
+  const v = el.dataset.v; const d = mp.detail;
+  if (!d || d.contents[v]) return;
+  d.contents[v] = { loading: true }; paintPackDetail();
+  try { d.contents[v] = await invoke('modpack_contents', { versionId: v }); } catch (e) { d.contents[v] = { error: errMsg(e) }; }
+  paintPackDetail();
+};
+A['mp-create-v'] = (el) => mpPrepare({ versionId: el.dataset.v, modrinthProject: mp.detail?.id });
+A['mp-apply-v'] = async (el) => {
+  const target = mp.target; if (!target) return;
+  const ok = await dialog({ title: 'Incorporar el modpack a este servidor', danger: true,
+    body: `<p>Se agregan los mods y configuraciones del modpack a <b>${esc(serverName(target))}</b>. Los archivos con el mismo nombre se reemplazan. Antes se crea un punto de recuperación para volver atrás.</p><p class="sm t2">Después podés quitar, agregar o actualizar mods como siempre. Los mods de otras PCs siguen pasando por la aprobación de la propietaria.</p>`, confirm: 'Incorporar' });
+  if (!ok) return;
+  let path;
+  try { [path] = await invoke('modpack_prepare', { path: null, modrinthProject: null, cfMod: null, versionId: el.dataset.v }); } catch (e) { fail(e); return; }
+  try { const r = await invoke('modpack_apply', { id: target, path }); toast(`Modpack incorporado: ${r.downloaded} archivos${r.skippedClient ? `, ${r.skippedClient} solo para jugadores omitidos` : ''}`); mp.detail = null; state.tab = 'mods'; go('server', { id: target }); } catch (e) { fail(e); }
+};
+function paintPackDetail() {
+  const d = mp.detail;
+  const back = `<button class="btn s ghost" data-a="mp-back" style="align-self:flex-start">${icon('back', 14)}Volver a los resultados</button>`;
+  if (d.loading) { main.innerHTML = `<div class="page stack">${back}<div class="card pad"><div class="bar indet"><i></i></div></div></div>`; return; }
+  if (d.src === 'curseforge') {
+    const p = d.p;
+    main.innerHTML = `<div class="page stack" style="gap:16px">${back}
+      <div class="row" style="gap:16px">${p.logo?.thumbnailUrl ? `<img class="mod-ic lg" src="${esc(p.logo.thumbnailUrl)}" alt="">` : ''}<div><h1>${esc(p.name)}</h1><div class="sm t2">${p.authors?.length ? `por ${esc(p.authors.map((a) => a.name).join(', '))} · ` : ''}${fmtNum(p.downloadCount)} descargas${p.dateModified ? ` · actualizado ${esc(fmtDate(p.dateModified))}` : ''}</div></div></div>
+      <div class="card pad stack"><h2>Descripción</h2><p class="sm" style="margin:0">${esc(p.summary || 'Sin descripción.')}</p></div>
+      ${(p.screenshots || []).length ? `<div class="gallery">${p.screenshots.slice(0, 8).map((g) => `<img src="${esc(g.thumbnailUrl || g.url)}" alt="${esc(g.title || '')}" loading="lazy">`).join('')}</div>` : ''}
+      <div class="btns">${p.allowModDistribution === false ? `<span class="sm t2">El autor no permite descargarlo desde otras apps: bajalo desde CurseForge y usá «Desde un archivo».</span>` : `<button class="btn pri" data-a="mp-pick" data-id="${esc(String(p.id))}">${icon('plus', 16)}Crear servidor con este modpack</button>`}</div></div>`;
+    return;
+  }
+  const { project: p, authors, versions } = d.d;
+  const tgt = mp.target ? (state.servers || []).find((x) => x.config?.id === mp.target)?.config : null;
+  const fits = (v) => tgt && v.gameVersions.includes(tgt.mcVersion) && v.loaders.includes(tgt.loader);
+  main.innerHTML = `<div class="page stack" style="gap:16px">${back}
+    <div class="row" style="gap:16px;align-items:flex-start">${p.iconUrl ? `<img class="mod-ic lg" src="${esc(p.iconUrl)}" alt="">` : `<span class="srv-ic" style="width:64px;height:64px">${icon('layers', 26)}</span>`}
+      <div class="grow"><h1 style="margin:0">${esc(p.title)}</h1><p class="t2" style="margin:4px 0">${esc(p.description)}</p>
+        <div class="sm t3">${authors.length ? `por ${esc(authors.join(', '))} · ` : ''}${fmtNum(p.downloads)} descargas${p.updated ? ` · actualizado ${esc(fmtDate(p.updated))}` : ''}${p.license?.id ? ` · licencia ${esc(p.license.id)}` : ''}</div>
+        ${p.categories.length ? `<div class="row wrap" style="gap:6px;margin-top:8px">${p.categories.slice(0, 8).map((c) => `<span class="chip s">${esc(c)}</span>`).join('')}</div>` : ''}</div></div>
+    ${p.gallery.length ? `<div class="gallery">${p.gallery.slice(0, 8).map((g) => `<img src="${esc(g.url)}" alt="${esc(g.title || '')}" loading="lazy">`).join('')}</div>` : ''}
+    <div class="grid2" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)">
+      <div class="card pad stack"><h2>Descripción</h2><div class="mod-body">${esc(plainBody(p.body)) || '<span class="t3">Sin descripción.</span>'}</div></div>
+      <div class="card"><div class="card-head"><h2>Versiones</h2><span class="sm t3">${versions.length}</span></div><div class="list">${versions.length ? versions.map((v) => {
+        const c = d.contents[v.id];
+        return `<div class="li" style="flex-direction:column;align-items:stretch;gap:8px"><div class="spread"><div style="min-width:0"><b class="ellipsis">${esc(v.number)}</b><div class="xs t3">Minecraft ${esc(v.gameVersions.join(', '))} · ${esc(v.loaders.map((l) => LOADER_FULL[l] || l).join(', '))}${v.kind !== 'release' ? ` · ${esc(v.kind)}` : ''} · ${esc(fmtDate(v.date))}${v.size ? ` · ${fmtMB(v.size / 1048576)}` : ''}</div></div>
+          <div class="btns">${tgt ? (fits(v) ? `<button class="btn s pri" data-a="mp-apply-v" data-v="${esc(v.id)}">Incorporar</button>` : '<span class="xs t3">Otra versión</span>') : `<button class="btn s pri" data-a="mp-create-v" data-v="${esc(v.id)}">Crear servidor</button>`}<button class="btn s ghost" data-a="mp-contents" data-v="${esc(v.id)}">Mods incluidos</button></div></div>
+          ${c ? (c.loading ? '<div class="bar indet"><i></i></div>' : c.error ? `<span class="sm t2">${esc(c.error)}</span>` : `<div class="sm" style="max-height:220px;overflow:auto">${c.mods.map(([n, sv, cl]) => `<div class="kv"><span>${esc(n)}</span><span class="xs t3">${sv && cl ? 'Servidor y jugadores' : sv ? 'Solo servidor' : 'Solo jugadores'}</span></div>`).join('')}${c.otherFiles ? `<div class="xs t3">Y ${c.otherFiles} archivos de configuración o recursos.</div>` : ''}</div>`) : ''}</div>`;
+      }).join('') : '<div class="pad sm t2">No hay versiones publicadas.</div>'}</div></div>
+    </div></div>`;
+}
 
 async function mpPrepare(args) {
   const root = document.getElementById('modal-root');
   root.innerHTML = `<div class="overlay"><div class="dialog"><h2>Leyendo el modpack</h2><div class="opstrip" data-tone="cycle"><span class="op-spin"></span><div class="grow"><b>Descargando y revisando</b><span class="sm t2">Versión de Minecraft, loader y qué archivos necesita el servidor.</span></div><span class="op-bar"><i></i></span></div></div></div>`;
   let path, info;
-  try { [path, info] = await invoke('modpack_prepare', { path: args.path || null, modrinthProject: args.modrinthProject || null, cfMod: args.cfMod || null }); } catch (e) { root.innerHTML = ''; fail(e); return; }
+  try { [path, info] = await invoke('modpack_prepare', { path: args.path || null, modrinthProject: args.modrinthProject || null, cfMod: args.cfMod || null, versionId: args.versionId || null }); } catch (e) { root.innerHTML = ''; fail(e); return; }
   root.innerHTML = '';
   const hw = state.hw || (state.hw = await invoke('hardware_snapshot'));
   let name = info.name, mem = Math.max(hw.assessment.recommendedServerRamMb, 4096), eula = false;

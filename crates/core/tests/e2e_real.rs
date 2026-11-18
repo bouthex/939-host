@@ -528,3 +528,31 @@ async fn e2e_log4shell_archivos() {
         println!("✔ protección de Mojang para {v} ({name}) descargada y verificada");
     }
 }
+
+/// Ficha de un modpack real de Modrinth (lo que muestra la vista de detalles) y su contenido
+/// leído del .mrpack verificado. Corre con «e2e_modrinth» en la CI.
+#[tokio::test]
+#[ignore]
+async fn e2e_modrinth_modpack_detalle() {
+    let tmp = tempfile::tempdir().unwrap();
+    paths::init(tmp.path().to_path_buf()).unwrap();
+    let m = modrinth::Modrinth;
+    let hits = m.search_modpacks("zombie", 0).await.expect("búsqueda de modpacks");
+    assert!(!hits.hits.is_empty(), "la búsqueda de «zombie» devuelve modpacks");
+    let mut checked = false;
+    for h in hits.hits.iter().take(6) {
+        let p = m.project_detail(&h.project_id).await.expect("ficha");
+        let authors = m.team_names(&p.team).await.unwrap_or_default();
+        let versions = m.modpack_versions(&p.id).await.unwrap_or_default();
+        println!("  · {} — {} descargas, equipo {:?}, {} versiones, {} imágenes", p.title, p.downloads, authors, versions.len(), p.gallery.len());
+        let Some(v) = versions.iter().find(|v| v.files.iter().any(|f| f.filename.ends_with(".mrpack") && f.size < 30_000_000)) else { continue };
+        let file = host939_core::modpack::download_modrinth(&v.id).await.expect("descarga verificada del .mrpack");
+        let files = host939_core::modpack::contents(&file).expect("índice del modpack");
+        let mods_n = files.iter().filter(|f| f.path.starts_with("mods/")).count();
+        println!("✔ {} {}: {} archivos, {} mods ({} solo para jugadores)", p.title, v.version_number, files.len(), mods_n, files.iter().filter(|f| !f.server).count());
+        assert!(!authors.is_empty(), "el equipo se lee de la API");
+        checked = true;
+        break;
+    }
+    assert!(checked, "al menos un modpack chico para revisar su contenido");
+}

@@ -246,7 +246,7 @@ document.addEventListener('click', (e) => {
   const fn = A[el.dataset.a];
   if (fn) { e.preventDefault(); Promise.resolve(fn(el, e)).catch(fail); }
 });
-A.nav = (el) => { state.tab = 'summary'; go(el.dataset.route); };
+A.nav = (el) => { state.tab = 'summary'; if (el.dataset.route === 'modpack' && typeof mp !== 'undefined') Object.assign(mp, { target: null, detail: null }); go(el.dataset.route); };
 A.copy = async (el) => {
   try { await navigator.clipboard.writeText(el.dataset.text); } catch { toast('No se pudo copiar', 'error'); return; }
   toast(el.dataset.msg || 'Copiado');
