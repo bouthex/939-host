@@ -72,6 +72,7 @@ impl LocalHost for AppLocal {
         if mgr.wait_inactive(server, Duration::from_secs(620)) { Ok(()) } else { Err("El servidor no se detuvo a tiempo.".into()) }
     }
     fn exited_unsaved(&self, server: &str) -> bool { self.0.state::<Manager>().take_exit_unsaved(server) }
+    fn friend_message(&self, node: &str) { let _ = self.0.emit("friend-message", serde_json::json!({ "node": node })); }
     fn command(&self, server: &str, cmd: &str) -> Result<(), String> { self.0.state::<Manager>().send_command(server, cmd).map_err(|e| e.message) }
     fn run_state(&self, server: &str) -> (String, String, u32) {
         let rt = self.0.state::<Manager>().runtime(server);
@@ -619,3 +620,38 @@ pub async fn servers_hosting(cluster: State<'_, Cluster>) -> AppResult<Vec<Hosti
     }
     Ok(out)
 }
+
+/* ── Amigos ── */
+
+fn ferr(e: anyhow::Error) -> AppError { AppError::invalid(e.to_string()) }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendsView { friends: Vec<host939_cluster::friends::FriendView>, requests: Vec<host939_cluster::friends::FriendRequest>, blocked: usize, available: bool }
+
+#[tauri::command]
+pub async fn friends_view(cluster: State<'_, Cluster>) -> AppResult<FriendsView> {
+    let n = cluster.node().await?;
+    let s = host939_cluster::friends::load();
+    Ok(FriendsView { friends: n.friends(), requests: n.friend_requests(), blocked: s.blocked.len(), available: s.available })
+}
+#[tauri::command]
+pub async fn friend_invite(cluster: State<'_, Cluster>) -> AppResult<String> { cluster.node().await?.friend_invite().map_err(ferr) }
+#[tauri::command]
+pub async fn friend_add(code: String, cluster: State<'_, Cluster>) -> AppResult<()> { cluster.node().await?.friend_add(&code).await.map(|_| ()).map_err(ferr) }
+#[tauri::command]
+pub async fn friend_answer(node: String, accept: bool, cluster: State<'_, Cluster>) -> AppResult<()> { cluster.node().await?.friend_answer(&node, accept).await.map_err(ferr) }
+#[tauri::command]
+pub async fn friend_remove(node: String, block: bool, cluster: State<'_, Cluster>) -> AppResult<()> { cluster.node().await?.friend_remove(&node, block).map_err(ferr) }
+#[tauri::command]
+pub async fn friend_unblock_all(cluster: State<'_, Cluster>) -> AppResult<()> {
+    let n = cluster.node().await?;
+    for b in host939_cluster::friends::blocked() { n.friend_unblock(&b).map_err(ferr)?; }
+    Ok(())
+}
+#[tauri::command]
+pub async fn friend_send(node: String, text: String, cluster: State<'_, Cluster>) -> AppResult<bool> { cluster.node().await?.friend_send(&node, &text).await.map_err(ferr) }
+#[tauri::command]
+pub async fn friend_chat(node: String, cluster: State<'_, Cluster>) -> AppResult<Vec<host939_cluster::friends::Message>> { Ok(cluster.node().await?.friend_chat(&node)) }
+#[tauri::command]
+pub async fn friend_set_available(on: bool, cluster: State<'_, Cluster>) -> AppResult<()> { cluster.node().await?.friend_set_available(on).map_err(ferr) }

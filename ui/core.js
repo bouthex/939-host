@@ -209,11 +209,11 @@ const leaveHooks = [];
 function onLeave(fn) { leaveHooks.push(fn); }
 
 /* ───────── navegación ───────── */
-const NAV = [['servers', 'Servidores', 'servers'], ['friends', 'Servidores de amigos', 'friends'], ['trash', 'Papelera', 'trash'], ['settings', 'Configuración', 'settings']];
+const NAV = [['servers', 'Servidores', 'servers'], ['friends', 'Servidores de amigos', 'friends'], ['people', 'Amigos', 'user'], ['trash', 'Papelera', 'trash'], ['settings', 'Configuración', 'settings']];
 function navKey() { return ['server', 'create', 'repair', 'modpack'].includes(state.route) ? 'servers' : state.route; }
 function paintNav() {
   const k = navKey();
-  $('#nav').innerHTML = NAV.map(([r, label, ic]) => `<button class="navi ${k === r ? 'on' : ''}" data-a="nav" data-route="${r}" ${k === r ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${r === 'servers' && state.servers.length ? `<span class="count">${state.servers.length}</span>` : ''}${r === 'trash' && state.trashCount ? `<span class="count" title="Servidores en la Papelera">${state.trashCount}</span>` : ''}</button>`).join('');
+  $('#nav').innerHTML = NAV.map(([r, label, ic]) => `<button class="navi ${k === r ? 'on' : ''}" data-a="nav" data-route="${r}" ${k === r ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${r === 'servers' && state.servers.length ? `<span class="count">${state.servers.length}</span>` : ''}${r === 'people' && state.peopleBadge ? `<span class="count" title="Mensajes o solicitudes sin ver">${state.peopleBadge}</span>` : ''}${r === 'trash' && state.trashCount ? `<span class="count" title="Servidores en la Papelera">${state.trashCount}</span>` : ''}</button>`).join('');
 }
 async function refreshTrashCount() {
   try { const n = (await invoke('trash_list', {})).length; if (n !== state.trashCount) { state.trashCount = n; paintNav(); } } catch { /* sin datos */ }

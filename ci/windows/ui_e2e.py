@@ -257,6 +257,19 @@ async def main():
             await p.wait_for_selector('#foot-ic .pcav.photo img', timeout=15000)
             return "foto guardada y visible en la barra lateral"
         await step("foto de perfil desde una imagen de la PC", photo())
+
+        async def people():
+            await p.click('[data-a=nav][data-route=people]')
+            await p.wait_for_selector('h1:has-text("Amigos")', timeout=15000)
+            await p.click('[data-a=ppl-invite]')
+            await p.wait_for_selector('.dialog .addr', timeout=15000)
+            code = (await p.inner_text('.dialog .addr')).strip()
+            await shot("amigos-invitar", 200)
+            await p.click('.dialog .btn.pri')
+            if not code.startswith("amigo:"):
+                raise RuntimeError(f"código inesperado: {code[:20]}")
+            return "sección Amigos y código de invitación"
+        await step("amigos: abrir la sección e invitar", people())
         await p.click('[data-a=nav][data-route=servers]')
         await p.click('.li[data-id]')
         await p.click('[data-a=nav][data-route=trash]')

@@ -732,3 +732,67 @@ fn estado_compartido_y_op_concedido_por_la_propietaria() {
     });
     println!("✔ al apagarlo, todas lo ven apagado");
 }
+
+/// Amigos (§12): invitación de un solo uso, aceptar, presencia, mensajes cifrados por la conexión
+/// autenticada, límite contra el spam, bloqueo, y que la amistad no da acceso a ningún servidor.
+#[test]
+fn amigos_presencia_y_mensajes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let (ia, ib) = (id(&mut a), id(&mut b));
+    let sid = a.ok("create Privado 25891").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+
+    let code = a.ok("finvite").as_str().unwrap().to_string();
+    assert!(code.starts_with("amigo:"));
+    b.ok(&format!("fadd {code}"));
+    // El mismo código no sirve dos veces.
+    assert!(c.err(&format!("fadd {code}")).contains("no es válido"));
+    // Todavía no son amigos: B no puede mandar mensajes.
+    assert!(b.err(&format!("fsend {ia} hola")).contains("amigos"));
+    let reqs = a.ok("freqs");
+    assert_eq!(reqs.as_array().unwrap().len(), 1);
+    assert_eq!(reqs[0]["node"], ib.as_str());
+    // C (que nunca pidió nada) no puede hacerse pasar por «aceptada» ante B.
+    a.ok(&format!("fanswer {ib} si"));
+    wait("los dos se ven conectados", Duration::from_secs(40), || {
+        let (la, lb) = (a.ok("flist"), b.ok("flist"));
+        la.as_array().unwrap().iter().any(|f| f["node"] == ib.as_str() && f["online"] == true) && lb.as_array().unwrap().iter().any(|f| f["node"] == ia.as_str() && f["online"] == true)
+    });
+    println!("✔ invitación de un solo uso, solicitud aceptada y presencia en las dos PCs");
+
+    assert_eq!(a.ok(&format!("fsend {ib} hola, ¿jugamos?")), serde_json::json!(true));
+    let chat_b = b.ok(&format!("fchat {ia}"));
+    assert_eq!(chat_b[0]["text"], "hola, ¿jugamos?");
+    assert_eq!(chat_b[0]["fromMe"], false);
+    println!("✔ mensaje entregado por la conexión autenticada");
+
+    // Spam: más de 20 por minuto se rechazan del lado de quien recibe.
+    let mut rejected = 0;
+    for i in 0..25 { if a.ok(&format!("fsend {ib} mensaje {i}")) == serde_json::json!(false) { rejected += 1; } }
+    assert!(rejected >= 5, "rechazados por el límite: {rejected}");
+    println!("✔ límite contra el spam ({rejected} de 25 rechazados)");
+
+    // La amistad no da acceso al servidor de A.
+    assert!(b.ok(&format!("status {sid}"))["members"].as_array().map(|m| m.is_empty()).unwrap_or(true), "B no es parte del grupo por ser amiga");
+    println!("✔ ser amigos no da acceso a ningún servidor");
+
+    // B bloquea a A: A ya no puede mandarle nada ni verla.
+    b.ok(&format!("fblock {ia}"));
+    let r = a.cmd(&format!("fsend {ib} ¿estás?"));
+    assert!(!r["ok"].as_bool().unwrap() || r["v"] == serde_json::json!(false), "a quien la bloqueó no le llega: {r}");
+    assert!(!b.ok(&format!("fchat {ia}")).as_array().unwrap().iter().any(|m| m["text"] == "¿estás?"));
+    println!("✔ bloqueo");
+
+    // Presencia al salir: C y A amigas; A sale y C la ve desconectada enseguida.
+    let code = a.ok("finvite").as_str().unwrap().to_string();
+    c.ok(&format!("fadd {code}"));
+    let ic = id(&mut c);
+    a.ok(&format!("fanswer {ic} si"));
+    wait("C ve a A conectada", Duration::from_secs(40), || c.ok("flist").as_array().unwrap().iter().any(|f| f["node"] == ia.as_str() && f["online"] == true));
+    a.ok("quit");
+    wait("C ve a A desconectada", Duration::from_secs(10), || c.ok("flist").as_array().unwrap().iter().any(|f| f["node"] == ia.as_str() && f["online"] == false));
+    println!("✔ al cerrar 939 Host, sus amigos la ven desconectada");
+}

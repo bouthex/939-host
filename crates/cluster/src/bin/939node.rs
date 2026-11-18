@@ -345,6 +345,15 @@ async fn main() {
                     Ok(serde_json::json!(true))
                 }
                 "voiceroute" => node.open_voice(&p(1), std::net::SocketAddr::from(([127, 0, 0, 1], p(2).parse::<u16>().unwrap_or(0)))).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "finvite" => node.friend_invite().map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "fadd" => node.friend_add(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
+                "freqs" => Ok(serde_json::to_value(node.friend_requests()).unwrap()),
+                "fanswer" => node.friend_answer(&p(1), p(2) == "si").await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "flist" => Ok(serde_json::to_value(node.friends()).unwrap()),
+                "fsend" => node.friend_send(&p(1), &parts[2..].join(" ")).await.map(|d| serde_json::json!(d)).map_err(|e| e.to_string()),
+                "fchat" => Ok(serde_json::to_value(node.friend_chat(&p(1))).unwrap()),
+                "fblock" => node.friend_remove(&p(1), true).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fpresence" => { node.presence_once().await; Ok(serde_json::json!(true)) }
                 "grantop" => node.grant_mc_op(&p(1), &p(2), &p(3)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "revokeop" => node.revoke_mc_op(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "ops" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_run_dir(&p(1)).join("ops.json")).unwrap_or_default())),

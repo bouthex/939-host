@@ -19,6 +19,7 @@
 
 pub mod cert;
 pub mod files;
+pub mod friends;
 pub mod moving;
 pub mod signed;
 pub mod wire;
@@ -87,6 +88,8 @@ pub trait LocalHost: Send + Sync + 'static {
     fn command(&self, _server: &str, _cmd: &str) -> Result<(), String> { Err("sin consola".into()) }
     /// Estado detallado del servidor en esta PC: stopped | starting | preparing | ready | running |
     /// saving | restarting | error, con un detalle en palabras y la cantidad de jugadores.
+    /// Llegó un mensaje de un amigo (para avisar en la interfaz).
+    fn friend_message(&self, _node: &str) {}
     fn run_state(&self, server: &str) -> (String, String, u32) { (if self.is_running(server) { "running" } else { "stopped" }.into(), String::new(), 0) }
 }
 
@@ -315,6 +318,9 @@ struct Inner {
     sync_now_limit: Mutex<RateLimit>,
     /// Pedidos de datos (sincronización y archivos) por PC. Una copia de 2 GB son ~260 pedidos.
     data_limit: Mutex<RateLimit>,
+    /// Presencia en vivo de los amigos y mensajes sin leer (ver `friends`).
+    friends_live: Mutex<HashMap<String, friends::Live>>,
+    unread: Mutex<HashMap<String, usize>>,
 }
 
 /// Estado de un servidor compartido tal como lo ve esta PC (para la interfaz).
@@ -498,7 +504,7 @@ pub struct GroupNode { inner: Arc<Inner>, router: Arc<Router> }
 impl GroupNode {
     /// Abre el nodo de esta PC y empieza a atender al grupo.
     pub async fn start(secret: [u8; 32], name: &str, relays: Relays, local: Arc<dyn LocalHost>, timing: Timing) -> Result<GroupNode> {
-        let alpns = vec![ALPN_CTRL.to_vec(), ALPN_SYNC.to_vec(), ALPN_MC.to_vec(), ALPN_BRIDGE.to_vec(), ALPN_JOIN.to_vec(), files::ALPN_FILES.to_vec(), ALPN_VOICE.to_vec()];
+        let alpns = vec![ALPN_CTRL.to_vec(), ALPN_SYNC.to_vec(), ALPN_MC.to_vec(), ALPN_BRIDGE.to_vec(), ALPN_JOIN.to_vec(), files::ALPN_FILES.to_vec(), ALPN_VOICE.to_vec(), friends::ALPN_FRIEND.to_vec()];
         let ep = host939_p2p::endpoint(secret, relays, alpns).await?;
         let me = ep.id().to_string();
         lease::set_local_node(&me);
@@ -512,15 +518,25 @@ impl GroupNode {
             stopping: Default::default(), join_limit: Mutex::new(RateLimit::new(5, 30)),
             ctrl_limit: Mutex::new(RateLimit::new(CTRL_PER_MIN, 20_000)), sync_now_limit: Mutex::new(RateLimit::new(12, 200)),
             data_limit: Mutex::new(RateLimit::new(3000, 50_000)),
+            friends_live: Default::default(), unread: Default::default(),
         });
         let h = Handler(inner.clone());
         let router = Router::builder(ep)
             .accept(ALPN_CTRL, h.clone()).accept(ALPN_SYNC, SyncH(inner.clone())).accept(ALPN_MC, McH(inner.clone()))
             .accept(ALPN_BRIDGE, BridgeH(inner.clone())).accept(ALPN_JOIN, JoinH(inner.clone())).accept(files::ALPN_FILES, files::FilesH(inner.clone()))
-            .accept(ALPN_VOICE, VoiceH(inner.clone()))
+            .accept(ALPN_VOICE, VoiceH(inner.clone())).accept(friends::ALPN_FRIEND, friends::FriendH(inner.clone()))
             .spawn();
         let node = GroupNode { inner: inner.clone(), router: Arc::new(router) };
         let n2 = node.clone();
+        // Presencia de amigos: una vuelta cada 30 s (mucho más liviana que la del grupo).
+        let n3 = node.clone();
+        tokio::spawn(async move {
+            loop {
+                if n3.inner.stopping.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                n3.presence_once().await;
+                tokio::time::sleep(friends::PRESENCE_EVERY).await;
+            }
+        });
         tokio::spawn(async move {
             loop {
                 if n2.inner.stopping.load(std::sync::atomic::Ordering::Relaxed) { break; }
@@ -1278,6 +1294,7 @@ impl GroupNode {
                 let _ = self.inner.rpc_timeout(&m.node_id, &Req::Bye { server: server.clone() }, Duration::from_secs(2)).await;
             }
         }
+        self.friends_bye().await;
         report
     }
 
