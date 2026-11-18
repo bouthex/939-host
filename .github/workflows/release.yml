@@ -43,9 +43,9 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Herramientas
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
+          scripts/ci-apt.sh mingw-w64 nsis zip
           rustup toolchain install
       # Sin caché en las versiones publicadas: compilación limpia y reproducible.
       - name: Compilar

@@ -35,9 +35,9 @@ jobs:
           [ "v$v" = "$TAG" ] || { echo "::error::La etiqueta $TAG no coincide con la versión $v"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Herramientas
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
+          scripts/ci-apt.sh mingw-w64 nsis zip
           rustup toolchain install
       - name: Pruebas
         run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster --features host939-cluster/pruebas
