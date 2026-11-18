@@ -93,6 +93,18 @@ pub fn status_retry(host: &str, port: u16, tries: u32) -> Result<StatusInfo, Str
     Err(last)
 }
 
+/// Reintenta hasta que pase `limit`. Recién encendido (convirtiendo el mundo, o en una PC lenta)
+/// el servidor puede cortar las consultas al instante: con una cantidad fija de intentos rápidos
+/// se agotaban en unos segundos y se informaba que no atendía conexiones cuando sí lo hacía.
+pub fn status_retry_for(host: &str, port: u16, limit: Duration) -> Result<StatusInfo, String> {
+    let end = Instant::now() + limit;
+    loop {
+        let e = match status(host, port, Duration::from_secs(5)) { Ok(s) => return Ok(s), Err(e) => e };
+        if Instant::now() + Duration::from_millis(1200) >= end { return Err(e); }
+        std::thread::sleep(Duration::from_millis(1200));
+    }
+}
+
 /// Por qué no pudo entrar alguien, en palabras.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -182,6 +194,49 @@ impl JoinWatch {
 
 #[cfg(test)]
 mod tests {
+    /// Servidor recién encendido que corta las consultas al instante durante `busy` y después
+    /// responde como Minecraft.
+    fn slow_server(busy: Duration) -> u16 {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let t0 = Instant::now();
+        std::thread::spawn(move || {
+            for c in l.incoming().flatten() {
+                let mut c = c;
+                if t0.elapsed() < busy { drop(c); continue; }
+                let mut b = [0u8; 256];
+                let _ = c.read(&mut b);
+                let json = br#"{"version":{"name":"26.3","protocol":800},"players":{"online":0,"max":4}}"#;
+                let mut body = vec![0u8];
+                varint(json.len() as u32, &mut body);
+                body.extend_from_slice(json);
+                let mut pkt = vec![];
+                varint(body.len() as u32, &mut pkt);
+                pkt.extend(body);
+                let _ = c.write_all(&pkt);
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn la_comprobacion_espera_a_un_servidor_lento_en_atender() {
+        // Antes: 8 intentos rápidos (unos 10 s) y «no atiende conexiones» aunque el servidor
+        // estuviera bien. Ahora se reintenta por tiempo.
+        let port = slow_server(Duration::from_secs(3));
+        let t0 = Instant::now();
+        let info = status_retry_for("127.0.0.1", port, Duration::from_secs(20)).expect("tenía que responder");
+        assert_eq!(info.version, "26.3");
+        assert!(t0.elapsed() >= Duration::from_secs(2), "respondió antes de tiempo: la prueba no prueba nada");
+        // Si nunca atiende, se rinde al cumplirse el límite, no antes.
+        let never = slow_server(Duration::from_secs(3600));
+        let t0 = Instant::now();
+        assert!(status_retry_for("127.0.0.1", never, Duration::from_secs(4)).is_err());
+        let took = t0.elapsed();
+        assert!(took >= Duration::from_millis(2500) && took < Duration::from_secs(8), "{took:?}");
+    }
+
     use super::*;
     #[test]
     fn explains_client_side_rejection_from_real_log() {

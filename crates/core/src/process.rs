@@ -579,7 +579,7 @@ pub fn spawn_reach_check(ev: Arc<dyn Events>, rt: Arc<Mutex<Runtime>>, id: Strin
     std::thread::spawn(move || {
         { let mut r = rt.lock().unwrap(); r.reach = Some("checking".into()); r.reach_error = None; }
         ev.server_changed(&id);
-        let res = crate::reach::status_retry("127.0.0.1", port, 8);
+        let res = crate::reach::status_retry_for("127.0.0.1", port, Duration::from_secs(60));
         {
             let mut r = rt.lock().unwrap();
             if r.status() != RunStatus::Running { return; }
