@@ -572,3 +572,41 @@ fn pc_atrasada_verifica_la_cadena_completa() {
     assert_eq!(c.ok(&format!("rejected {sid}")).as_u64().unwrap(), 0, "C no rechazó nada legítimo");
     println!("✔ una PC que estuvo congelada durante tres traspasos se pone al día verificando cada permiso");
 }
+
+/// Red team: una jugadora y una coanfitriona maliciosas anuncian direcciones falsas de otras PCs
+/// (un relay propio y una IP ajena) para que el resto intente llegar por ahí: verían sus IPs y
+/// podrían cortarles la conexión. Ninguna PC guarda esas direcciones.
+#[test]
+fn direcciones_falsas_de_otras_pcs_no_se_aceptan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let ib = id(&mut b);
+    // C (jugadora) dice que la dirección de B es un relay propio y una IP ajena.
+    let evil_b = format!(r#"[{{"id":"{ib}","addrs":[{{"Relay":"https://relay.evil.example/"}},{{"Ip":"203.0.113.9:4444"}}]}}]"#);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[("H939_TEST_EVIL_ADDRS", &evil_b)]);
+    let ic = id(&mut c);
+    // D (coanfitriona) dice lo mismo de C.
+    let evil_c = format!(r#"[{{"id":"{ic}","addrs":[{{"Relay":"https://relay.evil.example/"}},{{"Ip":"203.0.113.9:5555"}}]}}]"#);
+    let mut d = Node::spawn("D", &tmp.path().join("d"), true, &[("H939_TEST_EVIL_ADDRS", &evil_c)]);
+    let sid = a.ok("create Direcciones 25995").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25996"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    c.ok(&format!("join {t}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    d.ok(&format!("join {t}"));
+    d.ok(&format!("setport {sid} 25997"));
+    // Varias vueltas de consultas (0,7 s cada una en las pruebas).
+    std::thread::sleep(Duration::from_secs(8));
+    for n in [&mut a, &mut b] {
+        let p = n.ok("peersfile");
+        let p = p.as_str().unwrap();
+        assert!(!p.contains("evil.example") && !p.contains("203.0.113.9"), "{}: guardó una dirección falsa: {p}", n.name);
+    }
+    // El grupo sigue funcionando: A sigue viendo a todas.
+    wait("A ve a las 4", Duration::from_secs(20), || a.status(&sid)["members"].as_array().unwrap().len() == 4);
+    println!("✔ direcciones falsas de otras PCs (relay propio, IP ajena) anunciadas por una jugadora o una coanfitriona: descartadas");
+}

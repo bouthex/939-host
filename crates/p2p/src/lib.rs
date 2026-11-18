@@ -62,6 +62,19 @@ pub fn without_ips(a: &EndpointAddr) -> EndpointAddr {
     EndpointAddr::from_parts(a.id, a.addrs.iter().filter(|t| !t.is_ip()).cloned())
 }
 
+/// ¿Es uno de los relays públicos de n0 (los únicos que configura 939 Host)?
+pub fn is_n0_relay(url: &iroh::RelayUrl) -> bool {
+    url.host_str().map(|h| h.ends_with(".relay.n0.iroh.link") || h == "relay.n0.iroh.link").unwrap_or(false)
+}
+
+/// Dirección de una PC contada por OTRA PC (no por ella misma): con relays sin IPs, y solo con
+/// relays de n0. Así un integrante no puede hacer que el resto intente llegar a otra PC a través
+/// de un relay propio (vería sus IPs y podría cortarles la conexión).
+pub fn hearsay(a: &EndpointAddr, relays: Relays) -> EndpointAddr {
+    let a = shareable(a, relays);
+    EndpointAddr::from_parts(a.id, a.addrs.iter().filter(|t| match t { iroh::TransportAddr::Relay(u) => is_n0_relay(u), _ => true }).cloned())
+}
+
 /// Lo que esta PC publica de sí misma según su modo: con relays, nunca sus IPs (las demás la
 /// encuentran por su identidad y el relay); sin relays, las IPs son la única forma de llegar.
 pub fn shareable(a: &EndpointAddr, relays: Relays) -> EndpointAddr {

@@ -660,3 +660,4 @@ fn server_logo_reaches_players_and_survives_handover() {
     assert!(b.ok(&format!("card {sid}"))["logo"].as_str().unwrap_or("").starts_with("data:image/png"));
     println!("✔ tras pasar el servidor a B, el logo sigue en todas las PCs");
 }
+

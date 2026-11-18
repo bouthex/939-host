@@ -1504,6 +1504,16 @@ impl Inner {
         }
     }
 
+    /// Dirección de una PC contada por otra (ver `host939_p2p::hearsay`).
+    fn learn_hearsay(&self, share: &ShareConfig, addr: &EndpointAddr, may_replace: bool) {
+        let key = addr.id.to_string();
+        // La propietaria agrega a las PCs y es de confianza total: lo suyo vale aunque esta PC
+        // todavía no haya adoptado la lista con la PC nueva. Una coanfitriona, solo integrantes.
+        if key == self.me || (!may_replace && share.member(&key).is_none()) { return; }
+        if !may_replace && self.peers.read().unwrap().contains_key(&key) { return; }
+        self.learn(host939_p2p::hearsay(addr, self.relays));
+    }
+
     fn learn(&self, addr: EndpointAddr) {
         // Con relays no hace falta guardar IPs de otras PCs (se las encuentra por su identidad).
         let addr = host939_p2p::shareable(&addr, self.relays);
@@ -1814,8 +1824,14 @@ impl Inner {
         let mut names: Vec<(String, String)> = vec![];
         for (node, info) in inbox {
             names.push((node.clone(), info.name.clone()));
-            if let Some(a) = &info.addr { self.learn(a.clone()); }
-            for p in &info.peers { self.learn(p.clone()); }
+            // Su propia dirección, solo si es de ella (no puede anunciar la de otra identidad).
+            if let Some(a) = &info.addr { if a.id.to_string() == node { self.learn(a.clone()); } }
+            // Direcciones de terceros: solo de quien puede hostear, para integrantes del grupo, y
+            // sin reemplazar lo que esta PC ya sabe salvo que lo diga la propietaria.
+            if share.member(&node).map(|m| m.can_host()).unwrap_or(false) {
+                let from_owner = signed::pin(&share).as_deref() == Some(node.as_str());
+                for p in &info.peers { self.learn_hearsay(&share, p, from_owner); }
+            }
             if let Some(remote) = &info.lease {
                 if self.accept_lease(server, remote, &node).await { self.after_lease_change(server).await; }
             }
@@ -2093,7 +2109,12 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             // Solo pruebas: simula una PC que responde lento (por ejemplo, ocupada apagando).
             #[cfg(feature = "pruebas")]
             if let Some(ms) = std::env::var("H939_TEST_SLOW_INFO_MS").ok().and_then(|v| v.parse::<u64>().ok()) { tokio::time::sleep(Duration::from_millis(ms)).await; }
-            Resp::Info(inner.my_info(&server, remote))
+            #[allow(unused_mut)]
+            let mut info = inner.my_info(&server, remote);
+            // Solo pruebas: un nodo malicioso anuncia direcciones falsas (la suya y la de otras PCs).
+            #[cfg(feature = "pruebas")]
+            if let Some(v) = std::env::var("H939_TEST_EVIL_ADDRS").ok().and_then(|j| serde_json::from_str::<Vec<EndpointAddr>>(&j).ok()) { info.addr = v.first().cloned(); info.peers = v; }
+            Resp::Info(info)
         }
         Req::Config { server } => {
             let mut share = network::load_share(&server);
