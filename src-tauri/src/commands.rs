@@ -257,9 +257,32 @@ pub fn open_folder(id: Option<String>, which: String) -> AppResult<()> {
 
 #[tauri::command]
 pub fn open_link(url: String) -> AppResult<()> {
-    const ALLOWED: &[&str] = &["https://aka.ms/MinecraftEULA", "https://modrinth.com", "https://fabricmc.net"];
-    if !ALLOWED.iter().any(|a| url.starts_with(a)) { return Err(AppError::invalid("Enlace no permitido")); }
+    if !link_allowed(&url) { return Err(AppError::invalid("Enlace no permitido")); }
     open_path(&url)
+}
+
+/// Solo https a dominios exactos conocidos (antes se comparaba el prefijo: `https://modrinth.com.ejemplo`
+/// pasaba). Sin usuario ni puerto en la dirección, sin espacios ni comillas.
+pub fn link_allowed(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    if url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\') { return false; }
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (host, path) = (&rest[..end], &rest[end..]);
+    if host.contains(['@', ':']) { return false; }
+    match host.to_ascii_lowercase().as_str() {
+        "aka.ms" => path == "/MinecraftEULA",
+        "modrinth.com" | "fabricmc.net" => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    #[test]
+    fn exact_domains_only() {
+        for ok in ["https://aka.ms/MinecraftEULA", "https://modrinth.com/mod/sodium", "https://fabricmc.net"] { assert!(super::link_allowed(ok), "{ok}"); }
+        for bad in ["https://modrinth.com.ejemplo.com/x", "https://aka.ms/otra", "http://modrinth.com", "https://evil@modrinth.com", "https://modrinth.com:444/x", "https://fabricmc.net\"&calc", "file:///C:/Windows", "https://ejemplo.com/?https://modrinth.com"] { assert!(!super::link_allowed(bad), "{bad}"); }
+    }
 }
 
 pub fn open_path(target: &str) -> AppResult<()> {
