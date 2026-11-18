@@ -731,3 +731,8 @@ html.reduce-motion .op-spin { animation: none; }
 .gallery img { height: 150px; border-radius: 10px; border: 1px solid var(--line); flex: none; object-fit: cover; }
 .mod-ic.lg { width: 64px; height: 64px; border-radius: 14px; }
 .link-plain { background: none; border: 0; padding: 0; cursor: pointer; }
+
+details.tech { margin-top: 6px; }
+details.tech > summary { cursor: pointer; padding: 6px 0; list-style: none; }
+details.tech > summary::before { content: '▸ '; }
+details.tech[open] > summary::before { content: '▾ '; }

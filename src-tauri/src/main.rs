@@ -318,6 +318,8 @@ fn main() {
             commands::list_runtimes,
             commands::jvm_preview,
             commands::quit_app,
+            aliases::public_address_get,
+            aliases::public_address_set,
             v3::modpack_detail,
             v3::cf_project,
             v3::modpack_contents,

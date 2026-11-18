@@ -2067,6 +2067,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "blake3",
+ "bytes",
  "chrono",
  "data-encoding",
  "futures-util",

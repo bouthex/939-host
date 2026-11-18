@@ -44,3 +44,4 @@ pub mod snapshots;
 pub mod sound;
 pub mod trash;
 pub mod version_change;
+pub mod voice;

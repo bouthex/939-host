@@ -723,3 +723,45 @@ fn tierra_e_inventario_no_retroceden() {
 }
 
 fn id_of(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }
+
+/// Chat de voz (Simple Voice Chat usa UDP en otro puerto): llega a la anfitriona por la conexión
+/// cifrada del grupo y vuelve, sin abrir puertos. Una PC fuera del grupo no puede usarlo.
+#[test]
+fn voz_por_udp_llega_a_la_anfitriona() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok("create Voz 25851").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("fakevoice {sid} 24854"));
+    b.ok(&format!("voiceroute {sid} 41854"));
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut got = String::new();
+    let end = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < end && got.is_empty() {
+        sock.send_to(b"hola-voz", "127.0.0.1:41854").unwrap();
+        let mut buf = [0u8; 256];
+        if let Ok((n, _)) = sock.recv_from(&mut buf) { got = String::from_utf8_lossy(&buf[..n]).to_string(); }
+    }
+    assert_eq!(got, "eco:hola-voz", "la voz llega a la anfitriona y vuelve por el túnel");
+    println!("✔ UDP de voz: jugadora → anfitriona → jugadora por la conexión cifrada");
+
+    // Una PC que no es del grupo no puede usar el túnel de voz de A.
+    let mut x = Node::spawn("X", &tmp.path().join("x"), true, &[]);
+    let addr_a = a.ok("myaddr");
+    x.ok(&format!("knowaddr {addr_a}"));
+    // Para X el servidor no existe: no tiene permiso ni sabe quién aloja; no puede abrir la ruta.
+    let r = x.cmd(&format!("voiceroute {sid} 41855"));
+    if r["ok"].as_bool().unwrap() {
+        let s2 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s2.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        s2.send_to(b"intruso", "127.0.0.1:41855").unwrap();
+        let mut buf = [0u8; 64];
+        assert!(s2.recv_from(&mut buf).is_err(), "una PC ajena no recibe respuesta");
+    }
+    println!("✔ una PC fuera del grupo no puede usar la voz");
+}

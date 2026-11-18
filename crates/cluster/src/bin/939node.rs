@@ -333,6 +333,18 @@ async fn main() {
                 "snapshot" => { let (l, s) = (local.clone(), p(1)); tokio::task::spawn_blocking(move || l.snapshot(&s, "prueba", "auto")).await.unwrap().map(|i| serde_json::to_value(i).unwrap()) }
                 // Punto «manual» como el botón de la interfaz (en una PC que no aloja queda como copia local).
                 "manualsnap" => { let (l, s) = (local.clone(), p(1)); tokio::task::spawn_blocking(move || l.snapshot(&s, "manual de prueba", "manual")).await.unwrap().map(|i| serde_json::to_value(i).unwrap()) }
+                // Simple Voice Chat simulado en esta PC: un jar con su nombre, su configuración y un eco UDP.
+                "fakevoice" => {
+                    let run = paths::server_run_dir(&p(1));
+                    std::fs::create_dir_all(run.join("mods")).map_err(|e| e.to_string())?;
+                    std::fs::create_dir_all(run.join("config/voicechat")).map_err(|e| e.to_string())?;
+                    std::fs::write(run.join("mods/voicechat-fabric-prueba.jar"), b"jar de prueba").map_err(|e| e.to_string())?;
+                    std::fs::write(run.join("config/voicechat/voicechat-server.properties"), format!("port={}\n", p(2))).map_err(|e| e.to_string())?;
+                    let sock = tokio::net::UdpSocket::bind(("127.0.0.1", p(2).parse::<u16>().unwrap_or(0))).await.map_err(|e| e.to_string())?;
+                    tokio::spawn(async move { let mut b = vec![0u8; 2048]; while let Ok((n, a)) = sock.recv_from(&mut b).await { let mut r = b"eco:".to_vec(); r.extend_from_slice(&b[..n]); let _ = sock.send_to(&r, a).await; } });
+                    Ok(serde_json::json!(true))
+                }
+                "voiceroute" => node.open_voice(&p(1), std::net::SocketAddr::from(([127, 0, 0, 1], p(2).parse::<u16>().unwrap_or(0)))).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "grantop" => node.grant_mc_op(&p(1), &p(2), &p(3)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "revokeop" => node.revoke_mc_op(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "ops" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_run_dir(&p(1)).join("ops.json")).unwrap_or_default())),

@@ -43,6 +43,8 @@ pub const ALPN_SYNC: &[u8] = b"939host/sync/1";
 pub const ALPN_MC: &[u8] = b"939host/mc/2";
 pub const ALPN_BRIDGE: &[u8] = b"939host/bridge/1";
 pub const ALPN_JOIN: &[u8] = b"939host/join/2";
+/// Voz (UDP de Simple Voice Chat) por datagramas QUIC, cifrados como el resto.
+pub const ALPN_VOICE: &[u8] = b"939host/voice/1";
 
 /* ─────────────────────────── Lo que el nodo necesita de la app ─────────────────────────── */
 
@@ -209,6 +211,9 @@ pub struct Info {
     pub state_detail: String,
     #[serde(default)]
     pub players: u32,
+    /// Puerto UDP de voz (Simple Voice Chat) del servidor encendido en esta PC.
+    #[serde(default)]
+    pub voice_port: Option<u16>,
 }
 
 /// Estado del servidor que ven todas las PCs del grupo (el de la PC que lo aloja).
@@ -493,7 +498,7 @@ pub struct GroupNode { inner: Arc<Inner>, router: Arc<Router> }
 impl GroupNode {
     /// Abre el nodo de esta PC y empieza a atender al grupo.
     pub async fn start(secret: [u8; 32], name: &str, relays: Relays, local: Arc<dyn LocalHost>, timing: Timing) -> Result<GroupNode> {
-        let alpns = vec![ALPN_CTRL.to_vec(), ALPN_SYNC.to_vec(), ALPN_MC.to_vec(), ALPN_BRIDGE.to_vec(), ALPN_JOIN.to_vec(), files::ALPN_FILES.to_vec()];
+        let alpns = vec![ALPN_CTRL.to_vec(), ALPN_SYNC.to_vec(), ALPN_MC.to_vec(), ALPN_BRIDGE.to_vec(), ALPN_JOIN.to_vec(), files::ALPN_FILES.to_vec(), ALPN_VOICE.to_vec()];
         let ep = host939_p2p::endpoint(secret, relays, alpns).await?;
         let me = ep.id().to_string();
         lease::set_local_node(&me);
@@ -512,6 +517,7 @@ impl GroupNode {
         let router = Router::builder(ep)
             .accept(ALPN_CTRL, h.clone()).accept(ALPN_SYNC, SyncH(inner.clone())).accept(ALPN_MC, McH(inner.clone()))
             .accept(ALPN_BRIDGE, BridgeH(inner.clone())).accept(ALPN_JOIN, JoinH(inner.clone())).accept(files::ALPN_FILES, files::FilesH(inner.clone()))
+            .accept(ALPN_VOICE, VoiceH(inner.clone()))
             .spawn();
         let node = GroupNode { inner: inner.clone(), router: Arc::new(router) };
         let n2 = node.clone();
@@ -1051,7 +1057,69 @@ impl GroupNode {
             }
         });
         routes.insert(key, task);
+        // Voz: la misma dirección escucha también el UDP de Simple Voice Chat cuando otra PC aloja.
+        let vkey = format!("voice-watch:{server}");
+        if let Some(t) = routes.remove(&vkey) { t.abort(); }
+        let node = self.clone();
+        let sid = server.to_string();
+        routes.insert(vkey, tokio::spawn(async move { node.voice_watch(&sid, ip).await; }));
         Ok(())
+    }
+
+    /// Mantiene la escucha de voz de una dirección: abierta en el puerto de voz que informa la
+    /// anfitriona (si es otra PC y tiene Simple Voice Chat), cerrada si no.
+    async fn voice_watch(&self, server: &str, ip: std::net::Ipv4Addr) {
+        let mut open: Option<(u16, tokio::task::JoinHandle<()>)> = None;
+        loop {
+            let want = lease::read(server).filter(|l| l.state == LeaseState::Hosting && l.host != self.inner.me).and_then(|l| {
+                self.inner.with_state(server, |s| s.infos.get(&l.host).and_then(|i| i.voice_port))
+            });
+            match (&open, want) {
+                (Some((p, _)), Some(w)) if *p == w => {}
+                (_, Some(w)) => {
+                    if let Some((_, t)) = open.take() { t.abort(); }
+                    match self.open_voice(server, std::net::SocketAddr::from((ip, w))).await {
+                        Ok(t) => open = Some((w, t)),
+                        Err(e) => debug(&format!("voz: no se pudo escuchar en {ip}:{w}: {e}")),
+                    }
+                }
+                (Some(_), None) => { if let Some((_, t)) = open.take() { t.abort(); } }
+                (None, None) => {}
+            }
+            tokio::time::sleep(self.inner.timing.poll).await;
+        }
+    }
+
+    /// Escucha UDP local y lleva cada cliente de voz a la anfitriona actual por su propia conexión
+    /// cifrada (la anfitriona usa un socket por cliente: Simple Voice Chat los distingue así).
+    pub async fn open_voice(&self, server: &str, bind: std::net::SocketAddr) -> Result<tokio::task::JoinHandle<()>> {
+        let sock = Arc::new(tokio::net::UdpSocket::bind(bind).await.with_context(|| format!("no se pudo usar {bind} (UDP)"))?);
+        let inner = self.inner.clone();
+        let sid = server.to_string();
+        Ok(tokio::spawn(async move {
+            let mut peers: HashMap<std::net::SocketAddr, (Connection, Instant)> = HashMap::new();
+            let mut buf = vec![0u8; 2048];
+            loop {
+                let Ok((n, src)) = sock.recv_from(&mut buf).await else { break };
+                peers.retain(|_, (c, t)| c.close_reason().is_none() && t.elapsed() < Duration::from_secs(120));
+                if !peers.contains_key(&src) {
+                    let Some(host) = lease::read(&sid).filter(|l| l.state == LeaseState::Hosting).map(|l| l.host) else { continue };
+                    let Ok(id) = host.parse::<EndpointId>() else { continue };
+                    let addr = inner.peers.read().unwrap().get(&host).cloned().unwrap_or_else(|| EndpointAddr::new(id));
+                    let Ok(Ok(c)) = tokio::time::timeout(Duration::from_secs(6), inner.ep.connect(addr, ALPN_VOICE)).await else { continue };
+                    let Ok(mut hdr) = c.open_uni().await else { continue };
+                    if wire::write_frame(&mut hdr, sid.as_bytes()).await.is_err() { continue; }
+                    let _ = hdr.finish();
+                    let (c2, s2) = (c.clone(), sock.clone());
+                    tokio::spawn(async move { while let Ok(d) = c2.read_datagram().await { let _ = s2.send_to(&d, src).await; } });
+                    peers.insert(src, (c, Instant::now()));
+                }
+                if let Some((c, t)) = peers.get_mut(&src) {
+                    *t = Instant::now();
+                    if n <= c.max_datagram_size().unwrap_or(0) { let _ = c.send_datagram(bytes::Bytes::copy_from_slice(&buf[..n])); }
+                }
+            }
+        }))
     }
 
     pub async fn close_alias(&self, server: &str) {
@@ -1379,7 +1447,7 @@ fn card_for(cfg: &host939_core::model::ServerConfig, rev: u64) -> serde_json::Va
     let icon = std::fs::read(host939_core::paths::server_run_dir(&cfg.id).join("server-icon.png")).ok()
         .filter(|b| cfg.logo.is_some() && b.len() < 64 * 1024 && host939_core::logo::png_size(b).map(|s| s == (64, 64)).unwrap_or(false))
         .map(|b| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(b)));
-    serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "loaderVersion": cfg.loader_version, "rev": rev, "logo": icon })
+    serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "loaderVersion": cfg.loader_version, "rev": rev, "logo": icon, "publicAddress": host939_core::alias::public::get(&cfg.id) })
 }
 
 fn bump_rev(s: &mut ShareConfig) {
@@ -1780,6 +1848,7 @@ impl Inner {
             share_rev: rev(&share).unwrap_or(0), owner: signed::owner_of(&share).unwrap_or_default(), addr: None, peers: vec![], pending_mods: vec![],
             avatar: host939_core::avatar::own_hash(),
             state: String::new(), state_detail: String::new(), players: 0,
+            voice_port: if self.local.is_running(server) && lease::read(server).map(|l| l.held_by(&self.me)).unwrap_or(false) { host939_core::voice::port(server, self.local.mc_port(server)) } else { None },
         };
         let (state, state_detail, players) = self.state_of(server);
         let base = Info { state, state_detail, players, ..base };
@@ -2692,6 +2761,37 @@ impl ProtocolHandler for McH {
                 }
             });
         }
+    }
+}
+
+/// Voz en la anfitriona: un socket UDP por cliente hacia el puerto de Simple Voice Chat local.
+#[derive(Clone)]
+struct VoiceH(Arc<Inner>);
+impl std::fmt::Debug for VoiceH { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "voice") } }
+impl ProtocolHandler for VoiceH {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        let remote = conn.remote_id().to_string();
+        let inner = self.0.clone();
+        let Ok(mut hdr) = conn.accept_uni().await else { return Ok(()) };
+        let Ok(sid) = wire::read_frame(&mut hdr, 256).await else { return Ok(()) };
+        let server = String::from_utf8_lossy(&sid).to_string();
+        // Solo integrantes del grupo, y solo si esta PC aloja el servidor y tiene voz.
+        if !inner.is_member(&server, &remote) || !lease::read(&server).map(|l| l.held_by(&inner.me)).unwrap_or(false) { conn.close(1u32.into(), b"no"); return Ok(()); }
+        let Some(port) = host939_core::voice::port(&server, inner.local.mc_port(&server)).filter(|_| inner.local.is_running(&server)) else { conn.close(2u32.into(), b"sin voz"); return Ok(()) };
+        let Ok(sock) = tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await else { return Ok(()) };
+        if sock.connect(("127.0.0.1", port)).await.is_err() { return Ok(()); }
+        let mut buf = vec![0u8; 2048];
+        loop {
+            tokio::select! {
+                d = conn.read_datagram() => { let Ok(d) = d else { break }; let _ = sock.send(&d).await; }
+                r = sock.recv(&mut buf) => {
+                    let Ok(n) = r else { break };
+                    if n <= conn.max_datagram_size().unwrap_or(0) { let _ = conn.send_datagram(bytes::Bytes::copy_from_slice(&buf[..n])); }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(120)) => break,
+            }
+        }
+        Ok(())
     }
 }
 

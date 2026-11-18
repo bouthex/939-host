@@ -83,7 +83,8 @@ function drawHeader() {
   }
   const changed = state.lastState && state.lastState.id === c.id && state.lastState.key !== s.key;
   state.lastState = { id: c.id, key: s.key };
-  const meta = [`${versionLabel(c)}${c.javaMajor ? ` · Java ${c.javaMajor}` : ''}`, `<span class="mono">localhost:${c.port}</span>`];
+  const friendly = state.aliases?.items?.find((x) => x.id === c.id && x.inHosts && x.listening)?.address;
+  const meta = [`${versionLabel(c)}${c.javaMajor ? ` · Java ${c.javaMajor}` : ''}`, ...(friendly ? [`<span class="mono">${esc(friendly)}</span>`] : [])];
   if (v.status === 'running') meta.push(`Encendido hace ${fmtUptime(v.startedAt)}`);
   if (s.detail && !OPS[s.key]) meta.push(esc(s.detail));
   el.innerHTML = `<div class="srv-head">
@@ -208,6 +209,8 @@ tabDraw.summary = async (el) => {
             : '<span class="chk wait">Comprobando que reciba jugadores…</span>'}</div>
           <div class="kv"><span class="k">Para entrar hace falta</span><span class="stack" style="gap:6px;align-items:flex-end"><span class="ta-r">Minecraft <b>${esc(c.mcVersion)}</b>${c.loader === 'vanilla' ? ' sin mods' : ` con ${loaderName(c.loader)}${v.modsCount ? ` y los mismos ${v.modsCount} mods` : ' (el servidor no tiene mods)'}`}</span>${profileButton(c, v)}</span></div>
           ${aliasRow(c.id)}
+          ${publicRow(c.id)}
+          <details class="tech"><summary class="sm t3">Datos técnicos de conexión</summary>
           <div class="kv"><span class="k">Desde esta PC</span><span class="row" style="gap:6px"><span class="mono">localhost:${c.port}</span><button class="btn s icon ghost" data-a="copy" data-text="localhost:${c.port}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button></span></div>
           ${gg ? (() => {
             const others = gg.members.filter((m) => !m.isMe);
@@ -248,6 +251,7 @@ tabDraw.world = async (el) => {
       <div class="card kpi"><span class="l">Semilla</span><span class="v mono" style="font-size:14px;overflow-wrap:anywhere">${esc(w.seed || c.levelSeed || '—')}</span></div>
     </div>
     ${c.loader !== 'vanilla' ? await (async () => { try { const ml = await invoke('mods_list', { id: c.id, online: false }); return hasChunky(ml) ? chunkyHTML(c.id) : ''; } catch { return ''; } })() : ''}
+          </details>
     ${!w.exists ? `<div class="note">${icon('info')}<div class="grow"><b>Todavía no hay mundo</b><span class="sm t2">Se genera la primera vez que inicies el servidor.</span></div></div>` : ''}
     <div class="card list">
       <div class="li"><span class="srv-ic">${icon('folder')}</span><div class="grow"><b>Abrir la carpeta del mundo</b><div class="sm t2">«${esc(w.levelName)}» dentro de la carpeta del servidor.</div></div><button class="btn s" data-a="folder" data-which="world">Abrir</button></div>
@@ -672,5 +676,31 @@ A['member-op'] = async (el) => {
     if (!name) { toast('Escribí el nombre de su cuenta de Minecraft.', 'error'); return; }
     try { await invoke('group_mc_op', { id, node: el.dataset.node, mcName: name }); toast(`OP para ${name}`); } catch (e) { fail(e); }
   }
+  drawTab();
+};
+
+/* ── Jugadores sin 939 Host ── */
+const PUBLIC = {};
+function publicRow(id) {
+  if (PUBLIC[id] === undefined) { PUBLIC[id] = null; invoke('public_address_get', { id }).then((a) => { PUBLIC[id] = a || ''; if (state.route === 'server' && state.params.id === id && state.tab === 'summary') drawTab(); }).catch(() => {}); }
+  const a = PUBLIC[id];
+  return `<div class="kv"><span class="k">Sin 939 Host</span><span class="row" style="gap:6px">${a ? `<span class="mono">${esc(a)}</span><button class="btn s icon ghost" data-a="copy" data-text="${esc(a)}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button>` : '<span class="sm t3">Sin dirección pública</span>'}<button class="btn s ghost" data-a="public-edit" data-id="${esc(id)}">${a ? 'Cambiar' : 'Cómo hacerlo'}</button></span></div>`;
+}
+A['public-edit'] = async (el) => {
+  const id = el.dataset.id;
+  let val = PUBLIC[id] || '';
+  const r = await dialog({ title: 'Jugadores sin 939 Host', wide: true,
+    body: `<p>Las direcciones <b>.939host</b> y la conexión del grupo funcionan entre PCs con 939 Host: viajan cifradas y nadie del grupo ve la IP de tu casa (con el modo privado, ni siquiera entre ustedes).</p>
+      <p>Para que entre alguien <b>sin</b> 939 Host, su Minecraft tiene que llegar a una dirección pública. Eso necesita un punto de entrada en Internet, y 939 Host no lo trae incluido porque costaría dinero o expondría tu conexión. Opciones:</p>
+      <div class="list card">
+        <div class="li"><div class="grow"><b>Servicio de túnel con tu propia cuenta (recomendado)</b><div class="sm t2">Por ejemplo playit.gg (plan gratuito). Te da un nombre como <span class="mono">algo.joinmc.link</span>; tu IP queda oculta detrás del servicio. Ese servicio ve los datos de conexión (quién se conecta y cuándo) y tenés que tener su programa abierto. Soporta TCP y UDP (sirve para el chat de voz si agregás el puerto de voz).</div></div></div>
+        <div class="li"><div class="grow"><b>Tu dominio propio</b><div class="sm t2">Un registro SRV <span class="mono">_minecraft._tcp.mc.tudominio.com</span> que apunte al nombre de tu túnel te deja usar <span class="mono">mc.tudominio.com</span>. El dominio tiene costo anual.</div></div></div>
+        <div class="li"><div class="grow"><b>Abrir un puerto en el router</b><div class="sm t2">No lo recomendamos: muestra la IP de tu casa a quien se conecte. 939 Host nunca lo hace solo.</div></div></div>
+      </div>
+      <label class="field" style="margin-top:12px">Dirección pública que te dio tu servicio (opcional)<input class="input mono" id="pub-in" value="${esc(val)}" maxlength="200" spellcheck="false" placeholder="por ejemplo, mundo.joinmc.link"><span class="hint">Se muestra en este servidor y en la ficha del grupo. No se aceptan IP numéricas.</span></label>`,
+    buttons: [...(val ? [{ label: 'Quitar', value: 'clear' }] : []), { label: 'Guardar', value: 'save', kind: 'pri' }],
+    onMount: (d) => { const i = d.querySelector('#pub-in'); i.addEventListener('input', () => { val = i.value; }); } });
+  if (!r) return;
+  try { PUBLIC[id] = (await invoke('public_address_set', { id, address: r === 'clear' ? null : val })) || ''; toast(PUBLIC[id] ? 'Dirección pública guardada' : 'Dirección pública quitada'); } catch (e) { fail(e); }
   drawTab();
 };

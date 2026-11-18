@@ -128,3 +128,15 @@ pub async fn alias_apply_hosts() -> AppResult<()> {
     if list.iter().any(|e| !now.contains(e)) { return Err(AppError::new("hosts", "Windows no guardó el cambio en el archivo hosts. Puede que un antivirus lo esté bloqueando.")); }
     Ok(())
 }
+
+#[tauri::command]
+pub fn public_address_get(id: String) -> Option<String> { alias::public::get(&id) }
+
+/// Guarda (o quita) la dirección pública opcional y la publica en la ficha del grupo.
+#[tauri::command]
+pub async fn public_address_set(app: AppHandle, id: String, address: Option<String>) -> AppResult<Option<String>> {
+    instance::load(&id)?;
+    alias::public::set(&id, address.as_deref())?;
+    if let Ok(n) = app.state::<Cluster>().node().await { let _ = n.refresh_card(&id); }
+    Ok(alias::public::get(&id))
+}

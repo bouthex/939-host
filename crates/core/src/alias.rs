@@ -318,3 +318,48 @@ mod t {
         h.abort();
     }
 }
+
+/// Dirección pública opcional de un servidor, para jugadores **sin** 939 Host. 939 Host no la crea:
+/// la aporta quien use un servicio de túnel propio (por ejemplo, playit.gg con su cuenta) o un
+/// dominio propio con un registro SRV. Se guarda y se muestra; nunca se usa para exponer la IP.
+pub mod public {
+    use crate::error::{AppError, AppResult};
+    use crate::paths;
+    fn path(id: &str) -> std::path::PathBuf { paths::server_dir(id).join("direccion-publica.txt") }
+    pub fn get(id: &str) -> Option<String> { std::fs::read_to_string(path(id)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) }
+    /// Valida «nombre.dominio» o «nombre.dominio:puerto». Una IP numérica se rechaza: mostrarla
+    /// a todos podría revelar la conexión de la casa, que es justo lo que se quiere evitar.
+    pub fn validate(addr: &str) -> AppResult<String> {
+        let a = addr.trim().trim_end_matches('.').to_lowercase();
+        let (host, port) = match a.rsplit_once(':') { Some((h, p)) => (h.to_string(), Some(p.to_string())), None => (a.clone(), None) };
+        if let Some(p) = &port { if p.parse::<u16>().map(|n| n < 1).unwrap_or(true) { return Err(AppError::invalid("El puerto no es válido.")); } }
+        if host.parse::<std::net::IpAddr>().is_ok() || host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::Ipv6Addr>().is_ok() {
+            return Err(AppError::invalid("Usá un nombre (por ejemplo, el que te da tu servicio de túnel), no una IP: una IP numérica puede revelar la conexión de tu casa."));
+        }
+        let labels: Vec<&str> = host.split('.').collect();
+        if host.len() > 200 || labels.len() < 2 || labels.iter().any(|l| l.is_empty() || l.len() > 63 || l.starts_with('-') || l.ends_with('-') || !l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+            return Err(AppError::invalid("No parece una dirección válida (por ejemplo: mundo.joinmc.link o mc.midominio.com:25565)."));
+        }
+        Ok(a)
+    }
+    pub fn set(id: &str, addr: Option<&str>) -> AppResult<()> {
+        match addr.map(str::trim).filter(|a| !a.is_empty()) {
+            Some(a) => { let v = validate(a)?; paths::write_atomic(&path(id), v.as_bytes()) }
+            None => { let _ = std::fs::remove_file(path(id)); Ok(()) }
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn direccion_publica() {
+            assert_eq!(super::validate("Mundo.JoinMC.link").unwrap(), "mundo.joinmc.link");
+            assert!(super::validate("mc.midominio.com:25570").is_ok());
+            assert!(super::validate("181.45.3.2").is_err(), "IP numérica no");
+            assert!(super::validate("181.45.3.2:25565").is_err());
+            assert!(super::validate("[2800:810::1]:25565").is_err());
+            assert!(super::validate("localhost").is_err());
+            assert!(super::validate("mal..dominio").is_err());
+            assert!(super::validate("a.b:99999").is_err());
+        }
+    }
+}
