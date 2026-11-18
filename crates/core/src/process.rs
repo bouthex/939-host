@@ -285,7 +285,8 @@ impl Manager {
             let _ = paths::write_atomic(&run_dir.join("fabric-server-launcher.properties"), b"serverJar=server.jar\n");
         }
         check_lock(probe, &run_dir)?;
-        check_port(cfg.port)?;
+        let resolved = self.resolve_port(cfg)?;
+        let cfg = &resolved;
         // La configuración es la fuente de verdad: así el puerto y las opciones de esta PC valen
         // aunque server.properties venga de otra PC (traspaso o restauración).
         crate::properties::write_for(cfg)?;
@@ -410,6 +411,41 @@ impl Manager {
             });
         }
         Ok(())
+    }
+
+    /// Procesos de los servidores de 939 Host encendidos en esta PC: (id, nombre, pid).
+    pub fn own_processes(&self) -> Vec<(String, String, u32)> {
+        let rts: Vec<(String, Arc<Mutex<Runtime>>)> = self.runtimes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        rts.into_iter().filter_map(|(id, rt)| {
+            let pid = rt.lock().unwrap().pid?;
+            Some((id.clone(), crate::instance::load(&id).map(|c| c.name).unwrap_or(id), pid))
+        }).collect()
+    }
+
+    /// Antes de encender: si el puerto está ocupado, se averigua quién lo usa. Con el servidor
+    /// escuchando solo en esta PC (sin acceso desde la red local) el número de puerto es interno
+    /// —se juega por 939 Host, que lo lee de la configuración—, así que se pasa solo a uno libre.
+    /// Con acceso desde la red local, alguien puede estar entrando por ese número: no se cambia
+    /// sin preguntar (lo ofrece «Reparar»). Nunca se detiene ni se toca el otro programa.
+    fn resolve_port(&self, cfg: &ServerConfig) -> AppResult<ServerConfig> {
+        let mut cfg = cfg.clone();
+        if crate::ports::is_free(cfg.port) { return Ok(cfg); }
+        let occ = crate::ports::occupant(cfg.port, &self.own_processes());
+        let others: Vec<u16> = crate::instance::list_configs().into_iter().filter(|c| c.id != cfg.id).map(|c| c.port).collect();
+        let next = crate::ports::free_near(cfg.port, &others);
+        if crate::settings::load().lan_access {
+            return Err(AppError::new("port", format!(
+                "El puerto {} lo usa {}. Tocá «Reparar» para pasar este servidor a {}. Como está activado el acceso desde la red local, quien entre directo por IP va a tener que usar el puerto nuevo.",
+                cfg.port, occ.describe(), next.map(|p| p.to_string()).unwrap_or_else(|| "otro puerto libre".into()))));
+        }
+        let Some(next) = next else {
+            return Err(AppError::new("port", format!("El puerto {} lo usa {} y no se encontró otro libre cerca. Cerrá ese programa o elegí un puerto en Ajustes → Red.", cfg.port, occ.describe())));
+        };
+        let before = cfg.port;
+        cfg.port = next;
+        crate::instance::save(&cfg)?;
+        self.note(&cfg.id, &format!("El puerto {before} lo usa {}. Este servidor pasó al puerto {next}; con 939 Host tus amigos no tienen que cambiar nada.", occ.describe()));
+        Ok(cfg)
     }
 
     /// Detención ordenada: `stop` por consola. Un servidor grande con mods puede tardar varios
@@ -585,7 +621,7 @@ fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: S
             r.last_error = Some("Al servidor le faltó memoria (OutOfMemoryError).".into());
         }
         if RE_BIND.is_match(&line) {
-            r.last_error = Some(format!("El puerto {port} ya está en uso por otro programa. Cambiá el puerto en Ajustes → Red."));
+            r.last_error = Some(format!("El puerto {port} no se pudo abrir: lo está usando otro programa. Tocá «Reparar»: elige un puerto libre y lo vuelve a intentar."));
         }
         if line.contains("You need to agree to the EULA") {
             r.last_error = Some("Minecraft pide aceptar el EULA. Aceptalo en los ajustes del servidor.".into());
@@ -746,14 +782,6 @@ fn split_args(s: &str) -> Vec<String> {
 /// lleva 60 s sin escribir nada. Tope absoluto: 10 minutos.
 pub fn stop_gives_up(elapsed: Duration, quiet: Duration) -> bool {
     elapsed >= Duration::from_secs(600) || (elapsed >= Duration::from_secs(90) && quiet >= Duration::from_secs(60))
-}
-
-fn check_port(port: u16) -> AppResult<()> {
-    // Se prueba en loopback: no dispara el aviso del firewall de Windows para 939 Host.
-    match std::net::TcpListener::bind(("127.0.0.1", port)) {
-        Ok(l) => { drop(l); Ok(()) }
-        Err(_) => Err(AppError::new("port", format!("El puerto {port} está ocupado (¿otro servidor o programa?). Cambialo en Ajustes → Red."))),
-    }
 }
 
 fn check_lock(probe: &Probe, run_dir: &std::path::Path) -> AppResult<()> {

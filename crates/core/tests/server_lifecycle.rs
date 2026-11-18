@@ -125,12 +125,35 @@ async fn full_server_lifecycle() {
     assert!(!paths::server_run_dir(&cfg.id).join(".939host.lock").exists(), "el lock debe borrarse");
     println!("✔ detenido limpio, lock liberado");
 
-    // 7. Puerto ocupado → error claro
-    let blocker = std::net::TcpListener::bind(("127.0.0.1", 25611)).unwrap();
+    // 7. Puerto ocupado por otro programa que escucha en todas las direcciones (antes la
+    //    comprobación en 127.0.0.1 lo daba por libre, Java fallaba al abrirlo y «Reparar» decía que
+    //    no había problema).
+    let blocker = std::net::TcpListener::bind(("0.0.0.0", 25611)).unwrap();
+    // 7a. Con acceso desde la red local, el número importa: no se cambia solo, se explica.
+    let mut st = host939_core::settings::load();
+    st.lan_access = true;
+    host939_core::settings::save(&st).unwrap();
     let err = mgr.start(&probe, &cfg).unwrap_err();
     assert_eq!(err.code, "port");
+    assert!(err.message.contains("Reparar"), "{}", err.message);
+    println!("✔ con acceso de la red local: no cambia el puerto solo ({})", err.message);
+    // 7b. Predeterminado (solo esta PC): pasa solo a un puerto libre y enciende de verdad.
+    st.lan_access = false;
+    host939_core::settings::save(&st).unwrap();
+    mgr.start(&probe, &cfg).expect("enciende en otro puerto");
+    let moved = instance::load(&cfg.id).unwrap();
+    assert_ne!(moved.port, 25611);
+    assert!(wait_for(Duration::from_secs(400), || rt.lock().unwrap().status() == RunStatus::Running), "no encendió en el puerto nuevo");
+    let props = std::fs::read_to_string(paths::server_run_dir(&cfg.id).join("server.properties")).unwrap();
+    assert!(props.contains(&format!("server-port={}", moved.port)));
+    assert!(mgr.console(&cfg.id).iter().any(|l| l.contains(&format!("pasó al puerto {}", moved.port))), "se explica el cambio");
+    mgr.stop(&cfg.id).unwrap();
+    assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(100)));
     drop(blocker);
-    println!("✔ puerto ocupado detectado: {}", err.message);
+    let mut back = moved.clone();
+    back.port = 25611;
+    instance::save(&back).unwrap();
+    println!("✔ puerto ocupado por otro programa: el servidor pasó solo al {} y encendió", moved.port);
 
     // 8. Restaurar (crea backup de seguridad y aparta el mundo actual)
     backup::restore(&mgr, &cfg.id, &info.file, &cfg.mc_version).expect("restaurar");

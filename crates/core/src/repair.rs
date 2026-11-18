@@ -258,12 +258,18 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
     }
     let active = mgr.runtime(&cfg.id).lock().unwrap().is_active();
     // Solo si el puerto sigue ocupado ahora: un registro viejo con "FAILED TO BIND" no alcanza.
-    if !active && port_busy_any(cfg.port) {
-        let port = free_port(cfg.port);
+    // Comprobación igual a la de Java (modo exclusivo, IPv4 e IPv6): ver `ports`.
+    if !active && !crate::ports::is_free(cfg.port) {
+        let occ = crate::ports::occupant(cfg.port, &mgr.own_processes());
+        let others: Vec<u16> = crate::instance::list_configs().into_iter().filter(|c| c.id != cfg.id).map(|c| c.port).collect();
+        let port = crate::ports::free_near(cfg.port, &others);
+        let lan = crate::settings::load().lan_access;
         add(&mut problems, Problem { id: "port".into(), kind: "port".into(),
-            title: format!("El puerto {} está ocupado por otro programa", cfg.port),
-            explanation: "Otro programa (u otro servidor) ya usa ese puerto, así que Minecraft no puede escuchar ahí.".into(),
-            fix: port.map(|p| Fix { summary: format!("Usar el puerto libre {p}"), changes: vec![format!("Puerto {} → {p}. Tus amigos que entran con 939 Host no tienen que cambiar nada.", cfg.port)], actions: vec![Action::SetPort { port: p }], needs_authorization: false }),
+            title: format!("El puerto {} está ocupado", cfg.port),
+            explanation: format!("Lo usa {}, así que Minecraft no puede escuchar ahí. 939 Host no cierra ni modifica ese programa: cambia el puerto de este servidor.", occ.describe()),
+            fix: port.map(|p| Fix { summary: format!("Usar el puerto libre {p}"),
+                changes: vec![format!("Puerto {} → {p}. Tus amigos que entran con 939 Host no tienen que cambiar nada.{}", cfg.port, if lan { " Quien entre directo por la red local tiene que usar el puerto nuevo." } else { "" })],
+                actions: vec![Action::SetPort { port: p }], needs_authorization: false }),
             technical: tail(&log, "FAILED TO BIND", 3) });
     }
     if log.contains("OutOfMemoryError") {
@@ -420,13 +426,9 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
     Diagnosis { problems, fixable, summary }
 }
 
-fn port_busy_any(port: u16) -> bool { std::net::TcpListener::bind(("0.0.0.0", port)).is_err() || std::net::TcpListener::bind(("127.0.0.1", port)).is_err() }
 
 fn add(list: &mut Vec<Problem>, p: Problem) { if !list.iter().any(|x| x.id == p.id) { list.push(p); } }
 
-fn free_port(current: u16) -> Option<u16> {
-    (current.saturating_add(1)..=current.saturating_add(50)).chain(25565..25700).find(|p| *p >= 1024 && std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok())
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -469,7 +471,11 @@ pub async fn apply<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, action
                 cfg.java_major = *major;
                 applied.push(format!("Java {major}"));
             }
-            Action::SetPort { port } => { cfg.port = *port; applied.push(format!("Puerto {port}")); }
+            Action::SetPort { port } => {
+                // Se vuelve a comprobar justo antes de aplicarlo (otro programa pudo tomarlo).
+                let port = if crate::ports::is_free(*port) { *port } else { crate::ports::free_near(*port, &[]).ok_or_else(|| AppError::new("port", "No se encontró un puerto libre."))? };
+                cfg.port = port; applied.push(format!("Puerto {port}"));
+            }
             Action::SetMemory { mb } => { cfg.memory_mb = *mb; applied.push(format!("Memoria {mb} MB")); }
             Action::AcceptEula => { cfg.eula_accepted_at = Some(chrono::Local::now().to_rfc3339()); applied.push("EULA aceptado".into()); }
             Action::RestoreSnapshot { snap_id, label } => {
