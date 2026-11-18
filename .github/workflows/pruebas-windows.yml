@@ -33,6 +33,8 @@ jobs:
           # Compilación de prueba: habilita el puerto de depuración para la prueba de interfaz.
           # Los releases se compilan sin esta característica.
           CARGO_FEATURES: pruebas
+      - name: Interfaz (sintaxis y nombres globales repetidos)
+        run: node scripts/verificar-ui.js
       - name: Sin secretos en el ejecutable
         run: scripts/verificar-secretos.sh target/x86_64-pc-windows-gnu/release/939Host.exe
       - run: scripts/empaquetar.sh "$(scripts/version.sh)"

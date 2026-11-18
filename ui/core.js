@@ -468,18 +468,18 @@ function scrollSpy(tocSel, prefix) {
    Indicador discreto de lo que tarda: qué se hace, la etapa, el progreso real (si no se puede
    medir no hay porcentaje), cuándo terminó y, si falló, el motivo. Viene del backend (`op`) y
    también de los avisos de instalación, cambio de versión y reparación. */
-const OPS = new Map();
+const OPS_LIVE = new Map();
 function serverName(id) { return (state.servers || []).find((x) => x.config?.id === id)?.config?.name || ''; }
 function opUpsert(o) {
-  const prev = OPS.get(o.id);
-  OPS.set(o.id, { ...prev, ...o, at: Date.now() });
-  if (o.state === 'done' || o.state === 'cancelled') setTimeout(() => { const x = OPS.get(o.id); if (x && x.state !== 'running' && x.state !== 'error') { OPS.delete(o.id); paintOps(); } }, 4000);
+  const prev = OPS_LIVE.get(o.id);
+  OPS_LIVE.set(o.id, { ...prev, ...o, at: Date.now() });
+  if (o.state === 'done' || o.state === 'cancelled') setTimeout(() => { const x = OPS_LIVE.get(o.id); if (x && x.state !== 'running' && x.state !== 'error') { OPS_LIVE.delete(o.id); paintOps(); } }, 4000);
   paintOps();
 }
 function paintOps() {
   const root = document.getElementById('ops');
   if (!root) return;
-  const list = [...OPS.values()].slice(-4);
+  const list = [...OPS_LIVE.values()].slice(-4);
   root.innerHTML = list.map((o) => {
     const pct = o.state === 'running' && typeof o.fraction === 'number' ? Math.round(o.fraction * 100) : null;
     const who = o.server ? serverName(o.server) : '';
@@ -494,7 +494,7 @@ function paintOps() {
   }).join('');
 }
 A['op-cancel'] = async (el) => { el.disabled = true; el.textContent = 'Cancelando…'; await invoke('op_cancel', { id: Number(el.dataset.op) }).catch(fail); };
-A['op-dismiss'] = (el) => { OPS.delete(Number(el.dataset.op)) || OPS.delete(el.dataset.op); paintOps(); };
+A['op-dismiss'] = (el) => { OPS_LIVE.delete(Number(el.dataset.op)) || OPS_LIVE.delete(el.dataset.op); paintOps(); };
 async function setupOps() {
   for (const o of await invoke('ops_running').catch(() => [])) opUpsert(o);
   await listen('op', (ev) => opUpsert(ev.payload));
