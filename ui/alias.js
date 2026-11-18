@@ -26,7 +26,7 @@ A['alias-edit'] = async (el) => {
   const r = await dialog({ title: 'Dirección propia', confirm: 'Guardar',
     body: `<p>Una dirección fácil de recordar para entrar desde Minecraft, sin puerto.</p>
       <label class="field">Dirección<span class="affix"><input class="input mono" id="al-in" value="${esc(label)}" maxlength="40" spellcheck="false"><span class="mono t3">.939host</span></span><span class="hint" id="al-hint">Letras sin acentos, números y guiones.</span></label>
-      <div class="note">${icon('info')}<div class="grow sm"><b>Es una dirección interna.</b> Funciona en esta PC y en las de tu grupo que la creen en su 939 Host. Quien no tenga 939 Host no puede usarla, y no reemplaza a un dominio público. Para activarla, Windows pide permiso de administrador una vez: 939 Host solo agrega sus propias líneas al archivo hosts.</div></div>`,
+      <div class="note">${icon('info')}<div class="grow sm"><b>Es una dirección interna.</b> Funciona en esta PC y en las de tu grupo que la creen en su 939 Host. Quien no tenga 939 Host no puede usarla, y no reemplaza a un dominio público. Para activarla, Windows pide permiso de administrador una vez para «Windows PowerShell», que es el que agrega las líneas de 939 Host al archivo hosts (no toca nada más).</div></div>`,
     buttons: [...(cur ? [{ label: 'Quitar dirección', value: 'remove' }] : []), { label: 'Guardar', value: true, kind: 'pri' }],
     onMount: (d) => {
       const i = d.querySelector('#al-in');

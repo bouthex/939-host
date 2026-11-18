@@ -96,25 +96,28 @@ pub async fn alias_set(app: AppHandle, id: String, label: Option<String>) -> App
     Ok(r)
 }
 
-/// Escribe el bloque en el archivo hosts. Windows muestra su aviso de permisos (UAC); si se
-/// rechaza, no se cambia nada.
+/// Escribe el bloque en el archivo hosts. Windows muestra su aviso de permisos (UAC) para
+/// «Windows PowerShell»; si se rechaza, no se cambia nada.
+///
+/// Lo que corre como administrador es el PowerShell de `System32` con un script fijo que vuelve a
+/// validar cada entrada ([`alias::hosts_script`]), nunca `939Host.exe`: la carpeta de la app es
+/// del usuario, y un programa elevado desde ahí cargaría DLL de esa carpeta (cualquier programa
+/// del usuario podría dejar una ahí y conseguir permisos de administrador).
 #[tauri::command]
 pub async fn alias_apply_hosts() -> AppResult<()> {
     let list = entries();
-    alias::check_entries(&list)?;
-    let req = host939_core::paths::cache().join("pedido-hosts.txt");
-    host939_core::paths::write_atomic(&req, alias::encode(&list).as_bytes())?;
-    let exe = std::env::current_exe().map_err(|e| AppError::io("No se encontró 939 Host", e))?;
+    let script = alias::hosts_script(&list)?;
+    let encoded = alias::powershell_encoded(&script);
+    let ps = alias::powershell_path();
     let esc = |p: &std::path::Path| p.display().to_string().replace('\'', "''");
-    let script = format!("$p = Start-Process -FilePath '{}' -ArgumentList '--939-hosts','\"{}\"' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode", esc(&exe), esc(&req));
+    let launcher = format!("$p = Start-Process -FilePath '{}' -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode", esc(&ps));
     let out = tokio::task::spawn_blocking(move || {
-        let mut c = std::process::Command::new("powershell.exe");
-        c.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        let mut c = std::process::Command::new(&ps);
+        c.args(["-NoProfile", "-NonInteractive", "-Command", &launcher]);
         #[cfg(windows)]
         { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
         c.output()
     }).await.map_err(|e| AppError::new("hosts", "Se interrumpió").with_detail(e))?.map_err(|e| AppError::io("No se pudo pedir permiso a Windows", e))?;
-    let _ = std::fs::remove_file(&req);
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("canceled") || err.contains("cancelad") || err.contains("1223") { return Err(AppError::new("hosts", "Cancelaste el permiso de Windows: no se cambió nada.")); }
@@ -124,17 +127,4 @@ pub async fn alias_apply_hosts() -> AppResult<()> {
     let now = std::fs::read(alias::hosts_path()).map(|b| alias::current(&String::from_utf8_lossy(&b))).unwrap_or_default();
     if list.iter().any(|e| !now.contains(e)) { return Err(AppError::new("hosts", "Windows no guardó el cambio en el archivo hosts. Puede que un antivirus lo esté bloqueando.")); }
     Ok(())
-}
-
-/// Modo ayudante (se ejecuta con permisos de administrador): `939host.exe --939-hosts <pedido>`.
-/// Solo acepta entradas `127.93.*` con nombres `.939host` y solo toca el bloque de 939 Host.
-pub fn helper_main(args: &[String]) -> Option<i32> {
-    let i = args.iter().position(|a| a == "--939-hosts")?;
-    let code = (|| -> AppResult<()> {
-        let path = args.get(i + 1).ok_or_else(|| AppError::invalid("Falta el pedido"))?;
-        let txt = std::fs::read_to_string(path.trim_matches('"')).map_err(|e| AppError::io("No se pudo leer el pedido", e))?;
-        let list = alias::decode(&txt)?;
-        alias::write_hosts(&list)
-    })();
-    Some(if code.is_ok() { 0 } else { 2 })
 }

@@ -160,6 +160,64 @@ pub fn write_hosts(entries: &[Entry]) -> AppResult<()> {
     Ok(())
 }
 
+/// Script de PowerShell que escribe el bloque de 939 Host en el archivo hosts, para ejecutarlo con
+/// permisos de administrador. Lo ejecuta el PowerShell de `System32` (ruta absoluta en una carpeta
+/// protegida), **no** `939Host.exe`: así ningún programa ni DLL que esté en la carpeta de la app
+/// (donde el usuario puede escribir) corre como administrador. Las entradas van dentro del script
+/// (no en un archivo que se pueda cambiar en el medio) y el script las vuelve a validar.
+/// Deja el archivo igual que [`apply`] (mismo bloque, mismos finales de línea, copia `.bak`).
+pub fn hosts_script(entries: &[Entry]) -> AppResult<String> {
+    check_entries(entries)?;
+    let mut sorted = entries.to_vec();
+    sorted.sort_by(|a, b| a.label.cmp(&b.label));
+    let list = sorted.iter().map(|e| format!("'{} {}'", e.ip, e.label)).collect::<Vec<_>>().join(",");
+    Ok(format!(r#"$ErrorActionPreference = 'Stop'
+$entries = @({list})
+$re = '^127\.93\.(25[0-5]|2[0-4]\d|1?\d?\d)\.(25[0-5]|2[0-4]\d|1?\d?\d) [a-z0-9]([a-z0-9-]{{0,38}}[a-z0-9])?$'
+foreach ($e in $entries) {{ if ($e -cnotmatch $re) {{ exit 3 }} }}
+$p = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+$B = '{BEGIN}'
+$E = '{END}'
+$old = [IO.File]::ReadAllText($p)
+$nl = if ($old.Contains("`r`n")) {{ "`r`n" }} else {{ "`n" }}
+$out = New-Object System.Collections.Generic.List[string]
+$in = $false
+foreach ($l in ($old -split "`r?`n")) {{ $t = $l.Trim(); if ($t -ceq $B) {{ $in = $true; continue }}; if ($t -ceq $E) {{ $in = $false; continue }}; if (-not $in) {{ $out.Add($l) }} }}
+while ($out.Count -gt 0 -and $out[$out.Count - 1].Trim() -eq '') {{ $out.RemoveAt($out.Count - 1) }}
+$s = [string]::Join($nl, $out)
+if ($entries.Count -gt 0) {{
+  if ($s -ne '') {{ $s += $nl + $nl }}
+  $s += $B + $nl
+  foreach ($e in $entries) {{ $parts = $e -split ' '; $s += $parts[0] + "`t" + $parts[1] + '{SUFFIX}' + $nl }}
+  $s += $E
+}}
+$s += $nl
+$dir = Split-Path $p
+$bak = Join-Path $dir 'hosts.939host.bak'
+if (-not (Test-Path -LiteralPath $bak)) {{ [IO.File]::WriteAllText($bak, $old, (New-Object Text.UTF8Encoding $false)) }}
+if ($s -cne $old) {{
+  $tmp = Join-Path $dir 'hosts.939host.tmp'
+  [IO.File]::WriteAllText($tmp, $s, (New-Object Text.UTF8Encoding $false))
+  Move-Item -LiteralPath $tmp -Destination $p -Force
+}}
+exit 0
+"#))
+}
+
+/// `-EncodedCommand` de PowerShell: el script en UTF-16LE y base64 (evita problemas de comillas).
+pub fn powershell_encoded(script: &str) -> String {
+    use base64::Engine;
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// PowerShell de Windows por ruta absoluta (nunca se busca por nombre: Windows mira primero la
+/// carpeta de la app).
+pub fn powershell_path() -> std::path::PathBuf {
+    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
+    root.join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe")
+}
+
 /// Lleva cada conexión de `ip:25565` al servidor local en `127.0.0.1:port`. Para servidores no
 /// compartidos (los compartidos usan la ruta del grupo).
 pub async fn forward(ip: Ipv4Addr, port: impl Fn() -> Option<u16> + Send + Sync + 'static) -> std::io::Result<tokio::task::JoinHandle<()>> {
@@ -183,6 +241,24 @@ pub async fn forward(ip: Ipv4Addr, port: impl Fn() -> Option<u16> + Send + Sync 
 #[cfg(test)]
 mod t {
     use super::*;
+    #[test]
+    fn script_elevado_solo_lleva_entradas_validadas() {
+        let e = vec![Entry { label: "zeta".into(), ip: "127.93.1.2".parse().unwrap() }, Entry { label: "alfa".into(), ip: "127.93.1.3".parse().unwrap() }];
+        let s = hosts_script(&e).unwrap();
+        assert!(s.contains("$entries = @('127.93.1.3 alfa','127.93.1.2 zeta')"), "ordenadas como en apply: {s}");
+        assert!(s.contains(BEGIN) && s.contains(END) && s.contains("exit 3"));
+        // Intentos de inyección en la etiqueta o fuera del rango: ni se arma el script.
+        for bad in ["x';Start-Process calc;'", "a b", "ejemplo.com", "ñandu", ""] {
+            assert!(hosts_script(&[Entry { label: bad.into(), ip: "127.93.1.2".parse().unwrap() }]).is_err(), "{bad}");
+        }
+        assert!(hosts_script(&[Entry { label: "ok".into(), ip: "8.8.8.8".parse().unwrap() }]).is_err());
+        // Codificación de -EncodedCommand: UTF-16LE en base64.
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD.decode(powershell_encoded("exit 0")).unwrap();
+        let back: Vec<u16> = raw.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(String::from_utf16(&back).unwrap(), "exit 0");
+        assert!(powershell_path().ends_with("System32/WindowsPowerShell/v1.0/powershell.exe") || powershell_path().to_string_lossy().contains("System32"));
+    }
     #[test]
     fn ip_is_loopback_and_stable() {
         let a = ip_for("supervivencia-1a2b");

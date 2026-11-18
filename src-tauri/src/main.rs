@@ -121,8 +121,6 @@ fn data_root() -> std::path::PathBuf {
 fn main() {
     // Ayudante con permisos de administrador para el archivo hosts: hace solo eso y termina,
     // antes de abrir ventanas o de la comprobación de instancia única.
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(code) = aliases::helper_main(&args) { std::process::exit(code); }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_dialog::init())

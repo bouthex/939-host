@@ -533,6 +533,35 @@ fn rechazo_y_cuarentena_inmediata() {
     println!("✔ el rechazo va firmado a todo el grupo y vale aunque el archivo se instale a mano en otra PC");
 }
 
+/// Revocación: la propietaria quita a una coanfitriona. Con su identidad y su copia vieja, esa PC
+/// ya no puede bajar el mundo nuevo, administrar archivos ni pedir el servidor.
+#[test]
+fn pc_quitada_pierde_el_acceso() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut a, mut b, _c, sid) = three(tmp.path(), &[], 25977);
+    let ib = id(&mut b);
+    a.ok(&format!("start {sid}"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    assert!(b.ok(&format!("fls {sid}")).is_array(), "control: antes de quitarla, puede listar");
+    a.ok(&format!("remove {sid} {ib}"));
+    assert!(!a.ok(&format!("share_json {sid}"))["members"].as_array().unwrap().iter().any(|m| m["nodeId"] == ib.as_str()));
+    // Archivos: rechazado en la anfitriona.
+    let e = b.err(&format!("fls {sid}"));
+    println!("    archivos tras quitarla: {e}");
+    // Pedir el servidor: rechazado.
+    assert!(b.err(&format!("request {sid}")).len() > 0);
+    // El mundo nuevo: no le llega.
+    a.ok(&format!("write {sid} marca.txt despues"));
+    let s2 = a.ok(&format!("snapshot {sid}"));
+    b.ok(&format!("sync {sid}"));
+    std::thread::sleep(Duration::from_secs(6));
+    assert_ne!(fresh(&b.status(&sid)["myLatest"]), fresh(&s2), "una PC quitada no recibe el mundo nuevo");
+    let audit = a.ok(&format!("audit {sid}"));
+    println!("    auditoría: {}", audit.as_array().map(|v| v.iter().rev().take(4).map(|x| x.to_string()).collect::<Vec<_>>().join(" | ")).unwrap_or_default());
+    println!("✔ quitada del grupo: sin archivos, sin pedir el servidor y sin el mundo nuevo");
+}
+
 /// Modo privado sin relay disponible: no se conecta, aunque haya camino directo (nunca cambia a
 /// directo por su cuenta). La anfitriona está en la misma PC, sin relays.
 #[test]

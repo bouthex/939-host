@@ -36,3 +36,26 @@ async fn direccion_resuelve_y_conecta() {
     if let Err(p) = r { std::panic::resume_unwind(p); }
 }
 
+
+/// El script que Windows ejecuta como administrador (PowerShell de System32) deja el archivo hosts
+/// igual que la lógica de Rust, y rechaza entradas fuera de 939 Host. Solo con H939_TEST_HOSTS=1
+/// (CI de Windows, que corre como administrador).
+#[test]
+fn script_elevado_escribe_igual_que_rust() {
+    if std::env::var("H939_TEST_HOSTS").ok().as_deref() != Some("1") { eprintln!("omitida: H939_TEST_HOSTS=1 solo en CI"); return; }
+    let run = |script: &str| std::process::Command::new(alias::powershell_path())
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &alias::powershell_encoded(script)]).status().unwrap();
+    let before = String::from_utf8_lossy(&std::fs::read(alias::hosts_path()).unwrap()).to_string();
+    let e = vec![Entry { label: "zeta-ps".into(), ip: alias::ip_for("ps-a") }, Entry { label: "alfa-ps".into(), ip: alias::ip_for("ps-b") }];
+    assert!(run(&alias::hosts_script(&e).unwrap()).success());
+    let now = String::from_utf8_lossy(&std::fs::read(alias::hosts_path()).unwrap()).to_string();
+    assert_eq!(now, alias::apply(&before, &e), "el script de PowerShell y la lógica de Rust tienen que dar lo mismo");
+    // Un script alterado con una entrada ajena (redirigir otro dominio) no escribe nada.
+    let bad = alias::hosts_script(&e).unwrap().replace("'127.93.", "'203.0.113.").replace("alfa-ps'", "ejemplo.com'");
+    assert!(!run(&bad).success(), "tenía que rechazar la entrada ajena");
+    assert_eq!(String::from_utf8_lossy(&std::fs::read(alias::hosts_path()).unwrap()), now, "no cambió nada");
+    assert!(run(&alias::hosts_script(&[]).unwrap()).success());
+    let after = String::from_utf8_lossy(&std::fs::read(alias::hosts_path()).unwrap()).to_string();
+    assert_eq!(after.trim_end(), before.trim_end(), "el archivo hosts no quedó como estaba");
+    println!("✔ el script elevado escribe igual que Rust, rechaza entradas ajenas y deja el archivo como estaba");
+}
