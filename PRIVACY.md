@@ -22,9 +22,8 @@ de publicar la versión.
 | NeoForge: `maven.neoforged.net` | Al crear un servidor NeoForge | Pedidos de descarga |
 | Modrinth: `api.modrinth.com` | Al buscar, instalar, actualizar o vincular mods, al analizar un servidor con el asistente de reparación y al activar la reconexión automática del cliente | Texto de búsqueda y categorías, versión de Minecraft y loader, hashes de los mods instalados |
 | Modrinth: `cdn.modrinth.com` | Al mostrar íconos y capturas de mods, solo si **Íconos y capturas de los mods** está activado (viene activado) | Pedido de cada imagen |
-| Tu router (UPnP / NAT-PMP, red local) | Mientras compartís o estás unido a un servidor | Pedido de abrir un puerto UDP para la conexión directa |
 | PCs de tu grupo (iroh / QUIC, cifrado de extremo a extremo) | Mientras compartís un servidor o estás unido a uno | Mundo, mods y configuración del servidor compartido; estado del grupo; nombre de la PC; tráfico de Minecraft. Solo con las PCs que aceptaron una invitación |
-| Relays y descubrimiento públicos de iroh (number 0) | Solo si **Permitir relays públicos gratuitos** está activado (viene activado) | La clave pública del nodo y sus direcciones de red, para que el grupo se encuentre; si no hay conexión directa, paquetes **cifrados** que el relay no puede leer |
+| Relays y descubrimiento públicos de iroh (number 0) | Si **Relays públicos gratuitos** o el **Modo privado** están activados (los relays vienen activados) | La clave pública del nodo y la dirección del relay que usa (939 Host no publica tus IPs); el relay ve tu IP, cuándo te conectás y cuánto tráfico pasa, y reenvía paquetes **cifrados** que no puede leer. En modo privado, todo pasa por el relay y ninguna PC del grupo ve tu IP |
 
 Las descargas de Mojang, Adoptium, loaders y Modrinth también exponen tu dirección IP a esos servicios,
 como cualquier descarga.

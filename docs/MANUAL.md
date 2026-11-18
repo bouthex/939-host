@@ -81,7 +81,7 @@ Siempre hay una sola PC con **permiso de anfitriona**. Nadie más puede encender
 
 ### Conexión
 
-Orden que se intenta: directa (misma red, IPv6, UPnP) → hole punching entre routers → otra PC del grupo como puente → relay público gratuito solo para los datos si nada funciona. Sin relays públicos (se desactivan en **Este equipo**) solo queda directa o por otra PC. En **Grupo y anfitriona** cada PC muestra si está conectada «directa» o «por relay» y la latencia.
+Orden que se intenta: directa (misma red, IPv6, puertos que ya estén abiertos; 939 Host no abre puertos en el router) → hole punching entre routers → otra PC del grupo como puente → relay público gratuito solo para los datos si nada funciona. Sin relays públicos (se desactivan en **Este equipo**) solo queda directa o por otra PC. En **Grupo y anfitriona** cada PC muestra si está conectada «directa» o «por relay» y la latencia.
 
 ## 5. Este equipo y configuración
 
@@ -153,12 +153,12 @@ CurseForge exige una clave de su API oficial para que otras apps busquen y desca
 1. Entrá a [console.curseforge.com](https://console.curseforge.com/) (CurseForge for Studios), creá una
    cuenta y completá el formulario para una clave de API, aceptando sus términos para terceros.
 2. CurseForge revisa el pedido y avisa por correo cuando la aprueba.
-3. Para usarla en tu PC: **Mods → CurseForge → Pegar la clave** (se guarda solo en esa PC).
-4. Para que venga en las versiones de 939 Host: en GitHub, **Settings → Secrets and variables →
-   Actions → New repository secret**, con el nombre `CURSEFORGE_API_KEY`. Las compilaciones la usan
-   sin que aparezca en el código.
+3. Para usarla en tu PC: **Mods → CurseForge → Pegar la clave**. Se guarda protegida con DPAPI solo
+   en esa PC y nunca se muestra ni se registra.
 
-La clave es personal: no la compartas ni la subas al repositorio. Si el autor de un mod no permite
+939 Host no incluye ninguna clave en el ejecutable ni en el instalador (sería extraíble por cualquiera).
+Sin clave, podés descargar el modpack desde la web de CurseForge y crear el servidor con **Desde un
+archivo**. La clave es personal: no la compartas ni la subas al repositorio. Si el autor de un mod no permite
 descargarlo desde otras apps, 939 Host no lo descarga y te ofrece abrir su página.
 
 ## 8. Problemas comunes

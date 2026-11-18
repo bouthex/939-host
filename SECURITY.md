@@ -35,6 +35,11 @@ Nos interesan especialmente:
 Fuera de alcance: vulnerabilidades del propio Minecraft, de mods de terceros o de servicios externos
 (Mojang, Modrinth, Adoptium); reportalas a sus responsables.
 
+## Diseño de seguridad
+
+El modelo de amenazas, los controles por rol, la privacidad de red, el modo privado, la protección de
+archivos y mods, y los riesgos que siguen existiendo están en [docs/SEGURIDAD.md](docs/SEGURIDAD.md).
+
 ## Integridad de las descargas
 
 Las releases se compilan en GitHub Actions desde este repositorio, con `SHA256SUMS.txt` y atestación de
