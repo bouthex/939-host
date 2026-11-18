@@ -34,15 +34,29 @@ pub fn sha256_file(p: &Path) -> Option<String> {
     Some(hex::encode(h.finalize()))
 }
 
-/// `.jar` en una carpeta: nombre → huella.
+/// ¿Es un archivo que un loader puede cargar como mod? `.jar` (Fabric, Forge, NeoForge) y `.zip`
+/// (Forge viejo también los carga).
+fn is_mod_file(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.ends_with(".jar") || n.ends_with(".zip")
+}
+
+/// Mods en una carpeta y sus subcarpetas (Forge viejo carga `mods/<versión>/`): ruta relativa
+/// con `/` → huella. No sigue enlaces.
 pub fn jars(dir: &Path) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let n = e.file_name().to_string_lossy().to_string();
-        if !n.to_ascii_lowercase().ends_with(".jar") { continue; }
-        if !e.file_type().map(|t| t.is_file()).unwrap_or(false) { continue; }
-        if let Some(h) = sha256_file(&e.path()) { out.insert(n, h); }
+    fn walk(base: &Path, dir: &Path, depth: u32, out: &mut BTreeMap<String, String>) {
+        if depth > 6 { return; }
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let Ok(t) = e.file_type() else { continue };
+            let p = e.path();
+            if t.is_dir() { walk(base, &p, depth + 1, out); continue; }
+            if !t.is_file() || !is_mod_file(&e.file_name().to_string_lossy()) { continue; }
+            let Ok(rel) = p.strip_prefix(base) else { continue };
+            if let Some(h) = sha256_file(&p) { out.insert(rel.to_string_lossy().replace('\\', "/"), h); }
+        }
     }
+    let mut out = BTreeMap::new();
+    walk(dir, dir, 0, &mut out);
     out
 }
 
@@ -83,6 +97,7 @@ pub fn enforce(id: &str) -> AppResult<(Vec<String>, Vec<String>)> {
     for (name, h) in jars(&q) {
         if approved.contains(&h) || !strict {
             let dst = mods_dir(id).join(&name);
+            if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
             if !dst.exists() && std::fs::rename(q.join(&name), &dst).is_ok() { back.push(name); }
         }
     }
@@ -91,8 +106,8 @@ pub fn enforce(id: &str) -> AppResult<(Vec<String>, Vec<String>)> {
     let mut moved = vec![];
     for (name, h) in jars(&mods_dir(id)) {
         if rec.contains(&h) && !approved.contains(&h) {
-            std::fs::create_dir_all(&q).map_err(|e| AppError::io("No se pudo crear la cuarentena de mods", e))?;
             let dst = q.join(&name);
+            std::fs::create_dir_all(dst.parent().unwrap_or(&q)).map_err(|e| AppError::io("No se pudo crear la cuarentena de mods", e))?;
             if dst.exists() { let _ = std::fs::remove_file(&dst); }
             paths::rename_retry(&mods_dir(id).join(&name), &dst).map_err(|e| AppError::io("No se pudo apartar un mod sin aprobar", e))?;
             moved.push(name);
@@ -144,10 +159,21 @@ mod t {
         record_received(id, &before);
         let (moved, _) = enforce(id).unwrap();
         assert_eq!(moved, vec!["nuevo.jar".to_string()]);
+        // Un mod recibido escondido en una subcarpeta (Forge viejo carga `mods/<versión>/`) o como
+        // `.zip` también queda en cuarentena.
+        let before = snapshot(id);
+        std::fs::create_dir_all(m.join("1.12.2")).unwrap();
+        std::fs::write(m.join("1.12.2/escondido.jar"), b"otra pc").unwrap();
+        std::fs::write(m.join("viejo.ZIP"), b"otra pc zip").unwrap();
+        assert_eq!(record_received(id, &before), 2);
+        let (moved, _) = enforce(id).unwrap();
+        assert!(moved.contains(&"1.12.2/escondido.jar".to_string()) && moved.contains(&"viejo.ZIP".to_string()), "{moved:?}");
+        assert!(!m.join("1.12.2/escondido.jar").exists() && !m.join("viejo.ZIP").exists());
         // Política de confianza: no se aparta nada.
         s.mod_policy = Some("confiar-coanfitrionas".into());
         crate::network::save_share(id, &s).unwrap();
         let (moved, back) = enforce(id).unwrap();
-        assert!(moved.is_empty() && back == vec!["nuevo.jar".to_string()]);
+        assert!(moved.is_empty() && back.contains(&"nuevo.jar".to_string()) && back.contains(&"1.12.2/escondido.jar".to_string()), "{back:?}");
+        assert!(m.join("1.12.2/escondido.jar").exists());
     }
 }

@@ -387,6 +387,24 @@ fn majority(n: usize) -> usize { n / 2 + 1 }
 
 fn fresh(s: &Option<SnapshotInfo>) -> (u64, u64) { s.as_ref().map(|s| s.freshness()).unwrap_or((0, 0)) }
 
+/// ¿Se puede copiar de `source` un punto de la época `snap_epoch`? El anuncio de un punto (época
+/// y secuencia en `Info`) y el índice que se baja no tienen firma: los escribe quien los manda.
+/// Por eso solo se copia de quien puede hostear según la lista firmada (nunca de una jugadora),
+/// nunca de una época que esta PC todavía no verificó, y la época actual solo de la anfitriona
+/// actual (la única que crea puntos en esa época). Sin esto, un integrante podía anunciar un punto
+/// «más nuevo que todos» y hacer que el resto lo copiara y lo levantara al alojar.
+pub fn sync_source_ok(cur: Option<&Lease>, share: &ShareConfig, source: &str, snap_epoch: u64) -> bool {
+    let Some(c) = cur else { return false };
+    if !share.member(source).map(|m| m.can_host()).unwrap_or(false) { return false; }
+    if snap_epoch > c.epoch { return false; }
+    snap_epoch < c.epoch || c.host == source
+}
+
+/// Frescura de un punto anunciado por `node`, o (0, 0) si no se puede copiar de esa PC.
+fn usable_fresh(cur: Option<&Lease>, share: &ShareConfig, node: &str, latest: &Option<SnapshotInfo>) -> (u64, u64) {
+    match latest { Some(l) if sync_source_ok(cur, share, node, l.epoch) => l.freshness(), _ => (0, 0) }
+}
+
 fn has_copy(server: &str) -> bool { host939_core::instance::load(server).is_ok() }
 
 fn mc_version(server: &str) -> String { host939_core::instance::load(server).map(|c| c.mc_version).unwrap_or_default() }
@@ -1592,7 +1610,9 @@ impl Inner {
                 let ok = s.last_ok.get(node).map(|t| t.elapsed() < window).unwrap_or(false);
                 let is_host = l.as_ref().map(|l| l.held_by(node)).unwrap_or(false);
                 if ok && !is_host && info.can_host && share.member(node).map(|m| m.can_host()).unwrap_or(false) {
-                    c.push((fresh(&info.latest), info.score, node.clone()));
+                    // Una época que esta PC no verificó no cuenta (el anuncio no tiene firma).
+                    let f = match &info.latest { Some(x) if l.as_ref().map(|l| x.epoch <= l.epoch).unwrap_or(false) => x.freshness(), _ => (0, 0) };
+                    c.push((f, info.score, node.clone()));
                 }
             }
         });
@@ -1655,6 +1675,12 @@ impl Inner {
         send.finish()?;
         let man = wire::read_frame(&mut recv, 64 * 1024 * 1024).await?;
         if man.is_empty() { bail!("la otra PC ya no tiene ese punto"); }
+        // Lo que dice el índice (época) se verifica contra el permiso de esta PC antes de bajar nada.
+        let mi = snapshots::manifest_info(&man).map_err(|e| anyhow!(e.message))?;
+        if mi.id != snap || !sync_source_ok(lease::read(server).as_ref(), &network::load_share(server), from, mi.epoch) {
+            audit(server, "sync-source-rejected", from);
+            bail!("el punto que ofrece esa PC no se puede verificar (época o PC no autorizadas)");
+        }
         let missing = snapshots::missing_blobs(server, &man).map_err(|e| anyhow!(e.message))?;
         let total = missing.len();
         let started = Instant::now();
@@ -1668,7 +1694,7 @@ impl Inner {
                 snapshots::put_blob(server, h, &data).map_err(|e| anyhow!(e.message))?;
             }
         }
-        let info = snapshots::import_manifest(server, &man).map_err(|e| anyhow!(e.message))?;
+        let info = snapshots::import_manifest(server, &man, from).map_err(|e| anyhow!(e.message))?;
         if total > 0 {
             self.local.note(server, &format!("Sincronizado «{}»: {} bloques nuevos en {:.1} s.", info.label, total, started.elapsed().as_secs_f32()));
         }
@@ -1876,10 +1902,13 @@ impl Inner {
     async fn sync_from_best(self: &Arc<Self>, server: &str) {
         let mine = fresh(&snapshots::latest(server));
         let window = self.timing.poll * 3;
+        let cur = lease::read(server);
+        let share = network::load_share(server);
         let best = self.with_state(server, |s| {
             if s.syncing { return None; }
             s.infos.iter()
                 .filter(|(n, _)| s.last_ok.get(*n).map(|t| t.elapsed() < window).unwrap_or(false))
+                .filter(|(n, i)| usable_fresh(cur.as_ref(), &share, n, &i.latest) != (0, 0))
                 .filter_map(|(n, i)| i.latest.as_ref().map(|l| (l.freshness(), n.clone(), l.id.clone())))
                 .filter(|(f, _, _)| *f > mine)
                 .max_by(|a, b| a.0.cmp(&b.0))
@@ -2114,7 +2143,7 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
                 if l.epoch != epoch || l.state != LeaseState::Hosting || l.host == candidate || l.host == inner.me { return false; }
                 let host_seen = s.last_ok.get(&l.host).copied().unwrap_or(inner.started);
                 if host_seen.elapsed() < inner.timing.host_dead.mul_f32(0.8) { return false; }
-                if cand < mine { return false; }
+                if cand < mine || cand.0 > l.epoch { return false; }
                 if !network::load_share(&server).member(&candidate).map(|m| m.can_host()).unwrap_or(false) { return false; }
                 if candidate != remote { return false; }
                 match &s.voted {
@@ -2401,7 +2430,10 @@ impl ProtocolHandler for JoinH {
                         audit(&sid, "join", &remote);
                         inner.learn_from(conn.remote_id()).await;
                         // Direcciones para llegar al grupo: con relays, solo identidad y relay (sin IPs).
-                        let peers = { let p = inner.peers.read().unwrap(); s.members.iter().filter(|m| m.node_id != remote).filter_map(|m| p.get(&m.node_id).map(|a| host939_p2p::shareable(a, inner.relays))).collect() };
+                        // Mínimo conocimiento: una jugadora solo necesita llegar a la propietaria (esta PC,
+                        // ya la conoce) y a la anfitriona; las direcciones del resto no se le pasan.
+                        let host_now = lease::read(&sid).map(|l| l.host).unwrap_or_default();
+                        let peers = { let p = inner.peers.read().unwrap(); s.members.iter().filter(|m| m.node_id != remote && (role != "jugador" || m.node_id == host_now)).filter_map(|m| p.get(&m.node_id).map(|a| host939_p2p::shareable(a, inner.relays))).collect() };
                         JoinResp { ok: true, error: None, server: Some(sid), share: Some(out), role: Some(role.into()), peers }
                     }
                     None if limited => JoinResp { ok: false, error: Some("Demasiados intentos. Esperá un minuto.".into()), server: None, share: None, role: None, peers: vec![] },
@@ -2417,3 +2449,40 @@ impl ProtocolHandler for JoinH {
     }
 }
 
+
+#[cfg(test)]
+mod sync_sources {
+    //! Red team: integrantes que anuncian un punto «más nuevo que todos» para que el resto lo copie.
+    use super::*;
+    use host939_core::network::Member;
+
+    fn member(id: &str, role: &str) -> Member { Member { node_id: id.into(), name: id.into(), joined_at: "t".into(), role: role.into() } }
+    fn lease_at(epoch: u64, host: &str) -> Lease {
+        Lease { epoch, host: host.into(), host_name: "h".into(), state: LeaseState::Hosting, since: "t".into(), required: (0, 0), kind: LeaseKind::Handover, issuer: host.into(), prev: None, votes: vec![], sig: None }
+    }
+
+    #[test]
+    fn solo_se_copia_de_quien_puede_hostear_y_de_epocas_verificadas() {
+        let share = ShareConfig { enabled: true, members: vec![member("dueña", "propietario"), member("coan", "coanfitrion"), member("jug", "jugador")], ..Default::default() };
+        let cur = lease_at(5, "dueña");
+        // Jugadora maliciosa: nunca es fuente, anuncie lo que anuncie.
+        assert!(!sync_source_ok(Some(&cur), &share, "jug", 4));
+        assert!(!sync_source_ok(Some(&cur), &share, "jug", 5));
+        // Alguien de afuera del grupo.
+        assert!(!sync_source_ok(Some(&cur), &share, "extraño", 1));
+        // Época que esta PC no verificó (el anuncio «época 999» no tiene firma).
+        assert!(!sync_source_ok(Some(&cur), &share, "dueña", 6));
+        assert!(!sync_source_ok(Some(&cur), &share, "coan", 999));
+        // Época actual: solo de la anfitriona actual.
+        assert!(sync_source_ok(Some(&cur), &share, "dueña", 5));
+        assert!(!sync_source_ok(Some(&cur), &share, "coan", 5));
+        // Épocas anteriores (la anfitriona se cayó y quedaron copias en coanfitrionas): sí.
+        assert!(sync_source_ok(Some(&cur), &share, "coan", 4));
+        // Sin permiso verificado no se copia nada.
+        assert!(!sync_source_ok(None, &share, "dueña", 1));
+        // La frescura de un anuncio no utilizable no compite (no gana el candidato a anfitriona).
+        let fake: Option<SnapshotInfo> = serde_json::from_value(serde_json::json!({ "id": "x", "createdAt": "", "label": "", "kind": "auto", "mcVersion": "", "fileCount": 0, "totalBytes": 0, "newBytes": 0, "pauseMs": 0, "epoch": 999u64, "seq": u64::MAX })).ok();
+        assert!(fake.is_some());
+        assert_eq!(usable_fresh(Some(&cur), &share, "coan", &fake), (0, 0));
+    }
+}

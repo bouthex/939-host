@@ -295,6 +295,15 @@ fn invitaciones_vencidas_usadas_revocadas_y_manipuladas() {
     println!("✔ código manipulado: rechazado; el original sigue siendo de un solo uso y válido");
     // El código no lleva IPs cuando hay relays (acá sin relays sí, porque es la única forma de llegar).
     let ia = id(&mut a);
+    // Mínimo conocimiento al unirse: una jugadora (X) que usa un código de jugadora no recibe
+    // cómo llegar a la coanfitriona (Y), que no aloja. Antes la respuesta traía a todas las PCs.
+    let iy = id(&mut y);
+    a.ok(&format!("invite {sid} jugador"));
+    let secret = a.ok(&format!("invites {sid}")).as_array().unwrap().last().unwrap()["secret"].as_str().unwrap().to_string();
+    let r = x.ok(&format!(r#"raw {ia} join {{"secret":"{secret}","name":"X"}}"#));
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(!r["peers"].to_string().contains(&iy), "la jugadora recibió la dirección de una coanfitriona que no aloja: {r}");
+    println!("✔ al unirse, una jugadora no recibe direcciones de las demás PCs (solo la anfitriona)");
     // Fuerza bruta: muchos secretos falsos seguidos desde una PC → límite de intentos.
     let mut limited = false;
     for i in 0..8 {

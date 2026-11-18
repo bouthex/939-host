@@ -239,7 +239,14 @@ impl GroupNode {
             if n == 0 { break; }
             wire::write_frame(&mut send, &buf[..n]).await?;
             sent += n as u64;
-            if !progress(sent, size) { let _ = wire::write_frame(&mut send, &[]).await; let _ = send.finish(); bail!("Subida cancelada."); }
+            if !progress(sent, size) {
+                // Se avisa y se espera la respuesta de la anfitriona: cuando vuelve, el temporal ya
+                // se borró allá (antes se volvía sin esperar y el temporal podía seguir un instante).
+                let _ = wire::write_frame(&mut send, &[]).await;
+                let _ = send.finish();
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(15), wire::read_msg::<_, FileResp>(&mut recv)).await;
+                bail!("Subida cancelada.");
+            }
         }
         let _ = send.finish();
         let done: FileResp = wire::read_msg(&mut recv).await?;

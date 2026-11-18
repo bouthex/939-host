@@ -187,7 +187,7 @@ pub(crate) fn capture(id: &str, label: &str, kind: &str, mc_version: &str) -> Ap
         files.push(FileEntry { path: rel, size, mtime_ms: mt, blocks });
     }
     let now = chrono::Local::now();
-    let seq = list(id).iter().filter(|s| s.kind != "seguridad").map(|s| s.seq).max().unwrap_or(0) + 1;
+    let seq = list(id).iter().filter(|s| s.kind != "seguridad").map(|s| s.seq).max().unwrap_or(0).saturating_add(1);
     let info = SnapshotInfo {
         epoch: crate::lease::read(id).map(|l| l.epoch).unwrap_or(0),
         seq,
@@ -403,9 +403,14 @@ pub fn put_blob(id: &str, hash: &str, data: &[u8]) -> AppResult<()> {
     Ok(())
 }
 
-/// Registra un índice recibido. Solo si ya están todos sus bloques.
-pub fn import_manifest(id: &str, bytes: &[u8]) -> AppResult<SnapshotInfo> {
-    let s = decode_manifest(bytes)?;
+/// Registra un índice recibido de la PC `sender` (identidad autenticada por la conexión). Solo
+/// si ya están todos sus bloques. El origen que figura en el índice lo escribe quien lo manda y
+/// no tiene firma: se reemplaza por `sender`, así un índice ajeno nunca se hace pasar por uno
+/// creado en esta PC (y sus mods cuentan como recibidos, ver `modguard`).
+pub fn import_manifest(id: &str, bytes: &[u8], sender: &str) -> AppResult<SnapshotInfo> {
+    let mut s = decode_manifest(bytes)?;
+    if sender.is_empty() { return Err(AppError::invalid("Índice recibido sin PC de origen.")); }
+    s.info.origin = sender.to_string();
     for f in &s.files {
         for h in &f.blocks {
             if !blob_path(id, h).exists() { return Err(AppError::new("integrity", "Faltan bloques; el punto no se registró.")); }
@@ -580,7 +585,7 @@ mod tests {
         let missing = missing_blobs(&b, &man).unwrap();
         assert!(!missing.is_empty());
         // Sin todos los bloques el índice no se registra.
-        assert!(import_manifest(&b, &man).is_err());
+        assert!(import_manifest(&b, &man, "otra-pc").is_err());
         assert!(!has_snapshot(&b, &s1.id));
         // Un bloque adulterado se rechaza.
         let mut bad = read_blob(&a, &missing[0]).unwrap();
@@ -588,7 +593,7 @@ mod tests {
         assert!(put_blob(&b, &missing[0], &bad).is_err());
         for h in &missing { put_blob(&b, h, &read_blob(&a, h).unwrap()).unwrap(); }
         assert!(missing_blobs(&b, &man).unwrap().is_empty());
-        let info = import_manifest(&b, &man).unwrap();
+        let info = import_manifest(&b, &man, "otra-pc").unwrap();
         assert_eq!(latest(&b).unwrap().id, s1.id);
         assert_eq!(info.seq, s1.seq);
         materialize(&b, &s1.id, "26.2").unwrap();
@@ -608,7 +613,7 @@ mod tests {
         let miss2 = missing_blobs(&b, &man2).unwrap();
         assert_eq!(miss2.len(), 1, "solo el level.dat nuevo");
         for h in &miss2 { put_blob(&b, h, &read_blob(&a, h).unwrap()).unwrap(); }
-        import_manifest(&b, &man2).unwrap();
+        import_manifest(&b, &man2, "otra-pc").unwrap();
         // En B alguien había tocado el mundo (copia huérfana): se aparta como seguridad, no se pierde.
         std::fs::write(run_b.join("world/level.dat"), b"huerfano").unwrap();
         materialize(&b, &s2.id, "26.2").unwrap();
@@ -622,6 +627,49 @@ mod tests {
         let json = serde_json::to_vec(&evil).unwrap();
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         enc.write_all(&json).unwrap();
-        assert!(import_manifest(&b, &enc.finish().unwrap()).is_err());
+        assert!(import_manifest(&b, &enc.finish().unwrap(), "otra-pc").is_err());
     }
+    /// Red team: una PC del grupo manda un punto cuyo índice dice que lo creó la PC que lo
+    /// recibe (o sin origen). Antes, sus mods no contaban como recibidos y cargaban sin la
+    /// aprobación de la propietaria. Ahora el origen es la PC que lo mandó.
+    #[test]
+    fn indice_ajeno_no_se_hace_pasar_por_local() {
+        crate::lease::set_local_node("pc-que-recibe");
+        let me = crate::lease::local_node().unwrap();
+        let a = setup();
+        let run_a = paths::server_run_dir(&a);
+        std::fs::create_dir_all(run_a.join("mods")).unwrap();
+        std::fs::write(run_a.join("mods/troyano.jar"), b"codigo de la otra pc").unwrap();
+        let s1 = capture(&a, "", "manual", "26.2").unwrap();
+        // El atacante reescribe el origen del índice con la identidad de la víctima.
+        let mut forged = read_snapshot(&a, &s1.id).unwrap();
+        forged.info.origin = me.clone();
+        let json = serde_json::to_vec(&forged).unwrap();
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&json).unwrap();
+        let man = enc.finish().unwrap();
+        let b = setup();
+        let run_b = paths::server_run_dir(&b);
+        let _ = std::fs::remove_dir_all(&run_b);
+        for h in missing_blobs(&b, &man).unwrap() { put_blob(&b, &h, &read_blob(&a, &h).unwrap()).unwrap(); }
+        assert!(import_manifest(&b, &man, "").is_err(), "sin PC de origen no se registra");
+        let info = import_manifest(&b, &man, "pc-atacante").unwrap();
+        assert_eq!(info.origin, "pc-atacante", "el origen lo fija quien recibe, no el índice");
+        materialize(&b, &s1.id, "26.2").unwrap();
+        let h = crate::modguard::sha256_file(&run_b.join("mods/troyano.jar")).unwrap();
+        assert!(crate::modguard::received(&b).contains(&h), "el mod llegado de otra PC queda marcado como recibido");
+    }
+
+    #[test]
+    fn secuencia_enorme_no_desborda() {
+        let a = setup();
+        let s1 = capture(&a, "", "manual", "26.2").unwrap();
+        let mut big = read_snapshot(&a, &s1.id).unwrap();
+        big.info.seq = u64::MAX;
+        big.info.id = "20990101-000000-000-m".into();
+        write_snapshot(&a, &big).unwrap();
+        let s2 = capture(&a, "", "manual", "26.2").unwrap();
+        assert_eq!(s2.seq, u64::MAX);
+    }
+
 }
