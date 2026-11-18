@@ -466,6 +466,21 @@ pub fn delete(id: &str, snap_id: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Verifica un punto: que estén todos sus bloques y que cada uno coincida con su SHA-256.
+/// Devuelve (archivos, bytes).
+pub fn verify(id: &str, snap_id: &str) -> AppResult<(usize, u64)> {
+    let s = read_snapshot(id, snap_id)?;
+    let mut bytes = 0u64;
+    for f in &s.files {
+        for h in &f.blocks {
+            let data = std::fs::read(blob_path(id, h)).map_err(|_| AppError::new("integrity", format!("Falta un bloque de «{}»: este punto no se puede restaurar.", f.path)))?;
+            if hex::encode(Sha256::digest(&data)) != *h { return Err(AppError::new("integrity", format!("Un bloque de «{}» está dañado.", f.path))); }
+            bytes += data.len() as u64;
+        }
+    }
+    Ok((s.files.len(), bytes))
+}
+
 /// Retención: todos los automáticos de las últimas 6 h, uno por hora durante 2 días,
 /// uno por día durante 14 días y uno por semana durante 8 semanas. Los manuales y de
 /// seguridad no se borran solos. Después libera los bloques que ya nadie usa.
@@ -483,7 +498,8 @@ pub fn prune(id: &str) -> usize {
             else if age < chrono::Duration::days(14) { Some(format!("d{}", t.format("%Y%m%d"))) }
             else if age < chrono::Duration::weeks(8) { Some(format!("w{}", t.format("%G%V"))) }
             else { Some("drop".into()) };
-        let keep = match bucket { None => true, Some(b) if b == "drop" => false, Some(b) => keep_buckets.insert(b) };
+        let protected = crate::storage::protected(id).contains(&format!("snap:{}", s.id));
+        let keep = protected || match bucket { None => true, Some(b) if b == "drop" => false, Some(b) => keep_buckets.insert(b) };
         if !keep && std::fs::remove_file(snap_path(id, &s.id)).is_ok() { removed += 1; }
     }
     if removed > 0 { gc(id); }

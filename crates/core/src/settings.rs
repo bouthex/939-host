@@ -54,6 +54,9 @@ pub struct AppSettings {
     pub background_hint_shown: bool,
     /// Sonido breve cuando un servidor termina de iniciar.
     pub start_sound: bool,
+    /// Espacio máximo para las copias de cada servidor (GB). Al pasarlo se libera lo automático y
+    /// viejo; nunca lo manual, lo protegido ni el último punto íntegro.
+    pub backup_cap_gb: u32,
 }
 
 impl Default for AppSettings {
@@ -84,6 +87,7 @@ impl Default for AppSettings {
             keep_awake_while_hosting: true,
             background_hint_shown: false,
             start_sound: false,
+            backup_cap_gb: 20,
         }
     }
 }

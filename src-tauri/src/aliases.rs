@@ -140,3 +140,19 @@ pub async fn public_address_set(app: AppHandle, id: String, address: Option<Stri
     if let Ok(n) = app.state::<Cluster>().node().await { let _ = n.refresh_card(&id); }
     Ok(alias::public::get(&id))
 }
+
+/// Quita lo que 939 Host configuró en Windows fuera de su carpeta (para la versión portable o
+/// antes de borrar la app a mano): inicio con Windows y las direcciones .939host del archivo hosts
+/// (pide permiso de administrador para «Windows PowerShell»). No borra servidores ni mundos.
+#[tauri::command]
+pub async fn system_cleanup(app: AppHandle) -> AppResult<Vec<String>> {
+    let mut done = vec![];
+    let mut s = host939_core::settings::load();
+    if s.start_with_windows { host939_core::settings::apply_autostart(false)?; s.start_with_windows = false; host939_core::settings::save(&s)?; }
+    done.push("Inicio con Windows desactivado".to_string());
+    alias::clear_all()?;
+    sync(&app).await;
+    let has_block = std::fs::read(alias::hosts_path()).map(|b| String::from_utf8_lossy(&b).contains("# >>> 939 Host")).unwrap_or(false);
+    if has_block { alias_apply_hosts().await?; done.push("Direcciones .939host quitadas del archivo hosts".into()); } else { done.push("El archivo hosts no tenía direcciones de 939 Host".into()); }
+    Ok(done)
+}

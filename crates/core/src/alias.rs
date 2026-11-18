@@ -124,6 +124,9 @@ pub fn set(id: &str, label: Option<&str>) -> AppResult<Option<String>> {
     Ok(label)
 }
 
+/// Olvida todas las direcciones elegidas en esta PC (para «Quitar integraciones del sistema»).
+pub fn clear_all() -> AppResult<()> { crate::paths::write_json(&store(), &std::collections::BTreeMap::<String, String>::new()) }
+
 pub fn hosts_path() -> std::path::PathBuf {
     let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
     root.join("System32").join("drivers").join("etc").join("hosts")
@@ -204,6 +207,13 @@ if ($s -cne $old) {{
 exit 0
 "#))
 }
+
+/// Script mínimo que usa el desinstalador para quitar el bloque de 939 Host del archivo hosts
+/// (y nada más). Es fijo y corto para caber en una línea de NSIS como `-EncodedCommand` del
+/// PowerShell de System32: no hay ningún archivo intermedio que otro programa pueda cambiar
+/// antes de que se ejecute como administrador. La prueba `desinstalador_quita_solo_el_bloque`
+/// comprueba que el texto codificado del instalador sea exactamente este.
+pub const HOSTS_CLEAN_SCRIPT: &str = r#"$p="$env:SystemRoot\System32\drivers\etc\hosts";$o=[IO.File]::ReadAllText($p);$n=$o -replace '(?s)(\r?\n)*# >>> 939 Host: direcciones de servidores \(no editar a mano\).*?# <<< 939 Host\r?\n?','';if($n -cne $o){[IO.File]::WriteAllText($p,$n)}"#;
 
 /// `-EncodedCommand` de PowerShell: el script en UTF-16LE y base64 (evita problemas de comillas).
 pub fn powershell_encoded(script: &str) -> String {
@@ -361,5 +371,28 @@ pub mod public {
             assert!(super::validate("mal..dominio").is_err());
             assert!(super::validate("a.b:99999").is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod uninstall_tests {
+    /// El texto codificado del desinstalador es exactamente `HOSTS_CLEAN_SCRIPT`, y su expresión
+    /// quita solo el bloque de 939 Host (mismo patrón, probado con el motor de Rust).
+    #[test]
+    fn desinstalador_quita_solo_el_bloque() {
+        use base64::Engine;
+        let nsi = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../installer/939host.nsi")).unwrap();
+        let b64 = nsi.lines().find_map(|l| l.trim().strip_prefix("!define HOSTS_CLEAN_B64 \"")).unwrap().trim_end_matches('"');
+        let raw = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let utf16: Vec<u16> = raw.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(String::from_utf16(&utf16).unwrap(), super::HOSTS_CLEAN_SCRIPT, "el instalador tiene que llevar este mismo script");
+        assert!(b64.len() < 900, "entra en una línea de NSIS");
+        // La misma expresión que usa el script.
+        let pat = super::HOSTS_CLEAN_SCRIPT.split("-replace '").nth(1).unwrap().split("',''").next().unwrap();
+        let re = regex::Regex::new(pat).unwrap();
+        let hosts = format!("# hosts de Windows\r\n127.0.0.1 localhost\r\n10.0.0.5 nas.casa\r\n\r\n{}\r\n127.93.4.5\tsuper.939host\r\n{}\r\n", super::BEGIN, super::END);
+        let out = re.replace_all(&hosts, "");
+        assert_eq!(out, "# hosts de Windows\r\n127.0.0.1 localhost\r\n10.0.0.5 nas.casa", "quita el bloque y nada más");
+        assert_eq!(re.replace_all("127.0.0.1 localhost\n", ""), "127.0.0.1 localhost\n", "sin bloque no cambia nada");
     }
 }

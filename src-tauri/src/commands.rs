@@ -212,6 +212,7 @@ pub async fn create_backup(app: AppHandle, id: String, label: String) -> AppResu
         let mgr = app.state::<Manager>();
         let op = op(&app, &id, "Creando una copia de seguridad", "Guardando el mundo y comprimiendo…");
         let r = op.finish(backup::create(&mgr, &id, &label, "manual", &cfg.mc_version), "Copia de seguridad creada");
+        if r.is_ok() { host939_core::storage::enforce_cap(&id, host939_core::storage::cap_bytes()); }
         mgr.changed(&id);
         r
     }).await
@@ -602,6 +603,8 @@ pub fn start_snapshot_scheduler(app: AppHandle) {
             match snapshots::take(&mgr, &id, "", "auto", &cfg.mc_version) {
                 Ok(info) => {
                     let pruned = snapshots::prune(&id);
+                    let freed = host939_core::storage::enforce_cap(&id, host939_core::storage::cap_bytes());
+                    if !freed.is_empty() { mgr.note(&id, &format!("Tope de espacio para copias: se liberaron {} copias automáticas viejas.", freed.len())); }
                     mgr.note(&id, &format!("punto automático ({} nuevos, pausa {} ms{})", human_bytes(info.new_bytes), info.pause_ms,
                         if pruned > 0 { format!(", {pruned} viejos depurados") } else { String::new() }));
                 }
@@ -715,3 +718,27 @@ pub async fn mods_import_folder(app: AppHandle, id: String, path: String) -> App
     if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de importar mods.")); }
     blocking(move || host939_core::mods::import_folder(&cfg, std::path::Path::new(&path))).await
 }
+
+/* ── Espacio y protección de las copias ── */
+
+#[tauri::command]
+pub fn storage_usage(id: String) -> AppResult<host939_core::storage::Usage> { instance::load(&id)?; Ok(host939_core::storage::usage(&id)) }
+
+#[tauri::command]
+pub fn storage_protect(id: String, key: String, on: bool) -> AppResult<()> { instance::load(&id)?; host939_core::storage::set_protected(&id, &key, on) }
+
+/// Verifica una copia (`snap:<id>` o `zip:<archivo>`): que se pueda restaurar íntegra.
+#[tauri::command]
+pub async fn storage_verify(app: AppHandle, id: String, key: String) -> AppResult<String> {
+    blocking(move || {
+        let op = op(&app, &id, "Verificando una copia", "Leyendo y comprobando cada bloque…");
+        let r = if let Some(s) = key.strip_prefix("snap:") { host939_core::storage::verify_snapshot(&id, s) }
+            else if let Some(z) = key.strip_prefix("zip:") { host939_core::storage::verify_zip(&id, z) }
+            else { Err(AppError::invalid("Copia inválida.")) };
+        op.finish(r, "Copia verificada").map(|(n, b)| format!("Íntegra: {n} archivos, {}", human_bytes(b)))
+    }).await
+}
+
+/// Aplica el tope ahora (después de cambiarlo en Configuración).
+#[tauri::command]
+pub fn storage_enforce(id: String) -> AppResult<Vec<String>> { instance::load(&id)?; Ok(host939_core::storage::enforce_cap(&id, host939_core::storage::cap_bytes())) }

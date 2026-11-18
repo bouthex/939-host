@@ -42,6 +42,7 @@ pub mod settings;
 pub mod skins;
 pub mod snapshots;
 pub mod sound;
+pub mod storage;
 pub mod trash;
 pub mod version_change;
 pub mod voice;

@@ -2,6 +2,13 @@
 Unicode true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "StrFunc.nsh"
+${StrStr}
+${UnStrStr}
+
+; Script fijo que quita solo el bloque de 939 Host del archivo hosts (ver alias::HOSTS_CLEAN_SCRIPT;
+; la prueba desinstalador_quita_solo_el_bloque verifica que este texto sea exactamente ese script).
+!define HOSTS_CLEAN_B64 "JABwAD0AIgAkAGUAbgB2ADoAUwB5AHMAdABlAG0AUgBvAG8AdABcAFMAeQBzAHQAZQBtADMAMgBcAGQAcgBpAHYAZQByAHMAXABlAHQAYwBcAGgAbwBzAHQAcwAiADsAJABvAD0AWwBJAE8ALgBGAGkAbABlAF0AOgA6AFIAZQBhAGQAQQBsAGwAVABlAHgAdAAoACQAcAApADsAJABuAD0AJABvACAALQByAGUAcABsAGEAYwBlACAAJwAoAD8AcwApACgAXAByAD8AXABuACkAKgAjACAAPgA+AD4AIAA5ADMAOQAgAEgAbwBzAHQAOgAgAGQAaQByAGUAYwBjAGkAbwBuAGUAcwAgAGQAZQAgAHMAZQByAHYAaQBkAG8AcgBlAHMAIABcACgAbgBvACAAZQBkAGkAdABhAHIAIABhACAAbQBhAG4AbwBcACkALgAqAD8AIwAgADwAPAA8ACAAOQAzADkAIABIAG8AcwB0AFwAcgA/AFwAbgA/ACcALAAnACcAOwBpAGYAKAAkAG4AIAAtAGMAbgBlACAAJABvACkAewBbAEkATwAuAEYAaQBsAGUAXQA6ADoAVwByAGkAdABlAEEAbABsAFQAZQB4AHQAKAAkAHAALAAkAG4AKQB9AA=="
 
 !define APPNAME "939 Host"
 !define APPEXE "939Host.exe"
@@ -69,12 +76,35 @@ Function .onInit
   WriteUninstaller "$TEMP\939host-uninst\Desinstalar.exe"
   Quit
 !endif
-  ; 939 Host abierto: pedir que se cierre antes de actualizar (los servidores se guardan al salir).
-  FindWindow $0 "" "939 Host"
-  ${If} $0 != 0
-    MessageBox MB_OK|MB_ICONEXCLAMATION "939 Host está abierto. Cerralo con «Salir» (así guarda y pasa los servidores) y volvé a ejecutar el instalador." /SD IDOK
+  ; 939 Host abierto (también en la bandeja, sin ventana): pedir que se cierre antes de actualizar.
+  ; Se busca el proceso: con un servidor encendido, 939 Host puede seguir sin ventana.
+  nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${APPEXE}" /NH'
+  Pop $0
+  Pop $1
+  ${StrStr} $2 $1 "${APPEXE}"
+  ${If} $2 != ""
+    MessageBox MB_OK|MB_ICONEXCLAMATION "939 Host está abierto (puede estar en la bandeja, junto al reloj). Cerralo con «Salir de 939 Host…» (así guarda y pasa los servidores) y volvé a ejecutar el instalador." /SD IDOK
     Abort
   ${EndIf}
+FunctionEnd
+
+Var DeleteData
+
+Function un.onInit
+  nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${APPEXE}" /NH'
+  Pop $0
+  Pop $1
+  ${UnStrStr} $2 $1 "${APPEXE}"
+  ${If} $2 != ""
+    MessageBox MB_OK|MB_ICONEXCLAMATION "939 Host está abierto (puede estar en la bandeja, junto al reloj). Cerralo con «Salir de 939 Host…» para que guarde los servidores y volvé a desinstalar." /SD IDOK
+    Abort
+  ${EndIf}
+  ; Por defecto (y siempre en modo silencioso) se conservan servidores, mundos y copias.
+  StrCpy $DeleteData "0"
+  MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "¿Querés borrar también los datos de 939 Host?$\r$\n$\r$\nNO (recomendado): se quita solo el programa. Tus servidores, mundos, copias de seguridad y configuración quedan en $LOCALAPPDATA\939Host.$\r$\n$\r$\nSÍ: se borran también esos datos." /SD IDNO IDNO keep
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "Se va a borrar para siempre la carpeta $LOCALAPPDATA\939Host, que contiene:$\r$\n$\r$\n• todos tus servidores y sus MUNDOS$\r$\n• las copias de seguridad y los puntos de restauración$\r$\n• la Papelera de 939 Host$\r$\n• la identidad de esta PC en los grupos, amigos y mensajes$\r$\n• la configuración, Java descargado por 939 Host y las cachés$\r$\n$\r$\nNo se puede deshacer. ¿Borrar todo?" /SD IDNO IDNO keep
+      StrCpy $DeleteData "1"
+  keep:
 FunctionEnd
 
 Section "939 Host" SecMain
@@ -119,7 +149,8 @@ Section "939 Host" SecMain
 SectionEnd
 
 Section "Uninstall"
-  ; Solo se quita el programa. Los servidores, mundos y copias (en %LOCALAPPDATA%\939Host) quedan.
+  ; Se quita todo lo que instaló o configuró 939 Host fuera de su carpeta de datos. Los servidores,
+  ; mundos y copias (en %LOCALAPPDATA%\939Host) quedan, salvo que se haya elegido borrarlos.
   Delete "$INSTDIR\${APPEXE}"
   Delete "$INSTDIR\WebView2Loader.dll"
   Delete "$INSTDIR\icon.ico"
@@ -135,5 +166,35 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\939Host"
   DeleteRegKey HKCU "Software\939 Host"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "939 Host"
-  MessageBox MB_OK "939 Host se desinstaló. Tus servidores y copias siguen en $LOCALAPPDATA\939Host (podés borrarlos a mano si ya no los querés)." /SD IDOK
+  ; Caché de la interfaz (WebView2): no tiene datos de servidores.
+  RMDir /r "$LOCALAPPDATA\ar.host939.app"
+  ; Direcciones .939host: si el archivo hosts tiene el bloque de 939 Host, se quita (pide permiso
+  ; de administrador para «Windows PowerShell», igual que al crearlas). No se toca nada más.
+  ClearErrors
+  FileOpen $3 "$WINDIR\System32\drivers\etc\hosts" r
+  StrCpy $4 ""
+  ${IfNot} ${Errors}
+    ${Do}
+      FileRead $3 $5
+      ${If} ${Errors}
+        ${ExitDo}
+      ${EndIf}
+      ${UnStrStr} $6 $5 "# >>> 939 Host"
+      ${If} $6 != ""
+        StrCpy $4 "1"
+        ${ExitDo}
+      ${EndIf}
+    ${Loop}
+    FileClose $3
+  ${EndIf}
+  ${If} $4 == "1"
+    MessageBox MB_OK|MB_ICONINFORMATION "Para quitar las direcciones .939host del archivo hosts, Windows va a pedir permiso de administrador para «Windows PowerShell». Si no lo aceptás, quedan esas líneas (no afectan a nada sin 939 Host)." /SD IDOK
+    ExecShellWait "runas" "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ${HOSTS_CLEAN_B64}" SW_HIDE
+  ${EndIf}
+  ${If} $DeleteData == "1"
+    RMDir /r "$LOCALAPPDATA\939Host"
+    MessageBox MB_OK "939 Host y todos sus datos se desinstalaron." /SD IDOK
+  ${Else}
+    MessageBox MB_OK "939 Host se desinstaló. Tus servidores, mundos y copias siguen en $LOCALAPPDATA\939Host." /SD IDOK
+  ${EndIf}
 SectionEnd

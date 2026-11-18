@@ -282,7 +282,8 @@ A['world-new'] = async () => {
 /* ───────── Copias ───────── */
 tabDraw.backups = async (el) => {
   const id = state.params.id, c = state.server.config;
-  const [snaps, zips] = await Promise.all([invoke('snapshots_list', { id }), invoke('list_backups', { id })]);
+  const [snaps, zips, use] = await Promise.all([invoke('snapshots_list', { id }), invoke('list_backups', { id }), invoke('storage_usage', { id }).catch(() => null)]);
+  const prot = new Set(use?.protected || []);
   const running = state.server.status === 'running';
   const st = snaps.stats;
   const KIND = { auto: 'Automático', manual: 'Manual', seguridad: 'Seguridad', local: 'Copia local' };
@@ -295,17 +296,18 @@ tabDraw.backups = async (el) => {
       <div class="card kpi"><span class="l">Automático cada</span><span class="v">${c.restoreIntervalMin}<small>min</small></span><span class="xs t3">Con el servidor encendido</span></div>
       <div class="card kpi"><span class="l">Copias .zip</span><span class="v">${zips.length}</span></div>
     </div>
+    ${use ? `<div class="card pad stack" style="gap:8px"><div class="spread"><b>Espacio de copias de este servidor</b><span class="sm mono">${fmtMB(use.totalBytes / 1048576)} de ${fmtMB(use.capBytes / 1048576)}</span></div><div class="bar"><i style="width:${Math.min(100, Math.round(use.totalBytes / use.capBytes * 100))}%"></i></div><span class="xs t3">Al pasar el tope se liberan los puntos automáticos más viejos (y copias de seguridad de más de 7 días). Nunca las copias manuales, las protegidas ni el punto más reciente. El tope se cambia en Configuración.</span></div>` : ''}
     <div class="card pad stack"><div class="spread"><h2>Crear un punto ahora</h2><span class="sm t3">${running ? 'Nadie se desconecta: pausa el guardado unos milisegundos.' : 'Guarda solo lo que cambió desde el último punto.'}</span></div>
       <div class="row"><input class="input" id="snap-label" placeholder="Nombre (opcional), por ejemplo: antes del jefe" maxlength="80" style="max-width:420px"><button class="btn pri" data-a="snap-take">${icon('plus', 16)}Crear punto</button></div></div>
     <div class="card">${snaps.items.length ? Object.entries(groups).map(([day, items]) => `<div class="sec" style="padding:14px 20px 6px">${esc(day)}</div><div class="list">
       ${items.map((s) => `<div class="li"><span class="mono" style="width:52px;white-space:nowrap">${new Date(s.createdAt).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
-        <div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(s.label)}</b><span class="chip s">${KIND[s.kind] || esc(s.kind)}</span></div><div class="sm t3">+${fmtMB(s.newBytes / 1048576)} nuevos · mundo de ${fmtMB(s.totalBytes / 1048576)} · ${s.fileCount} archivos</div></div>
-        <div class="btns"><button class="btn s" data-a="snap-restore" data-snap="${esc(s.id)}">Restaurar</button><button class="btn s icon ghost" data-tone="danger" data-a="snap-delete" data-snap="${esc(s.id)}" aria-label="Borrar punto">${icon('trash', 15)}</button></div></div>`).join('')}</div>`).join('')
+        <div class="grow"><div class="row" style="gap:8px"><b class="ellipsis">${esc(s.label)}</b><span class="chip s">${KIND[s.kind] || esc(s.kind)}</span>${prot.has(`snap:${s.id}`) ? '<span class="chip s fill">Protegido</span>' : ''}</div><div class="sm t3">+${fmtMB(s.newBytes / 1048576)} nuevos · mundo de ${fmtMB(s.totalBytes / 1048576)} · ${s.fileCount} archivos</div></div>
+        <div class="btns"><button class="btn s icon ghost" data-a="copy-protect" data-key="snap:${esc(s.id)}" data-on="${prot.has(`snap:${s.id}`) ? '0' : '1'}" title="${prot.has(`snap:${s.id}`) ? 'Protegido: no se borra solo (tocá para quitar la protección)' : 'Proteger: que nunca se borre solo'}" aria-pressed="${prot.has(`snap:${s.id}`)}">${icon('shield', 15)}</button><button class="btn s ghost" data-a="copy-verify" data-key="snap:${esc(s.id)}">Verificar</button><button class="btn s" data-a="snap-restore" data-snap="${esc(s.id)}">Restaurar</button><button class="btn s icon ghost" data-tone="danger" data-a="snap-delete" data-snap="${esc(s.id)}" aria-label="Borrar punto">${icon('trash', 15)}</button></div></div>`).join('')}</div>`).join('')
       : `<div class="pad sm t2">Todavía no hay puntos. Con el servidor encendido se crea uno cada ${c.restoreIntervalMin} minutos; también podés crear uno ahora.</div>`}</div>
     <p class="xs t3" style="margin:0">Se conservan todos los de las últimas 6 h, uno por hora durante 2 días, uno por día durante 14 días y uno por semana durante 8 semanas. Los manuales no se borran solos.</p>
     <div class="card pad stack"><div class="spread"><div><h2>Copias completas (.zip)</h2><p class="sm t2" style="margin:2px 0 0">Un archivo independiente con el mundo y la configuración, para guardarlo afuera o compartirlo.</p></div>
       <div class="btns"><button class="btn" data-a="backup">${icon('download', 16)}Crear copia .zip</button><button class="btn icon ghost" data-a="folder" data-which="backups" aria-label="Abrir carpeta de copias">${icon('folder', 16)}</button></div></div>
-      ${zips.length ? `<div>${zips.map((b) => `<div class="kv"><span class="ellipsis">${esc(fmtDate(b.createdAt))} · ${esc(b.label)} <span class="mono sm t3">${fmtMB(b.sizeMb)}</span></span><span class="btns"><button class="btn s" data-a="restore" data-file="${esc(b.file)}">Restaurar</button><button class="btn s icon ghost" data-tone="danger" data-a="del-backup" data-file="${esc(b.file)}" aria-label="Borrar copia">${icon('trash', 15)}</button></span></div>`).join('')}</div>` : ''}
+      ${zips.length ? `<div>${zips.map((b) => `<div class="kv"><span class="ellipsis">${esc(fmtDate(b.createdAt))} · ${esc(b.label)} <span class="mono sm t3">${fmtMB(b.sizeMb)}</span></span><span class="btns"><button class="btn s icon ghost" data-a="copy-protect" data-key="zip:${esc(b.file)}" data-on="${prot.has(`zip:${b.file}`) ? '0' : '1'}" title="${prot.has(`zip:${b.file}`) ? 'Protegida' : 'Proteger'}" aria-pressed="${prot.has(`zip:${b.file}`)}">${icon('shield', 15)}</button><button class="btn s ghost" data-a="copy-verify" data-key="zip:${esc(b.file)}">Verificar</button><button class="btn s" data-a="restore" data-file="${esc(b.file)}">Restaurar</button><button class="btn s icon ghost" data-tone="danger" data-a="del-backup" data-file="${esc(b.file)}" aria-label="Borrar copia">${icon('trash', 15)}</button></span></div>`).join('')}</div>` : ''}
     </div></div>`;
 };
 A['snap-take'] = async (el) => {
@@ -703,4 +705,14 @@ A['public-edit'] = async (el) => {
   if (!r) return;
   try { PUBLIC[id] = (await invoke('public_address_set', { id, address: r === 'clear' ? null : val })) || ''; toast(PUBLIC[id] ? 'Dirección pública guardada' : 'Dirección pública quitada'); } catch (e) { fail(e); }
   drawTab();
+};
+
+A['copy-protect'] = async (el) => {
+  try { await invoke('storage_protect', { id: state.params.id, key: el.dataset.key, on: el.dataset.on === '1' }); toast(el.dataset.on === '1' ? 'Protegida: no se borra sola' : 'Protección quitada'); } catch (e) { fail(e); }
+  drawTab();
+};
+A['copy-verify'] = async (el) => {
+  el.disabled = true; el.textContent = 'Verificando…';
+  try { toast(await invoke('storage_verify', { id: state.params.id, key: el.dataset.key })); } catch (e) { fail(e); }
+  el.disabled = false; el.textContent = 'Verificar';
 };
