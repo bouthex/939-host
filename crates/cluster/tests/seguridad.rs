@@ -119,6 +119,27 @@ fn signal(pid: u32, sig: &str) {
 fn fresh(v: &Value) -> (u64, u64) { (v["epoch"].as_u64().unwrap_or(0), v["seq"].as_u64().unwrap_or(0)) }
 
 
+/// Nodo con argumentos extra (modo de conexión), sin servidores reales.
+struct NodeArgs;
+impl NodeArgs {
+    fn spawn(name: &str, root: &std::path::Path, args: &[&str]) -> Node {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_939node"));
+        cmd.arg("--root").arg(root).arg("--name").arg(name).arg("--fake").args(args).env("H939_FAST", "1").env("H939_DEBUG", "1").env_remove("JAVA_TOOL_OPTIONS");
+        let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let out = child.stdout.take().unwrap();
+        let (tx, rx) = channel();
+        let tag = name.to_string();
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if line.starts_with("##") { println!("    [{tag}] {}", &line[3..]); }
+                if line.starts_with("@@") && tx.send(line[3..].to_string()).is_err() { break; }
+            }
+        });
+        Node { name: name.into(), child, stdin, rx, root: root.to_path_buf() }
+    }
+}
+
 fn three(tmp: &std::path::Path, env: &[(&str, &str)], port: u16) -> (Node, Node, Node, String) {
     let mut a = Node::spawn("A", &tmp.join("a"), true, env);
     let mut b = Node::spawn("B", &tmp.join("b"), true, env);
@@ -380,6 +401,114 @@ fn recuperacion_con_codigo_y_sucesion() {
     signal(d.pid(), "CONT");
     println!("✔ sucesora designada y visible para el grupo");
     let _ = (&mut a, &mut c);
+}
+
+#[test]
+fn mods_de_otra_pc_necesitan_aprobacion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut a, mut b, _c, sid) = three(tmp.path(), &[], 25971);
+    let ib = id(&mut b);
+    // La propietaria instala un mod en su PC: queda aprobado solo.
+    a.ok(&format!("putmod {sid} propio.jar mod de la propietaria"));
+    a.ok(&format!("start {sid}"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    wait("la propietaria aprobó su mod", Duration::from_secs(20), || b.ok(&format!("share_json {sid}"))["approvedMods"].as_array().map(|v| v.len() == 1).unwrap_or(false));
+    // La coanfitriona sube un .jar a la anfitriona por el administrador remoto.
+    let evil = tmp.path().join("malo.jar");
+    std::fs::write(&evil, b"codigo malicioso").unwrap();
+    b.ok(&format!("fput {sid} {} mods/malo.jar", evil.display()));
+    // Pasa a la coanfitriona y vuelve: en cada encendido, lo recibido sin aprobar se aparta.
+    a.ok(&format!("handover {sid} {ib}"));
+    wait("B aloja", Duration::from_secs(30), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    let mods_b = b.ok(&format!("modsdir {sid}"));
+    assert!(mods_b.as_array().unwrap().iter().any(|m| m == "propio.jar"), "el mod aprobado sí se carga en B: {mods_b}");
+    assert!(!mods_b.as_array().unwrap().iter().any(|m| m == "malo.jar"), "el mod sin aprobar no se carga en B: {mods_b}");
+    println!("✔ el mod subido por una coanfitriona no se carga sin aprobación (ni en la anfitriona nueva)");
+    // B instala otro mod en su propia PC mientras aloja (en su PC corre: es su decisión) y lo pasa a A.
+    b.ok(&format!("putmod {sid} de-b.jar mod que puso B"));
+    let ia = id(&mut a);
+    b.ok(&format!("handover {sid} {ia}"));
+    wait("A aloja", Duration::from_secs(30), || a.ok(&format!("running {sid}")).as_bool().unwrap());
+    let mods_a = a.ok(&format!("modsdir {sid}"));
+    assert!(!mods_a.as_array().unwrap().iter().any(|m| m == "de-b.jar"), "lo que puso B no corre en la PC de A sin aprobar: {mods_a}");
+    let pend = a.ok(&format!("pendingmods {sid}"));
+    assert!(pend.as_array().unwrap().iter().any(|p| p[0] == "de-b.jar"), "A ve el pendiente: {pend}");
+    println!("✔ un mod que puso la coanfitriona en su PC no se ejecuta en la PC de la propietaria sin aprobación");
+    // B no puede aprobar.
+    let h = pend.as_array().unwrap().iter().find(|p| p[0] == "de-b.jar").unwrap()[1].as_str().unwrap().to_string();
+    assert!(b.err(&format!("approvemods {sid} {h}")).contains("propietaria"));
+    // A aprueba: vuelve al próximo encendido.
+    a.ok(&format!("approvemods {sid} {h}"));
+    a.ok(&format!("stop {sid}"));
+    a.ok(&format!("start {sid}"));
+    assert!(a.ok(&format!("modsdir {sid}")).as_array().unwrap().iter().any(|m| m == "de-b.jar"));
+    println!("✔ la propietaria aprueba y el mod vuelve a cargarse; la coanfitriona no puede aprobar");
+}
+
+/// Modo privado sin relay disponible: no se conecta, aunque haya camino directo (nunca cambia a
+/// directo por su cuenta). La anfitriona está en la misma PC, sin relays.
+#[test]
+fn modo_privado_no_cae_a_directo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let sid = a.ok("create Priv 25981").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    assert!(a.ok(&format!("ticketinfo {t}"))["ips"].as_u64().unwrap() > 0, "sin relays el código necesita IPs");
+    let mut p = NodeArgs::spawn("P", &tmp.path().join("p"), &["--private"]);
+    let e = p.err(&format!("join {t}"));
+    println!("    privada sin relay: {e}");
+    let ip = id(&mut p);
+    let seen = a.ok(&format!("remoteinfo {ip}"));
+    assert!(seen.as_array().unwrap().is_empty(), "A no debía recibir ninguna conexión de la PC privada: {seen}");
+    assert!(a.ok(&format!("share_json {sid}"))["members"].as_array().unwrap().len() == 1, "P no se unió");
+    println!("✔ en modo privado, sin relay no hay conexión: no cambió a directo aunque la otra PC estaba al lado");
+}
+
+/// Modo privado con relays reales de n0 (necesita internet; corre en la CI de Windows).
+#[test]
+#[ignore]
+fn modo_privado_oculta_la_ip_real() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = NodeArgs::spawn("A", &tmp.path().join("a"), &["--relays"]);
+    let mut b = NodeArgs::spawn("B", &tmp.path().join("b"), &["--relays"]);
+    let mut p = NodeArgs::spawn("P", &tmp.path().join("p"), &["--private"]);
+    let sid = a.ok("create PrivReal 25991").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    std::thread::sleep(Duration::from_secs(5));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    let ti = a.ok(&format!("ticketinfo {t}"));
+    assert_eq!(ti["ips"], 0, "con relays el código no lleva IPs: {ti}");
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25992"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    p.ok(&format!("join {t}"));
+    p.ok(&format!("setport {sid} 25993"));
+    a.ok(&format!("start {sid}"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("P copia por relay", Duration::from_secs(90), || fresh(&p.status(&sid)["myLatest"]) == fresh(&s1));
+    let ip = id(&mut p);
+    std::thread::sleep(Duration::from_secs(10));
+    for (n, name) in [(&mut a, "A"), (&mut b, "B")] {
+        let ri = n.ok(&format!("remoteinfo {ip}"));
+        println!("    {name} conoce de P: {ri}");
+        assert!(ri.as_array().unwrap().iter().all(|x| !x.as_str().unwrap().contains("Ip(")), "{name} conoce una IP de la PC privada: {ri}");
+        let pf = n.ok("peersfile").as_str().unwrap().to_string();
+        assert!(!pf.contains("\"ip\"") || !pf.contains(&ip[..16]) || !pf.split(&ip[..16]).nth(1).unwrap_or("").split('}').next().unwrap_or("").contains("ip"), "{name} guardó una IP de P");
+        let info = n.ok(&format!(r#"raw {ip} ctrl {{"t":"info","server":"{sid}"}}"#));
+        let addr = info["addr"].to_string();
+        assert!(!addr.contains("\"Ip\"") && !addr.to_lowercase().contains("\"ip\""), "{name} recibió IPs de P en Info: {addr}");
+        let st = n.status(&sid);
+        let m = st["members"].as_array().unwrap().iter().find(|m| m["nodeId"] == ip.as_str()).cloned().unwrap_or_default();
+        println!("    {name} ve a P por: {}", m["path"]);
+        assert!(m["path"] == "relay" || m["path"] == "", "{name} conecta directo con la PC privada");
+    }
+    println!("✔ modo privado real: ninguna otra PC conoce la IP de la PC privada (ni por conexión, ni en Info, ni en archivos); el grupo funciona por relay");
+    // El resto del grupo no se ve afectado: A y B pueden ir directo entre sí.
+    let ibb = id(&mut b);
+    let ri = a.ok(&format!("remoteinfo {ibb}"));
+    println!("    A conoce de B (sin modo privado): {ri}");
 }
 
 #[test]

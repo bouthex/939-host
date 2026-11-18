@@ -51,6 +51,9 @@ impl LocalHost for Local {
         let cfg = instance::load(server).map_err(|e| e.message)?;
         if self.fake {
             host939_core::lease::can_start(server).map_err(|e| e.message)?;
+            // Mismo control de mods que el arranque real (process::Manager::start).
+            let (held, back) = host939_core::modguard::enforce(server).map_err(|e| e.message)?;
+            if !held.is_empty() || !back.is_empty() { say("##", &format!("mods apartados {held:?}, devueltos {back:?}")); }
             let run = paths::server_run_dir(server);
             std::fs::create_dir_all(run.join("world")).map_err(|e| e.to_string())?;
             if !run.join("world/level.dat").exists() { std::fs::write(run.join("world/level.dat"), b"nuevo").map_err(|e| e.to_string())?; }
@@ -334,6 +337,15 @@ async fn main() {
                 "succcomplete" => node.complete_succession(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "succstatus" => Ok(serde_json::json!(node.succession_status(&p(1)))),
                 "lease" => Ok(serde_json::to_value(host939_core::lease::read(&p(1))).unwrap()),
+                "pendingmods" => Ok(serde_json::to_value(node.pending_mods(&p(1))).unwrap()),
+                "approvemods" => node.approve_mods(&p(1), &parts[2..]).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "modpolicy" => node.set_mod_policy(&p(1), p(2) == "confiar").map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "putmod" => {
+                    // Simula instalar un mod en ESTA PC (lo hace su usuario, no llega de otra PC).
+                    let d = paths::server_run_dir(&p(1)).join("mods"); std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+                    std::fs::write(d.join(p(2)), parts[3..].join(" ")).map_err(|e| e.to_string())?; Ok(serde_json::json!(true))
+                }
+                "modsdir" => Ok(serde_json::json!(host939_core::modguard::jars(&paths::server_run_dir(&p(1)).join("mods")).keys().cloned().collect::<Vec<_>>())),
                 "leaselog" => Ok(serde_json::to_value(host939_core::lease::history(&p(1))).unwrap()),
                 "audit" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_dir(&p(1)).join("audit.jsonl")).unwrap_or_default())),
                 "rejected" => Ok(serde_json::json!(node.rejected_count(&p(1)))),
@@ -353,6 +365,7 @@ async fn main() {
                 "savelist" => { std::fs::write(p(2), serde_json::to_vec(&host939_core::network::load_share(&p(1))).unwrap()).map_err(|e| e.to_string())?; Ok(serde_json::json!(true)) }
                 "remoteinfo" => redteam::remote_info(node.endpoint(), &p(1)).await,
                 "myaddr" => Ok(serde_json::to_value(node.addr()).unwrap()),
+                "ticketinfo" => { let (a, _) = host939_p2p::parse_ticket(&p(1)).map_err(|e| e.to_string())?; Ok(serde_json::json!({ "ips": a.ip_addrs().count(), "relays": a.relay_urls().count() })) }
                 "peersfile" => Ok(serde_json::json!(std::fs::read_to_string(paths::root().join("peers.json")).unwrap_or_default())),
                 "exit" => { node.shutdown().await; say("@@", "{\"ok\":true,\"v\":\"bye\"}"); std::process::exit(0) }
                 other => Err(format!("orden desconocida: {other}")),

@@ -42,6 +42,7 @@ pub fn payload(server: &str, s: &ShareConfig) -> Vec<u8> {
         "members": s.members.iter().map(|m| serde_json::json!({ "id": m.node_id, "name": m.name, "role": m.role, "joined": m.joined_at })).collect::<Vec<_>>(),
         "autoFailover": s.auto_failover, "handoverOnQuit": s.handover_on_quit, "card": s.card,
         "recovery": s.recovery, "recoveryPending": s.recovery_pending, "successor": s.successor, "succession": s.succession,
+        "approvedMods": s.approved_mods, "modPolicy": s.mod_policy,
     });
     canonical(&v)
 }

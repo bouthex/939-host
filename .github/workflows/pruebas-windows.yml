@@ -95,6 +95,9 @@ jobs:
       - name: Funciones del diseño v3
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test v3_features -- --ignored --nocapture
+      - name: Modo privado con relays reales (la IP queda oculta para el grupo)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-cluster --features pruebas --test seguridad modo_privado_oculta_la_ip_real -- --ignored --nocapture
       - name: Traspaso de anfitrión con servidores reales (dos PCs por P2P)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-cluster --features pruebas --test multi_node real_minecraft_handover -- --ignored --nocapture

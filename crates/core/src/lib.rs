@@ -9,6 +9,7 @@ pub mod events;
 pub mod gameassets;
 pub mod curseforge;
 pub mod files;
+pub mod modguard;
 pub mod hardware;
 pub mod identity;
 pub mod instance;

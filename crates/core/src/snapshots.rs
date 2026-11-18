@@ -286,6 +286,9 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
         w.sync_all().ok();
     }
     std::fs::create_dir_all(&run).ok();
+    // Lo que viene de un punto creado en otra PC cuenta como recibido (ver `modguard`).
+    let foreign = crate::lease::local_node().map(|me| !snap.info.origin.is_empty() && snap.info.origin != me).unwrap_or(false);
+    let before = if foreign { Some(crate::modguard::snapshot(id)) } else { None };
     for d in STATE_DIRS {
         let cur = run.join(d);
         let st = staging.join(d);
@@ -306,6 +309,7 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
         if p.exists() { let _ = std::fs::rename(&p, run.join(f)); }
     }
     let _ = std::fs::remove_dir_all(&staging);
+    if let Some(b) = before { crate::modguard::record_received(id, &b); }
     Ok(())
 }
 
@@ -355,6 +359,7 @@ fn decode_manifest(bytes: &[u8]) -> AppResult<Snapshot> {
     if s.info.id.contains(['/', '\\', '.']) || s.info.id.is_empty() { return Err(AppError::invalid("Identificador de punto inválido.")); }
     for f in &s.files {
         let ok_path = !f.path.is_empty() && !f.path.starts_with('/') && !f.path.contains('\\') && !f.path.split('/').any(|c| c == ".." || c.is_empty())
+            && crate::files::clean(&f.path).is_ok()
             && (STATE_DIRS.iter().any(|d| f.path.starts_with(&format!("{d}/"))) || EXTRA_FILES.contains(&f.path.as_str()));
         if !ok_path { return Err(AppError::invalid(format!("Ruta no permitida en el índice: {}", f.path))); }
         if f.blocks.iter().any(|h| h.len() != 64 || !h.bytes().all(|c| c.is_ascii_hexdigit())) {

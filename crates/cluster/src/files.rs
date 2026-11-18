@@ -95,6 +95,9 @@ impl Inner {
             Ok(a) => a,
             Err(e) => return wire::write_msg(send, &FileResp { ok: false, error: Some(e), code: Some("denied".into()), ..Default::default() }).await,
         };
+        // Lo que llega por acá a `mods/` viene de otra PC: queda marcado como recibido y no se
+        // ejecuta sin la aprobación de la propietaria (`modguard`).
+        let mods_before = if write { Some(host939_core::modguard::snapshot(&server)) } else { None };
         let _g = if write {
             match write_lock(&server) { Some(g) => Some(g), None => return wire::write_msg(send, &FileResp { ok: false, error: Some("Hay otra operación con archivos en curso en este servidor.".into()), code: Some("busy".into()), ..Default::default() }).await }
         } else { None };
@@ -141,6 +144,10 @@ impl Inner {
                 }
             }
         };
+        if let Some(b) = mods_before {
+            let n = host939_core::modguard::record_received(&server, &b);
+            if n > 0 { self.local.note(&server, &format!("Una PC del grupo agregó {n} mod(s): no se cargan hasta que la propietaria los apruebe.")); super::audit(&server, "mods-received", remote); }
+        }
         wire::write_msg(send, &resp).await
     }
 }

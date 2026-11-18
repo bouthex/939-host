@@ -178,6 +178,9 @@ pub struct Info {
     /// Propietaria según la lista que tiene esta PC (para contar testigos de una recuperación).
     #[serde(default)]
     pub owner: String,
+    /// Mods recibidos apartados en esta PC esperando aprobación: (nombre, huella). Solo para quien puede hostear.
+    #[serde(default)]
+    pub pending_mods: Vec<(String, String)>,
     pub addr: Option<EndpointAddr>,
     #[serde(default)]
     pub peers: Vec<EndpointAddr>,
@@ -720,6 +723,40 @@ impl GroupNode {
         }
         self.inner.broadcast_lease(server).await;
         self.inner.local.changed(server);
+        Ok(())
+    }
+
+    /// Mods esperando aprobación en cualquier PC del grupo (lo que informan las que pueden hostear
+    /// y los de esta PC): (nombre, huella, PC).
+    pub fn pending_mods(&self, server: &str) -> Vec<(String, String, String)> {
+        let mut v: Vec<(String, String, String)> = host939_core::modguard::pending(server).into_iter().map(|(n, h)| (n, h, self.inner.name())).collect();
+        self.inner.with_state(server, |s| for i in s.infos.values() { for (n, h) in &i.pending_mods { v.push((n.clone(), h.clone(), i.name.clone())); } });
+        let approved: HashSet<String> = network::load_share(server).approved_mods.into_iter().collect();
+        v.retain(|x| !approved.contains(&x.1));
+        v.sort(); v.dedup_by(|a, b| a.1 == b.1);
+        v
+    }
+
+    /// La propietaria aprueba mods por su huella (firma la lista nueva).
+    pub fn approve_mods(&self, server: &str, hashes: &[String]) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria aprueba mods."); }
+        let mut s = network::load_share(server);
+        for h in hashes {
+            if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) { bail!("Huella inválida."); }
+            if !s.approved_mods.contains(h) { s.approved_mods.push(h.clone()); }
+        }
+        self.inner.commit(server, &mut s)?;
+        audit(server, "mods-approved", &hashes.join(","));
+        Ok(())
+    }
+
+    /// La propietaria elige la política de mods del grupo.
+    pub fn set_mod_policy(&self, server: &str, trust_cohosts: bool) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria cambia esta política."); }
+        let mut s = network::load_share(server);
+        s.mod_policy = Some(if trust_cohosts { "confiar-coanfitrionas" } else { "estricta" }.into());
+        self.inner.commit(server, &mut s)?;
+        audit(server, "mod-policy", if trust_cohosts { "confiar-coanfitrionas" } else { "estricta" });
         Ok(())
     }
 
@@ -1334,6 +1371,7 @@ impl Inner {
                 mine.card = remote.card.clone(); mine.sig = remote.sig.clone();
                 mine.recovery = remote.recovery.clone(); mine.recovery_pending = remote.recovery_pending.clone();
                 mine.successor = remote.successor.clone(); mine.succession = remote.succession.clone(); mine.rsig = remote.rsig.clone();
+                mine.approved_mods = remote.approved_mods.clone(); mine.mod_policy = remote.mod_policy.clone();
                 if let Some(pk) = &mine.recovery_pending {
                     if self.mark_seen(server, &format!("reset:{pk}")) {
                         self.local.note(server, "La propietaria pidió cambiar el código de recuperación sin el código actual. Se aplica después de la espera de seguridad.");
@@ -1528,13 +1566,14 @@ impl Inner {
         let base = Info {
             node: self.me.clone(), name: self.name(), symbol: self.symbol(), lease: lease::read(server),
             latest: None, has_copy: false, running: self.local.is_running(server), can_host: false, score: 0,
-            share_rev: rev(&share).unwrap_or(0), owner: signed::owner_of(&share).unwrap_or_default(), addr: None, peers: vec![],
+            share_rev: rev(&share).unwrap_or(0), owner: signed::owner_of(&share).unwrap_or_default(), addr: None, peers: vec![], pending_mods: vec![],
         };
         if !trusted { return base; }
         Info {
             latest: if copy { snapshots::latest(server) } else { None }, has_copy: copy,
             can_host: copy && share.member(&self.me).map(|m| m.can_host()).unwrap_or(false) && self.local.allow_hosting(server),
-            score: self.local.score(), addr: Some(host939_p2p::shareable(&self.ep.addr(), self.relays)), peers, ..base
+            score: self.local.score(), addr: Some(host939_p2p::shareable(&self.ep.addr(), self.relays)), peers,
+            pending_mods: host939_core::modguard::pending(server), ..base
         }
     }
 
@@ -1765,6 +1804,10 @@ impl Inner {
                 let card = card_for(&cfg, rev(&s2).unwrap_or(0));
                 let differs = s2.card.as_ref().map(|c| { let mut a = c.clone(); let mut b = card.clone(); a["rev"] = 0.into(); b["rev"] = 0.into(); a != b }).unwrap_or(true);
                 if differs { s2.card = Some(card); touched = true; }
+            }
+            // Mods instalados por la propietaria en su propia PC: aprobados sin preguntar.
+            for h in host939_core::modguard::local_jars(server) {
+                if !s2.approved_mods.contains(&h) { s2.approved_mods.push(h); touched = true; }
             }
             // Grupos anteriores a las firmas: la propietaria firma su lista en el primer contacto.
             if touched || s2.sig.is_none() { let _ = self.commit(server, &mut s2); self.local.changed(server); }

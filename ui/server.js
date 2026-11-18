@@ -387,6 +387,7 @@ tabDraw.group = async (el) => {
           ${g.members.find((x) => x.isMe)?.role !== 'propietario' ? `<div class="spread" style="margin-top:12px"><span class="sm t2">Si salís, esta PC deja de participar y la propietaria te quita de la lista.</span><button class="btn s" data-a="group-leave" data-tone="halt">Salir del grupo</button></div>` : '<p class="sm t2" style="margin-top:12px">Los cambios del grupo los firma esta PC (propietaria): ninguna otra puede agregarse, quitar a otras ni declararse propietaria. Para irte, primero pasá la propiedad.</p>'}</div>
         <div class="card pad stack"><h2>Invitar</h2>${inviteBtns}
           ${st.invites.length ? `<div><div class="sec" style="margin:6px 0">Invitaciones sin usar</div>${st.invites.map((i) => `<div class="kv"><span>${ROLE[i.role] || 'Jugador'} <span class="sm t3">${esc(fmtDate(i.createdAt))}${i.expiresAt ? ` · vence ${esc(fmtDate(i.expiresAt))}` : ''}</span></span><button class="btn s ghost" data-a="invite-revoke" data-secret="${esc(i.secret)}">Revocar</button></div>`).join('')}</div>` : ''}</div>
+        ${modsCard(st, g)}
         ${ownershipCard(st, g)}
       </div></div></div>`;
     const fo = $('#opt-failover', el), ho = $('#opt-handover', el);
@@ -408,6 +409,27 @@ A.invite = async (el) => {
   } catch (e) { fail(e); }
   drawTab();
 };
+/* Mods que llegaron de otra PC: se cargan solo con la aprobación de la propietaria. */
+function modsCard(st, g) {
+  const owner = g.members.find((x) => x.isMe)?.role === 'propietario';
+  const pend = st.pendingMods || [];
+  if (!owner && !pend.length) return '';
+  return `<div class="card pad stack"><h2>Mods de otras PCs</h2>
+    ${pend.length ? `<div class="note strong">${icon('alert')}<div class="grow"><b>${pend.length} mod(s) esperan aprobación</b><span class="sm t2">Llegaron desde otra PC del grupo y no se cargan hasta que la propietaria los apruebe. Un mod es un programa: aprobalo solo si sabés de dónde salió.</span></div></div>
+      <div>${pend.map((p) => `<div class="kv"><span><b>${esc(p[0])}</b> <span class="xs t3 mono">${esc(p[1].slice(0, 12))}… · ${esc(p[2])}</span></span>${owner ? `<button class="btn s" data-a="mods-approve" data-h="${esc(p[1])}">Aprobar</button>` : ''}</div>`).join('')}</div>` : '<p class="sm t2" style="margin:0">No hay mods esperando aprobación.</p>'}
+    ${owner ? `<label class="switch"><div class="grow"><b>Confiar en las coanfitrionas</b><span class="sm t2">Apagado (recomendado): un mod que agrega o cambia otra PC no se ejecuta en ninguna PC hasta que lo apruebes. Encendido: se carga sin preguntar.</span></div><input type="checkbox" id="mods-trust" ${st.trustCohostMods ? 'checked' : ''}></label>` : ''}</div>`;
+}
+A['mods-approve'] = async (el) => {
+  if (!(await dialog({ title: 'Aprobar mod', confirm: 'Aprobar', body: '<p>Se va a cargar en la PC que aloje el servidor, con los permisos de su usuario de Windows. Aprobalo solo si confiás en su origen.</p>' }))) return;
+  try { await invoke('mods_approve', { id: state.params.id, hashes: [el.dataset.h] }); toast('Mod aprobado: se carga en el próximo encendido'); } catch (e) { fail(e); }
+  drawTab();
+};
+main.addEventListener('change', async (e) => {
+  if (e.target.id !== 'mods-trust' || state.route !== 'server') return;
+  try { await invoke('mods_policy', { id: state.params.id, trustCohosts: e.target.checked }); toast('Política de mods guardada'); } catch (err) { fail(err); }
+  drawTab();
+});
+
 /* Seguridad de la propiedad: código de recuperación y sucesora designada. */
 function ownershipCard(st, g) {
   const me = g.members.find((x) => x.isMe);

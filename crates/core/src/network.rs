@@ -85,11 +85,17 @@ pub struct ShareConfig {
     /// Firma con la clave de recuperación (recuperar la propiedad o cambiar el código).
     #[serde(default)]
     pub rsig: Option<String>,
+    /// Huellas SHA-256 de los mods aprobados por la propietaria (ver `modguard`).
+    #[serde(default)]
+    pub approved_mods: Vec<String>,
+    /// `estricta` (por defecto) o `confiar-coanfitrionas`.
+    #[serde(default)]
+    pub mod_policy: Option<String>,
 }
 
 impl Default for ShareConfig {
     fn default() -> Self {
-        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None }
+        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None }
     }
 }
 

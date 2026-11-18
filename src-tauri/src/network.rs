@@ -195,6 +195,10 @@ pub struct ShareView {
     pub successor: Option<String>,
     /// Sucesión en curso: (id de la sucesora, segundos que faltan).
     pub succession: Option<(String, u64)>,
+    /// Mods recibidos esperando aprobación: (nombre, huella, PC).
+    pub pending_mods: Vec<(String, String, String)>,
+    /// Política de mods: true = confiar en las coanfitrionas (no se aparta nada).
+    pub trust_cohost_mods: bool,
 }
 
 #[tauri::command]
@@ -209,6 +213,8 @@ pub async fn share_status(id: String, cluster: State<'_, Cluster>) -> AppResult<
         private_mode: settings::load().private_mode,
         recovery_set: share.recovery.is_some(), recovery_pending: share.recovery_pending.is_some(),
         successor: share.successor.clone(), succession: node.and_then(|n| n.succession_status(&id)),
+        pending_mods: node.map(|n| n.pending_mods(&id)).unwrap_or_default(),
+        trust_cohost_mods: share.mod_policy.as_deref() == Some("confiar-coanfitrionas"),
     })
 }
 
@@ -239,6 +245,18 @@ pub async fn invite_create(id: String, role: String, label: String, cluster: Sta
         let _ = node.open_route(&id, route_port(&id)).await;
     }
     node.invite_for(&id, &role, if label.trim().is_empty() { "Invitación" } else { label.trim() }, settings::load().invite_hours).map_err(|e| p2p_err("No se pudo crear la invitación", e))
+}
+
+/* ── Mods recibidos ── */
+
+#[tauri::command]
+pub async fn mods_approve(id: String, hashes: Vec<String>, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.approve_mods(&id, &hashes).map_err(|e| AppError::invalid(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn mods_policy(id: String, trust_cohosts: bool, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.set_mod_policy(&id, trust_cohosts).map_err(|e| AppError::invalid(e.to_string()))
 }
 
 /* ── Recuperación de la propiedad ── */

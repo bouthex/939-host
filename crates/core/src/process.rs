@@ -266,7 +266,16 @@ impl Manager {
             if let Some(b) = &rt.busy { return Err(AppError::busy(format!("Esperá a que termine: {b}."))); }
         }
         crate::lease::can_start(&cfg.id)?;
+        // Mods recibidos de otras PCs sin aprobación de la propietaria: no se cargan.
+        let (held, back) = crate::modguard::enforce(&cfg.id)?;
+        if !held.is_empty() { self.note(&cfg.id, &format!("{} mod(s) recibidos de otra PC esperan la aprobación de la propietaria y no se cargan: {}", held.len(), held.join(", "))); }
+        if !back.is_empty() { self.note(&cfg.id, &format!("Mods aprobados por la propietaria vuelven a cargarse: {}", back.join(", "))); }
         let run_dir = paths::server_run_dir(&cfg.id);
+        // El lanzador de Fabric arranca siempre el servidor oficial (un archivo sincronizado no
+        // puede cambiar qué jar se ejecuta).
+        if cfg.loader == crate::model::Loader::Fabric && run_dir.join("fabric-server-launcher.properties").exists() {
+            let _ = paths::write_atomic(&run_dir.join("fabric-server-launcher.properties"), b"serverJar=server.jar\n");
+        }
         check_lock(probe, &run_dir)?;
         check_port(cfg.port)?;
         // La configuración es la fuente de verdad: así el puerto y las opciones de esta PC valen
@@ -760,6 +769,14 @@ mod job {
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+            // Endurecimiento parcial (NO es un aislamiento): el servidor de Minecraft no tiene
+            // interfaz, así que se le quita el acceso al portapapeles, al escritorio, a los
+            // ajustes del sistema y a apagar Windows. Los mods igual pueden leer y escribir
+            // archivos del usuario y usar la red: ver SECURITY.md.
+            let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS { UIRestrictionsClass: JOB_OBJECT_UILIMIT_READCLIPBOARD | JOB_OBJECT_UILIMIT_WRITECLIPBOARD
+                | JOB_OBJECT_UILIMIT_DESKTOP | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS | JOB_OBJECT_UILIMIT_EXITWINDOWS | JOB_OBJECT_UILIMIT_GLOBALATOMS
+                | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS | JOB_OBJECT_UILIMIT_HANDLES };
+            SetInformationJobObject(h, JobObjectBasicUIRestrictions, &ui as *const _ as *const _, std::mem::size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32);
             Ok(h as usize)
         }).ok().copied()
     }
