@@ -26,112 +26,122 @@ function srvLogo(url, size = 40) {
   return url ? `<span class="srv-ic logo" style="width:${size}px;height:${size}px"><img src="${url}" alt="" draggable="false"></span>` : `<span class="srv-ic" style="width:${size}px;height:${size}px">${icon('cube', Math.round(size * 0.45))}</span>`;
 }
 
-/* PNG cuadrado a partir de un dibujo en canvas. */
-function canvasPNG(draw, size) {
-  const c = document.createElement('canvas');
-  c.width = c.height = size;
-  const g = c.getContext('2d');
-  g.imageSmoothingQuality = 'high';
-  draw(g, size);
-  return new Promise((ok) => c.toBlob(async (b) => ok(Array.from(new Uint8Array(await b.arrayBuffer()))), 'image/png'));
+/* Diseños con las skins del grupo: se arman en esta PC a partir de la skin oficial de cada cuenta
+   (Mojang, textures.minecraft.net), con la cara y la capa del casco en píxeles nítidos sobre el
+   mismo fondo sobrio que los demás diseños. Al guardar queda como imagen del servidor: no vuelve a
+   pedir nada a Mojang y viaja al grupo como cualquier logo. */
+const SKIN_PRESETS = ['bouthex', 'Archimak', 'lescano8'];
+const skinFaces = {};
+async function skinFace(name) {
+  if (skinFaces[name] !== undefined) return skinFaces[name];
+  const url = await invoke('player_skin', { name }).catch(() => null);
+  if (!url) return (skinFaces[name] = null);
+  try {
+    const img = await imgFromDataURL(url);
+    const c = document.createElement('canvas');
+    c.width = c.height = 256;
+    const g = c.getContext('2d');
+    g.fillStyle = '#16181b';
+    g.beginPath(); g.roundRect(0, 0, 256, 256, 56); g.fill();
+    g.imageSmoothingEnabled = false;
+    const f = 144, o = (256 - f) / 2;
+    g.fillStyle = 'rgba(0,0,0,.35)';
+    g.beginPath(); g.roundRect(o + 6, o + 10, f, f, 10); g.fill();
+    g.save(); g.beginPath(); g.roundRect(o, o, f, f, 10); g.clip();
+    g.drawImage(img, 8, 8, 8, 8, o, o, f, f);
+    // Capa del casco (segunda capa de la cabeza), si la skin la tiene.
+    if (img.naturalHeight >= 64 || img.naturalWidth >= 64) g.drawImage(img, 40, 8, 8, 8, o, o, f, f);
+    g.restore();
+    g.strokeStyle = 'rgba(255,255,255,.14)'; g.lineWidth = 2;
+    g.beginPath(); g.roundRect(o, o, f, f, 10); g.stroke();
+    return (skinFaces[name] = c);
+  } catch { return (skinFaces[name] = null); }
 }
-const logoImg = (src) => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('No se pudo leer la imagen.')); i.src = src; });
 
 A['logo-edit'] = async () => {
   const v = state.server;
   const id = v.config.id;
-  const ed = { mode: v.config.logo?.startsWith('preset:') ? 'preset' : v.config.logo === 'custom' ? 'keep' : 'preset', preset: Number((v.config.logo || 'preset:0').split(':')[1]) || 0, img: null, zoom: 1, x: 0, y: 0 };
-  const view = () => {
-    if (ed.mode === 'preset') return `data:image/svg+xml;utf8,${encodeURIComponent(presetSVG(ed.preset, 256))}`;
-    if (ed.mode === 'keep') return v.logoUrl;
+  const cur = v.config.logo || '';
+  const ed = { mode: cur === 'custom' ? 'keep' : cur.startsWith('skin:') ? 'skin' : 'preset', preset: Number((cur.startsWith('preset:') ? cur : 'preset:0').split(':')[1]) || 0, skin: cur.startsWith('skin:') ? cur.slice(5) : null, up: null, tab: 'preset' };
+  let presetImgs = [];
+  const final = () => {
+    if (ed.mode === 'preset') return presetImgs[ed.preset] || null;
+    if (ed.mode === 'skin') return skinFaces[ed.skin] || null;
+    if (ed.mode === 'upload' && ed.up?.cropper.has()) return ed.up.cropper.canvas;
     return null;
   };
-  let saved = false;
-  const ok = await dialog({ title: 'Logo del servidor', wide: true, confirm: 'Guardar logo',
-    body: `<p class="t2" style="margin:0">Se ve en tu lista, en el panel, en la Papelera y en la lista de servidores de Minecraft. El logo de 939 Host no cambia.</p>
+  const ok = await dialog({ title: 'Logo del servidor', wide: true,
+    body: `<p class="t2" style="margin:0">Se ve en tu lista, en el panel, en la Papelera y en la lista de servidores de Minecraft. Es el mismo en todas las PCs del grupo, aloje quien aloje. El logo de 939 Host no cambia.</p>
       <div class="logo-ed">
         <div class="stack" style="gap:14px">
-          <div class="seg" role="tablist"><button class="on" data-lm="preset">Diseños de 939</button><button data-lm="upload">Subir imagen</button></div>
-          <div id="lg-presets" class="logo-grid">${LOGO_PRESETS.map((_, i) => `<button class="lp${i === ed.preset ? ' on' : ''}" data-lp="${i}" aria-label="Diseño ${i + 1}">${presetSVG(i, 56)}</button>`).join('')}</div>
-          <div id="lg-upload" hidden>
-            <label class="drop" id="lg-drop"><input type="file" accept="image/png,image/jpeg,image/webp" hidden id="lg-file">${icon('upload', 20)}<b>Elegí o arrastrá una imagen</b><span class="sm t3">PNG, JPG o WebP · se recorta en un cuadrado</span></label>
-            <div id="lg-crop" hidden><div class="crop"><canvas id="lg-cv" width="256" height="256"></canvas><span class="crop-mask"></span></div>
-              <label class="field">Zoom<input type="range" id="lg-zoom" min="1" max="4" step="0.01" value="1"></label><span class="hint">Arrastrá la imagen para encuadrarla.</span></div>
+          <div class="seg" role="tablist"><button class="on" data-lm="preset" role="tab">Diseños</button><button data-lm="upload" role="tab">Subir imagen</button></div>
+          <div id="lg-presets" class="stack" style="gap:10px">
+            <div class="logo-grid">${LOGO_PRESETS.map((_, i) => `<button class="lp${ed.mode === 'preset' && i === ed.preset ? ' on' : ''}" data-lp="${i}" aria-label="Diseño ${i + 1}">${presetSVG(i, 56)}</button>`).join('')}</div>
+            <span class="xs t3">Skins del grupo</span>
+            <div class="logo-grid">${SKIN_PRESETS.map((n) => `<button class="lp skin${ed.mode === 'skin' && ed.skin === n ? ' on' : ''}" data-ls="${esc(n)}" aria-label="Skin de ${esc(n)}" disabled><span class="bar indet" style="width:40px"><i></i></span><span class="lp-name">${esc(n)}</span></button>`).join('')}</div>
+            <span class="xs t3" id="lg-skin-note"></span>
           </div>
+          <div id="lg-upload" hidden>${uploadBlock('lg')}</div>
+          ${ed.mode === 'keep' ? '<span class="xs t3" id="lg-keep">Ahora tiene una imagen propia. Elegí un diseño o subí otra imagen para cambiarla.</span>' : ''}
         </div>
-        <div class="logo-prev"><span class="xs t3">Vista previa</span><div class="row" style="gap:14px;align-items:flex-end"><span id="pv-lg" class="pv" style="width:96px;height:96px"></span><span id="pv-md" class="pv" style="width:40px;height:40px"></span><span id="pv-mc" class="pv mc" style="width:32px;height:32px"></span></div>
-          <span class="xs t3">Panel · lista · Minecraft</span></div>
+        <div class="logo-prev"><span class="xs t3">Vista previa real</span>
+          <div class="row" style="gap:16px;align-items:flex-end;flex-wrap:wrap">
+            <span class="stack" style="gap:4px;align-items:center"><span id="pv-lg" class="pv" style="width:96px;height:96px"></span><span class="xs t3">Panel</span></span>
+            <span class="stack" style="gap:4px;align-items:center"><span id="pv-md" class="srv-ic logo pv-list" style="width:40px;height:40px"></span><span class="xs t3">Lista</span></span>
+            <span class="stack" style="gap:4px;align-items:center"><span id="pv-mc" class="pv mc" style="width:64px;height:64px"></span><span class="xs t3">Minecraft (64×64)</span></span>
+          </div></div>
       </div>`,
     buttons: [...(v.config.logo ? [{ label: 'Volver al ícono genérico', value: 'clear' }] : []), { label: 'Guardar logo', value: true, kind: 'pri' }],
-    onMount: (d) => {
-      const cv = d.querySelector('#lg-cv');
+    onMount: async (d) => {
       const paint = () => {
-        let src = view();
-        if (ed.mode === 'upload' && ed.img) {
-          const g = cv.getContext('2d');
-          const s = Math.max(256 / ed.img.width, 256 / ed.img.height) * ed.zoom;
-          const w = ed.img.width * s, h = ed.img.height * s;
-          ed.x = Math.min(0, Math.max(256 - w, ed.x)); ed.y = Math.min(0, Math.max(256 - h, ed.y));
-          g.clearRect(0, 0, 256, 256); g.drawImage(ed.img, ed.x, ed.y, w, h);
-          src = cv.toDataURL('image/png');
-        }
-        d.querySelectorAll('.pv').forEach((p) => { p.innerHTML = src ? `<img src="${src}" alt="">` : icon('cube', 18); });
+        const src = final();
+        const keep = ed.mode === 'keep' && v.logoUrl;
+        const big = src ? scaledCanvas(src, 256).toDataURL('image/png') : keep ? v.logoUrl : null;
+        const mc = src ? scaledCanvas(src, 64).toDataURL('image/png') : keep ? v.logoUrl : null;
+        d.querySelector('#pv-lg').innerHTML = big ? `<img src="${big}" alt="">` : icon('cube', 28);
+        d.querySelector('#pv-md').innerHTML = big ? `<img src="${big}" alt="">` : icon('cube', 18);
+        d.querySelector('#pv-mc').innerHTML = mc ? `<img src="${mc}" alt="">` : icon('cube', 22);
       };
+      presetImgs = await Promise.all(LOGO_PRESETS.map((_, i) => imgFromDataURL(`data:image/svg+xml;utf8,${encodeURIComponent(presetSVG(i, 256))}`).catch(() => null)));
+      const sel = (btn) => { d.querySelectorAll('.lp').forEach((x) => x.classList.toggle('on', x === btn)); d.querySelector('#lg-keep')?.remove(); paint(); };
       d.querySelectorAll('[data-lm]').forEach((b) => b.addEventListener('click', () => {
-        d.querySelectorAll('[data-lm]').forEach((x) => x.classList.toggle('on', x === b));
-        const up = b.dataset.lm === 'upload';
-        d.querySelector('#lg-presets').hidden = up; d.querySelector('#lg-upload').hidden = !up;
-        ed.mode = up ? (ed.img ? 'upload' : 'none') : 'preset';
+        d.querySelectorAll('[data-lm]').forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-selected', x === b); });
+        ed.tab = b.dataset.lm;
+        d.querySelector('#lg-presets').hidden = ed.tab !== 'preset';
+        d.querySelector('#lg-upload').hidden = ed.tab !== 'upload';
+        if (ed.tab === 'upload') ed.mode = ed.up?.cropper.has() ? 'upload' : ed.mode;
         paint();
       }));
-      d.querySelectorAll('[data-lp]').forEach((b) => b.addEventListener('click', () => {
-        ed.preset = Number(b.dataset.lp); ed.mode = 'preset';
-        d.querySelectorAll('.lp').forEach((x) => x.classList.toggle('on', x === b)); paint();
-      }));
-      const take = async (file) => {
-        if (!file) return;
-        if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { toast('Elegí una imagen PNG, JPG o WebP.', 'error'); return; }
-        if (file.size > 20 * 1024 * 1024) { toast('La imagen pesa más de 20 MB.', 'error'); return; }
-        try {
-          const url = URL.createObjectURL(file);
-          ed.img = await logoImg(url); URL.revokeObjectURL(url);
-          if (ed.img.width < 64 || ed.img.height < 64) { ed.img = null; toast('La imagen es muy chica (mínimo 64×64).', 'error'); return; }
-          ed.mode = 'upload'; ed.zoom = 1; ed.x = -1e6; ed.y = -1e6;
-          const s = Math.max(256 / ed.img.width, 256 / ed.img.height);
-          ed.x = (256 - ed.img.width * s) / 2; ed.y = (256 - ed.img.height * s) / 2;
-          d.querySelector('#lg-zoom').value = 1;
-          d.querySelector('#lg-drop').hidden = true; d.querySelector('#lg-crop').hidden = false; paint();
-        } catch (e) { fail(e); }
-      };
-      d.querySelector('#lg-file').addEventListener('change', (e) => take(e.target.files[0]));
-      const drop = d.querySelector('#lg-drop');
-      drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
-      drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-      drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); take(e.dataTransfer.files[0]); });
-      d.querySelector('#lg-zoom').addEventListener('input', (e) => {
-        const z0 = ed.zoom; ed.zoom = Number(e.target.value);
-        ed.x = 128 - (128 - ed.x) * ed.zoom / z0; ed.y = 128 - (128 - ed.y) * ed.zoom / z0; paint();
-      });
-      let drag = null;
-      cv.addEventListener('pointerdown', (e) => { drag = { x: e.clientX - ed.x, y: e.clientY - ed.y }; cv.setPointerCapture(e.pointerId); });
-      cv.addEventListener('pointermove', (e) => { if (drag) { ed.x = e.clientX - drag.x; ed.y = e.clientY - drag.y; paint(); } });
-      cv.addEventListener('pointerup', () => { drag = null; });
+      d.querySelectorAll('[data-lp]').forEach((b) => b.addEventListener('click', () => { ed.preset = Number(b.dataset.lp); ed.mode = 'preset'; sel(b); }));
+      d.querySelectorAll('[data-ls]').forEach((b) => b.addEventListener('click', () => { ed.skin = b.dataset.ls; ed.mode = 'skin'; sel(b); }));
+      ed.up = await wireUpload(d, 'lg', () => { if (ed.mode === 'upload') paint(); }, () => { ed.mode = 'upload'; d.querySelectorAll('.lp').forEach((x) => x.classList.remove('on')); paint(); });
       paint();
-      saved = () => ({ cv });
+      let missing = 0;
+      await Promise.all(SKIN_PRESETS.map(async (n) => {
+        const c = await skinFace(n);
+        const b = d.querySelector(`[data-ls="${n}"]`);
+        if (!b) return;
+        if (c) { b.disabled = false; b.innerHTML = `<img src="${scaledCanvas(c, 112).toDataURL('image/png')}" alt="" style="width:56px;height:56px;border-radius:12px"><span class="lp-name">${esc(n)}</span>`; }
+        else { missing += 1; b.innerHTML = `${icon('user', 20)}<span class="lp-name">${esc(n)}</span>`; b.title = 'No disponible'; }
+        if (ed.mode === 'skin' && ed.skin === n) paint();
+      }));
+      if (missing) d.querySelector('#lg-skin-note').textContent = state.info.settings.skinsEnabled === false
+        ? 'Para usar las skins activá «Mostrar skins reales» en Configuración → Privacidad (consulta a Mojang).'
+        : 'Algunas skins no se pudieron obtener de Mojang (sin conexión o cuenta no encontrada).';
     } });
+  ed.up?.stop?.();
   if (ok === 'clear') {
     if (!(await dialog({ title: 'Volver al ícono genérico', confirm: 'Quitar logo', body: '<p>Se quita el logo de este servidor (también de la lista de Minecraft).</p>' }))) return;
     try { await invoke('server_logo_clear', { id }); toast('Logo quitado'); } catch (e) { fail(e); }
     refreshServer(); return;
   }
-  if (!ok || ed.mode === 'keep' || ed.mode === 'none') return;
+  const src = final();
+  if (!ok || !src) return;
   try {
-    let source;
-    if (ed.mode === 'preset') source = await logoImg(`data:image/svg+xml;utf8,${encodeURIComponent(presetSVG(ed.preset, 256))}`);
-    else source = await logoImg(saved().cv.toDataURL('image/png'));
-    const big = await canvasPNG((g, s) => g.drawImage(source, 0, 0, s, s), 256);
-    const small = await canvasPNG((g, s) => g.drawImage(source, 0, 0, s, s), 64);
-    await invoke('server_logo_set', { id, kind: ed.mode === 'preset' ? `preset:${ed.preset}` : 'custom', big, icon: small });
+    const big = await squarePNG(src, 256);
+    const small = await squarePNG(src, 64, { pixelated: ed.mode === 'skin' });
+    const kind = ed.mode === 'preset' ? `preset:${ed.preset}` : ed.mode === 'skin' ? `skin:${ed.skin}` : 'custom';
+    await invoke('server_logo_set', { id, kind, big, icon: small });
     toast(isActive(v) ? 'Logo guardado. En Minecraft se ve tras reiniciar el servidor.' : 'Logo guardado');
   } catch (e) { fail(e); }
   refreshServer();

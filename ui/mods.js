@@ -334,7 +334,7 @@ A['mods-import-folder'] = async () => {
   await loadMods(); paintMods();
 };
 /* Arrastrar y soltar (eventos nativos de la ventana: traen las rutas reales). */
-function dropActive() { return state.route === 'server' && state.tab === 'mods' && state.server?.config.loader !== 'vanilla'; }
+function dropActive() { return !dialogOpen && state.route === 'server' && state.tab === 'mods' && state.server?.config.loader !== 'vanilla'; }
 function showDropOverlay(on) {
   let el = $('#drop-full');
   if (on && !el) { el = document.createElement('div'); el.id = 'drop-full'; el.className = 'dropzone-full'; el.innerHTML = '<div>Soltá los archivos .jar para agregarlos a este servidor</div>'; document.body.appendChild(el); }

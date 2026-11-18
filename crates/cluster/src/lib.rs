@@ -151,6 +151,8 @@ enum Req {
     LeaseChain { server: String, after: u64 },
     /// La sucesora designada avisa que inició la espera para reemplazar a la propietaria.
     Succession { server: String, claim: serde_json::Value },
+    /// Pide la foto de perfil con esa huella (solo entre integrantes del grupo).
+    Avatar { server: String, hash: String },
 }
 
 impl Req {
@@ -158,7 +160,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } => server,
         }
     }
 }
@@ -187,6 +189,9 @@ pub struct Info {
     pub addr: Option<EndpointAddr>,
     #[serde(default)]
     pub peers: Vec<EndpointAddr>,
+    /// Huella SHA-256 de la foto de perfil de esta PC (la foto se pide aparte, una vez).
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +202,8 @@ enum Resp {
     Ok,
     Vote { agree: bool, #[serde(default)] sig: Option<String> },
     Leases { leases: Vec<Lease> },
+    /// Foto de perfil (PNG en base64).
+    Avatar { png: String },
     Err { msg: String },
 }
 
@@ -247,6 +254,8 @@ struct SrvState {
     mods_noticed: HashSet<String>,
     /// Hay una solicitud para alojar y acá el servidor está apagado: se acepta sola.
     auto_answer: bool,
+    /// Fotos de perfil que se están pidiendo (por huella).
+    avatar_fetch: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -394,6 +403,8 @@ pub struct MemberStatus {
     /// "directa", "relay" o "" si no hay conexión ahora.
     pub path: String,
     pub rtt_ms: Option<u64>,
+    /// Huella de su foto de perfil (si esta PC ya la tiene guardada).
+    pub avatar: Option<String>,
 }
 
 fn majority(n: usize) -> usize { n / 2 + 1 }
@@ -1183,6 +1194,7 @@ impl GroupNode {
                 symbol: if is_me { inner.symbol() } else { info.map(|i| i.symbol.clone()).unwrap_or_default() },
                 role: m.role.clone(), is_me, online, running, is_host: l.as_ref().map(|l| l.held_by(&m.node_id)).unwrap_or(false),
                 can_host, score, latest_at: latest.as_ref().map(|s| s.created_at.clone()), fresh: fresh(&latest), path: if is_me { String::new() } else { path }, rtt_ms,
+                avatar: if is_me { host939_core::avatar::own_hash() } else { info.and_then(|i| i.avatar.clone()).filter(|h| host939_core::avatar::has_peer(h)) },
             });
         }
         let i_am_host = l.as_ref().map(|l| l.held_by(&inner.me)).unwrap_or(false);
@@ -1696,6 +1708,7 @@ impl Inner {
             node: self.me.clone(), name: self.name(), symbol: self.symbol(), lease: lease::read(server),
             latest: None, has_copy: false, running: self.local.is_running(server), can_host: false, score: 0,
             share_rev: rev(&share).unwrap_or(0), owner: signed::owner_of(&share).unwrap_or_default(), addr: None, peers: vec![], pending_mods: vec![],
+            avatar: host939_core::avatar::own_hash(),
         };
         if !trusted { return base; }
         Info {
@@ -1920,6 +1933,20 @@ impl Inner {
         let mut names: Vec<(String, String)> = vec![];
         for (node, info) in inbox {
             names.push((node.clone(), info.name.clone()));
+            // Foto de perfil nueva o cambiada: se pide una vez (se guarda por huella).
+            if let Some(h) = info.avatar.clone().filter(|h| host939_core::avatar::valid_hash(h) && !host939_core::avatar::has_peer(h)) {
+                if self.with_state(server, |s| s.avatar_fetch.insert(h.clone())) {
+                    let (me, srv, n) = (self.clone(), server.to_string(), node.clone());
+                    tokio::spawn(async move {
+                        if let Ok(Resp::Avatar { png }) = me.rpc_timeout(&n, &Req::Avatar { server: srv.clone(), hash: h.clone() }, Duration::from_secs(8)).await {
+                            if let Ok(b) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, png) {
+                                if host939_core::avatar::store_peer(&h, &b).is_ok() { me.local.changed(&srv); }
+                            }
+                        }
+                        me.with_state(&srv, |s| { s.avatar_fetch.remove(&h); });
+                    });
+                }
+            }
             // Su propia dirección, solo si es de ella (no puede anunciar la de otra identidad).
             if let Some(a) = &info.addr { if a.id.to_string() == node { self.learn(a.clone()); } }
             // Direcciones de terceros: solo de quien puede hostear, para integrantes del grupo, y
@@ -2334,6 +2361,13 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             let inner2 = inner.clone();
             tokio::spawn(async move { inner2.tick_server(&server).await; });
             Resp::Ok
+        }
+        Req::Avatar { server, hash } => {
+            if !inner.is_member(&server, remote) { return Resp::Err { msg: "No es integrante del grupo.".into() }; }
+            match host939_core::avatar::own_png().filter(|_| host939_core::avatar::own_hash().as_deref() == Some(hash.as_str())) {
+                Some(b) => Resp::Avatar { png: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b) },
+                None => Resp::Err { msg: "Esa foto ya no está.".into() },
+            }
         }
         Req::Bye { server } => {
             inner.with_state(&server, |s| { s.left.insert(remote.to_string()); s.last_ok.remove(remote); });

@@ -699,3 +699,19 @@ input[type="checkbox"], input[type="radio"], input[type="range"], progress { acc
 .optcard, .chip-btn, .lp, .fm-row, .trash-it { will-change: auto; }
 @media (prefers-reduced-motion: reduce) { .tab-enter, .trash-it, .optmod { animation: none !important; } }
 [data-motion="reduce"] .tab-enter, [data-motion="reduce"] .trash-it, [data-motion="reduce"] .optmod { animation: none !important; }
+
+/* El atributo hidden siempre oculta (antes `.logo-grid { display: grid }` lo anulaba y los diseños
+   seguían visibles en «Subir imagen»). */
+[hidden] { display: none !important; }
+/* Vistas previas: la imagen llena el recuadro (antes, dentro de una celda de cuadrícula, se
+   dibujaba a tamaño real y se salía de los márgenes). */
+.pv { position: relative; }
+.pv img, .srv-ic.logo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.srv-ic.logo { position: relative; overflow: hidden; }
+.pcav.photo { overflow: hidden; position: relative; }
+.pcav.photo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.crop.round, .crop.round .crop-mask { border-radius: 50%; }
+.drop[aria-busy="true"] { opacity: .6; pointer-events: none; }
+.lp.skin { position: relative; }
+.lp .lp-name { position: absolute; left: 0; right: 0; bottom: 3px; font-size: 9px; text-align: center; color: #e8e8e4; text-shadow: 0 1px 2px #000; pointer-events: none; }
+.lp:disabled { opacity: .45; cursor: not-allowed; }

@@ -404,6 +404,45 @@ pub async fn server_logo_set(app: AppHandle, id: String, kind: String, big: Vec<
     Ok(())
 }
 
+/// Lee una imagen de cualquier carpeta (arrastrada a la ventana) para recortarla.
+#[tauri::command]
+pub async fn image_read(path: String) -> AppResult<String> {
+    tauri::async_runtime::spawn_blocking(move || host939_core::logo::read_input_image(std::path::Path::new(&path))).await.map_err(|e| AppError::new("io", e.to_string()))?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhotoView { hash: Option<String>, data_url: Option<String> }
+
+#[tauri::command]
+pub fn profile_photo_get() -> PhotoView {
+    let hash = host939_core::avatar::own_hash();
+    let data_url = hash.as_deref().and_then(host939_core::avatar::data_url);
+    PhotoView { hash, data_url }
+}
+
+/// Guarda la foto de perfil (PNG 128×128 ya recortado en la interfaz). Las demás PCs del grupo
+/// la ven en la próxima consulta (solo viaja la huella; la foto se pide una vez).
+#[tauri::command]
+pub fn profile_photo_set(app: AppHandle, png: Vec<u8>) -> AppResult<PhotoView> {
+    host939_core::avatar::set(&png)?;
+    let _ = app.emit("servers-changed", ());
+    Ok(profile_photo_get())
+}
+
+#[tauri::command]
+pub fn profile_photo_clear(app: AppHandle) -> AppResult<()> {
+    host939_core::avatar::clear()?;
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}
+
+/// Fotos de perfil por huella (propia o de otras PCs ya guardadas).
+#[tauri::command]
+pub fn avatars(hashes: Vec<String>) -> std::collections::HashMap<String, String> {
+    hashes.into_iter().take(200).filter_map(|h| host939_core::avatar::data_url(&h).map(|d| (h, d))).collect()
+}
+
 #[tauri::command]
 pub async fn server_logo_clear(app: AppHandle, id: String) -> AppResult<()> {
     host939_core::logo::clear(&id)?;

@@ -24,9 +24,35 @@ pub fn png_size(b: &[u8]) -> AppResult<(u32, u32)> {
 fn logo_path(id: &str) -> std::path::PathBuf { paths::server_dir(id).join("logo.png") }
 fn icon_path(id: &str) -> std::path::PathBuf { paths::server_run_dir(id).join("server-icon.png") }
 
-/// Guarda el logo. `kind` = `custom` o `preset:<n>`. `big` es el PNG de 256×256 y `icon` el de 64×64.
+/// Tipo de imagen por su contenido (no por la extensión): png | jpeg | webp | gif.
+pub fn image_kind(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) { Some("png") }
+    else if b.starts_with(&[0xFF, 0xD8, 0xFF]) { Some("jpeg") }
+    else if b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" { Some("webp") }
+    else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") { Some("gif") }
+    else { None }
+}
+
+/// Máximo que se acepta leer de una imagen elegida o arrastrada.
+pub const MAX_INPUT: u64 = 20 * 1024 * 1024;
+
+/// Lee una imagen de cualquier carpeta de la PC (arrastrada a la ventana) para recortarla en la
+/// interfaz. Solo lee: valida tamaño y tipo real; el recorte y la conversión a PNG se hacen en la
+/// interfaz y lo que vuelve se valida otra vez al guardar.
+pub fn read_input_image(path: &std::path::Path) -> AppResult<String> {
+    let meta = std::fs::metadata(path).map_err(|e| AppError::io("No se pudo leer la imagen", e))?;
+    if !meta.is_file() { return Err(AppError::invalid("Eso no es un archivo de imagen.")); }
+    if meta.len() > MAX_INPUT { return Err(AppError::invalid("La imagen pesa más de 20 MB.")); }
+    if meta.len() == 0 { return Err(AppError::invalid("El archivo está vacío.")); }
+    let b = std::fs::read(path).map_err(|e| AppError::io("No se pudo leer la imagen", e))?;
+    let kind = image_kind(&b).ok_or_else(|| AppError::invalid("El archivo no es una imagen PNG, JPG, WebP o GIF (o está dañado)."))?;
+    Ok(format!("data:image/{kind};base64,{}", base64::engine::general_purpose::STANDARD.encode(b)))
+}
+
+/// Guarda el logo. `kind` = `custom`, `preset:<n>` o `skin:<jugador>`. `big` es el PNG de 256×256 y `icon` el de 64×64.
 pub fn set(id: &str, kind: &str, big: &[u8], icon: &[u8]) -> AppResult<()> {
-    if !(kind == "custom" || kind.strip_prefix("preset:").map(|n| !n.is_empty() && n.len() < 4 && n.chars().all(|c| c.is_ascii_digit())).unwrap_or(false)) {
+    let skin_ok = kind.strip_prefix("skin:").map(crate::players::valid_name).unwrap_or(false);
+    if !(kind == "custom" || skin_ok || kind.strip_prefix("preset:").map(|n| !n.is_empty() && n.len() < 4 && n.chars().all(|c| c.is_ascii_digit())).unwrap_or(false)) {
         return Err(AppError::invalid("Tipo de logo desconocido."));
     }
     if big.len() > MAX_BYTES || icon.len() > MAX_BYTES { return Err(AppError::invalid("La imagen es demasiado grande.")); }
@@ -85,5 +111,26 @@ mod t {
         assert!(png_size(b"GIF89a....................................").is_err());
         let mut cut = png(64, 64); cut.truncate(30);
         assert!(png_size(&cut).is_err());
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    #[test]
+    fn tipo_real_y_limites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let png = tmp.path().join("foto.PNG");
+        std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]).unwrap();
+        assert!(read_input_image(&png).unwrap().starts_with("data:image/png;base64,"));
+        let fake = tmp.path().join("virus.png");
+        std::fs::write(&fake, b"MZ\x90\x00 no es una imagen").unwrap();
+        assert!(read_input_image(&fake).is_err(), "se mira el contenido, no la extensión");
+        let jpg = tmp.path().join("a.jpg");
+        std::fs::write(&jpg, [0xFF, 0xD8, 0xFF, 0xE0, 1, 2]).unwrap();
+        assert!(read_input_image(&jpg).unwrap().starts_with("data:image/jpeg"));
+        std::fs::write(tmp.path().join("vacio.png"), b"").unwrap();
+        assert!(read_input_image(&tmp.path().join("vacio.png")).is_err());
+        assert!(read_input_image(tmp.path()).is_err(), "una carpeta no");
     }
 }

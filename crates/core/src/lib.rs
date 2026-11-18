@@ -1,6 +1,7 @@
 //! Núcleo de 939 Host: todo lo que no es interfaz. Se prueba de forma aislada.
 
 pub mod alias;
+pub mod avatar;
 pub mod backup;
 pub mod client;
 pub mod diagnostics;

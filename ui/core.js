@@ -90,7 +90,12 @@ const icon = (n, size = 18, sw = 1.6) => `<svg class="ic" width="${size}" height
 /* Símbolo de una PC (avatar cuadrado). */
 const PC_SYMBOLS = ['bloque', 'pico', 'antorcha', 'hoja', 'cofre', 'gema', 'faro', 'montana', 'luna', 'rayo', 'ola', 'estrella'];
 const SYMBOL_NAMES = { bloque: 'Bloque', pico: 'Pico', antorcha: 'Antorcha', hoja: 'Hoja', cofre: 'Cofre', gema: 'Gema', faro: 'Faro', montana: 'Montaña', luna: 'Luna', rayo: 'Rayo', ola: 'Ola', estrella: 'Estrella' };
-const pcAvatar = (symbol, size = 32, cls = '') => `<span class="pcav ${cls}" style="width:${size}px;height:${size}px" aria-hidden="true">${icon(PC_SYMBOLS.includes(symbol) ? `sym-${symbol}` : 'pc', Math.round(size * 0.55))}</span>`;
+/* Avatar de una PC: su foto de perfil (si tiene, por huella) o su símbolo. */
+const pcAvatar = (symbol, size = 32, cls = '', photo = null) => {
+  if (photo) queueAvatar(photo);
+  const src = photo && AVATARS[photo];
+  return `<span class="pcav ${cls}${src ? ' photo' : ''}" style="width:${size}px;height:${size}px" aria-hidden="true"${photo ? ` data-avh="${esc(photo)}"` : ''}>${src ? `<img src="${src}" alt="">` : icon(PC_SYMBOLS.includes(symbol) ? `sym-${symbol}` : 'pc', Math.round(size * 0.55))}</span>`;
+};
 const CINTA = (w = 40) => `<svg width="${w}" height="${Math.round(w * 19.4 / 40.9)}" viewBox="-0.2 -0.2 40.9 19.4" aria-hidden="true"><path d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35M11.2 1.35H25.2V17.65H15.4M19.2 9.5H25.2M25.2 17.65H39.15V1.35H29.3V9.5H39.15" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 
 /* ───────── utilidades ───────── */
@@ -251,7 +256,7 @@ A.folder = (el) => call('open_folder', { id: el.dataset.global ? null : state.pa
 async function paintFoot() {
   if (!state.info) return;
   $('#foot-node').textContent = state.info.settings.nodeName;
-  $('#foot-ic').innerHTML = pcAvatar(state.info.settings.nodeSymbol, 30);
+  $('#foot-ic').innerHTML = pcAvatar(state.info.settings.nodeSymbol, 30, '', state.photo || null);
 }
 
 /* ───────── nombre visible y símbolo de esta PC (solo visual) ───────── */

@@ -30,7 +30,7 @@ routes.settings = async function renderSettings() {
       <nav class="toc" aria-label="Secciones">${SSECS.map(([k, l]) => `<button data-a="set-toc" data-v="${k}">${l}</button>`).join('')}</nav>
       <div class="stack" style="gap:32px">
         <section class="section" id="set-general"><h2>General</h2><div class="card">
-          <div class="switch" style="cursor:default;align-items:center"><div class="row" style="gap:14px">${pcAvatar(s.nodeSymbol, 44, 'inv lg')}<div class="grow"><b>${esc(s.nodeName)}</b><span class="sm t2" style="display:block">Así ven tus amigos a esta PC en el grupo. Es solo un nombre: no cambia su identidad ni sus permisos.</span></div></div><button class="btn" data-a="identity">${icon('edit', 16)}Cambiar</button></div>
+          <div class="switch" style="cursor:default;align-items:center"><div class="row" style="gap:14px">${pcAvatar(s.nodeSymbol, 44, 'inv lg', state.photo)}<div class="grow"><b>${esc(s.nodeName)}</b><span class="sm t2" style="display:block">Así te ven tus amigos en el grupo: nombre y foto. Es solo cómo se muestra: no cambia la identidad ni los permisos de esta PC.</span></div></div><div class="btns"><button class="btn" data-a="photo-edit">${icon('user', 16)}${state.photo ? 'Cambiar foto' : 'Foto de perfil'}</button><button class="btn" data-a="identity">${icon('edit', 16)}Nombre</button></div></div>
           ${sw('startWithWindows', 'Iniciar con Windows', 'Arranca en la bandeja, sin abrir la ventana, para que tus servidores compartidos estén disponibles.')}
           ${sw('closeToTray', 'Seguir en la bandeja al cerrar la ventana', 'Sin servidores encendidos, cerrar la ventana también puede cerrar 939 Host. Con un servidor encendido, cerrar la ventana nunca lo detiene.')}
           ${sw('keepAwakeWhileHosting', 'No suspender la PC mientras aloja un servidor', 'Windows puede apagar la pantalla, pero no suspende la PC mientras haya un servidor encendido. Un servidor no puede seguir funcionando en una PC suspendida o apagada.')}
@@ -155,4 +155,37 @@ A.quit = async () => {
   const running = (await invoke('list_servers').catch(() => [])).filter(isActive);
   if (running.length && !(await dialog({ title: 'Salir de 939 Host', body: `<p>${running.length === 1 ? 'Hay un servidor encendido' : `Hay ${running.length} servidores encendidos`}. Los compartidos pasan a otra PC del grupo que esté conectada (si está activado); si no hay ninguna, se guardan, se copian a quien se pueda y se detienen. Los demás se guardan y se detienen.</p>`, confirm: 'Salir' }))) return;
   invoke('quit_app');
+};
+
+/* ── Foto de perfil ── */
+A['photo-edit'] = async () => {
+  let up = null;
+  const r = await dialog({ title: 'Foto de perfil', wide: true,
+    body: `<p class="t2" style="margin:0">La ven las PCs de tus grupos junto a tu nombre. Se guarda en esta PC y viaja solo por la conexión cifrada del grupo; nunca se sube a internet.</p>
+      <div class="logo-ed"><div>${uploadBlock('pf', { round: true })}</div>
+        <div class="logo-prev"><span class="xs t3">Vista previa</span><div class="row" style="gap:16px;align-items:flex-end">
+          <span id="pf-big" class="pcav lg" style="width:96px;height:96px;border-radius:50%"></span><span id="pf-small" class="pcav" style="width:32px;height:32px;border-radius:50%"></span></div>
+          <span class="xs t3">Así se ve en Configuración y en la lista del grupo.</span></div></div>`,
+    buttons: [...(state.photo ? [{ label: 'Volver a la imagen predeterminada', value: 'clear' }] : []), { label: 'Guardar foto', value: 'save', kind: 'pri' }],
+    onMount: async (d) => {
+      const cur = state.photo ? await invoke('avatars', { hashes: [state.photo] }).then((m) => m[state.photo]).catch(() => null) : null;
+      const paint = () => {
+        const src = up?.cropper.has() ? scaledCanvas(up.cropper.canvas, 128).toDataURL('image/png') : cur;
+        for (const sel of ['#pf-big', '#pf-small']) { const el = d.querySelector(sel); el.classList.toggle('photo', !!src); el.innerHTML = src ? `<img src="${src}" alt="">` : icon(PC_SYMBOLS.includes(state.info.settings.nodeSymbol) ? `sym-${state.info.settings.nodeSymbol}` : 'pc', sel === '#pf-big' ? 44 : 18); }
+      };
+      up = await wireUpload(d, 'pf', paint, paint);
+      paint();
+    } });
+  up?.stop?.();
+  try {
+    if (r === 'clear') { await invoke('profile_photo_clear'); state.photo = null; toast('Se volvió a la imagen predeterminada'); }
+    else if (r === 'save') {
+      if (!up?.cropper.has()) { toast('Elegí una imagen primero.', 'error'); return; }
+      const v = await invoke('profile_photo_set', { png: await squarePNG(up.cropper.canvas, 128) });
+      state.photo = v.hash; if (v.hash && v.dataUrl) AVATARS[v.hash] = v.dataUrl;
+      toast('Foto guardada');
+    } else return;
+  } catch (e) { fail(e); return; }
+  paintFoot?.();
+  routes.settings();
 };

@@ -19,6 +19,16 @@ os.makedirs(OUT, exist_ok=True)
 results = []
 
 
+def make_png(path, w=300, h=200):
+    """PNG real (degradado) para probar la carga de imágenes."""
+    import zlib, struct
+    raw = b"".join(b"\x00" + b"".join(bytes((x * 255 // w, y * 255 // h, 128)) for x in range(w)) for y in range(h))
+    def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+    data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    open(path, "wb").write(data)
+    return path
+
+
 def log(ok, what, extra=""):
     results.append({"ok": ok, "paso": what, "detalle": extra})
     print(("✔ " if ok else "✘ ") + what + (f" — {extra}" if extra else ""), flush=True)
@@ -208,6 +218,47 @@ async def main():
             locked = await p.query_selector('.fm-row.locked')
             return "carpeta creada y enviada a la Papelera" + ("; mundo protegido con el servidor encendido" if locked else "")
         await step("administrador de archivos (crear y borrar a la Papelera)", archivos())
+
+        # ── Logo: «Subir imagen» oculta los diseños, elegir una imagen funciona y se guarda ──
+        png = make_png(os.path.abspath(os.path.join(OUT, "prueba-logo.png")))
+        async def logo():
+            await p.click('.tab[data-v=summary]')
+            await p.click('[data-a=logo-edit]')
+            await p.wait_for_selector('#lg-presets')
+            await p.click('[data-lm=upload]')
+            if await p.is_visible('#lg-presets .logo-grid'):
+                raise RuntimeError("los diseños siguen visibles en «Subir imagen»")
+            await p.set_input_files('#lg-file', png)
+            await p.wait_for_selector('#lg-crop:not([hidden])', timeout=10000)
+            box = await p.eval_on_selector('#pv-md img', "i => { const r = i.getBoundingClientRect(), b = i.parentElement.getBoundingClientRect(); return [r.width, r.height, b.width, b.height]; }")
+            if box[0] > box[2] + 1 or box[1] > box[3] + 1:
+                raise RuntimeError(f"la vista previa chica se sale de su recuadro: {box}")
+            await shot("logo-subir-imagen", 300)
+            await p.click('.dialog .btn.pri')
+            await p.wait_for_selector('.srv-title .srv-ic.logo img', timeout=15000)
+            data = await p.evaluate("p => window.__TAURI__.core.invoke('image_read', { path: p })", png)
+            if not data.startswith("data:image/png;base64,"):
+                raise RuntimeError("image_read no devolvió la imagen")
+            try:
+                await p.evaluate("p => window.__TAURI__.core.invoke('image_read', { path: p })", os.path.abspath(__file__))
+                raise RuntimeError("image_read aceptó un archivo que no es imagen")
+            except Exception as e:
+                if "aceptó" in str(e): raise
+            return "imagen elegida, recortada y guardada; lectura por ruta (arrastre) validada"
+        await step("logo del servidor desde una imagen de la PC", logo())
+
+        async def photo():
+            await p.click('[data-a=nav][data-route=settings]')
+            await p.click('[data-a=photo-edit]')
+            await p.set_input_files('#pf-file', png)
+            await p.wait_for_selector('#pf-crop:not([hidden])', timeout=10000)
+            await shot("foto-de-perfil", 300)
+            await p.click('.dialog .btn.pri')
+            await p.wait_for_selector('#foot-ic .pcav.photo img', timeout=15000)
+            return "foto guardada y visible en la barra lateral"
+        await step("foto de perfil desde una imagen de la PC", photo())
+        await p.click('[data-a=nav][data-route=servers]')
+        await p.click('.li[data-id]')
         await p.click('[data-a=nav][data-route=trash]')
         await shot("oscuro-papelera", 700)
         await p.click('[data-a=nav][data-route=servers]')

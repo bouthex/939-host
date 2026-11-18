@@ -15,6 +15,7 @@ async function boot() {
   $('#quit-btn').innerHTML = icon('logout', 16);
   $('#foot-ic').innerHTML = icon('pc', 16);
   try { state.info = await invoke('app_info'); } catch (e) { fail(e); $('#splash')?.classList.add('out'); return; }
+  state.photo = (await invoke('profile_photo_get').catch(() => ({}))).hash || null;
   applyTheme();
   paintFoot();
   refreshFootState();

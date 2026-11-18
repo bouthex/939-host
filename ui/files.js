@@ -188,6 +188,6 @@ A['fm-export'] = async () => {
   fm.sel.clear(); fmPaint();
 };
 /* Arrastrar desde Windows a la lista. */
-listen('tauri://drag-drop', (ev) => { if (state.route === 'server' && state.tab === 'files' && !fm.results && ev.payload?.paths?.length) fmImport(ev.payload.paths); });
-listen('tauri://drag-enter', () => { if (state.route === 'server' && state.tab === 'files') $('#fm-drop')?.classList.add('over'); });
+listen('tauri://drag-drop', (ev) => { if (!dialogOpen && state.route === 'server' && state.tab === 'files' && !fm.results && ev.payload?.paths?.length) fmImport(ev.payload.paths); });
+listen('tauri://drag-enter', () => { if (!dialogOpen && state.route === 'server' && state.tab === 'files') $('#fm-drop')?.classList.add('over'); });
 listen('tauri://drag-leave', () => $('#fm-drop')?.classList.remove('over'));
