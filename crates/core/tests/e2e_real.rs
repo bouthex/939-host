@@ -433,6 +433,12 @@ async fn e2e_optimizacion() {
         println!("  instalados desde Rendimiento: {opt:?} (+{} dependencias)", man.mods.len() - opt.len());
         assert_eq!(opt.len(), pick.len(), "no se instalaron todos los elegidos: {:?}", rec.console.lock().unwrap().iter().filter(|l| l.contains("939 Host")).collect::<Vec<_>>());
         for m in &man.mods { assert!(mods::mods_dir(&cfg.id).join(&m.file_name).exists(), "falta {}", m.file_name); }
+        // Falsos positivos del análisis de seguridad con mods reales de rendimiento.
+        for m in &man.mods {
+            let r = host939_core::modscan::analyze_cached(&mods::mods_dir(&cfg.id).join(&m.file_name)).await.expect("analizar");
+            println!("  análisis de {}: {} · alertas {:?}", m.file_name, r.status, r.findings.iter().filter(|f| f.level != host939_core::modscan::Level::Info).map(|f| format!("{} ({})", f.title, f.detail)).collect::<Vec<_>>());
+            assert!(r.status != "sospechoso" && r.status != "amenaza", "falso positivo en {}: {:?}", m.file_name, r.findings);
+        }
         mgr.start(&probe, &cfg).unwrap();
         let rt = mgr.runtime(&cfg.id);
         let ok = wait_for(Duration::from_secs(600), || { let s = rt.lock().unwrap().status(); s == RunStatus::Running || s == RunStatus::Crashed || s == RunStatus::Stopped });
