@@ -105,6 +105,85 @@ impl LocalHost for Local {
     fn changed(&self, _: &str) {}
 }
 
+mod redteam {
+    //! Herramientas de la prueba ofensiva: hablan el protocolo «a mano», como lo haría un
+    //! cliente modificado. Solo existen en el nodo de pruebas, no en la app.
+    use host939_cluster::{cert, wire};
+    use iroh::{Endpoint, EndpointAddr, EndpointId};
+    use serde_json::{json, Value};
+    use std::time::Duration;
+
+    fn alpn(name: &str) -> &'static [u8] {
+        match name {
+            "ctrl" => host939_cluster::ALPN_CTRL, "sync" => host939_cluster::ALPN_SYNC, "mc" => host939_cluster::ALPN_MC,
+            "bridge" => host939_cluster::ALPN_BRIDGE, "join" => host939_cluster::ALPN_JOIN, "files" => host939_cluster::files::ALPN_FILES,
+            _ => b"939host/desconocido/9",
+        }
+    }
+    async fn open(ep: &Endpoint, node: &str, a: &str) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream), String> {
+        let id: EndpointId = node.parse().map_err(|_| "id inválido".to_string())?;
+        let c = tokio::time::timeout(Duration::from_secs(10), ep.connect(EndpointAddr::new(id), alpn(a))).await.map_err(|_| "sin respuesta".to_string())?.map_err(|e| format!("conexión rechazada: {e}"))?;
+        c.open_bi().await.map_err(|e| e.to_string())
+    }
+    pub async fn raw(ep: &Endpoint, node: &str, a: &str, body: &str) -> Result<Value, String> {
+        let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let (mut s, mut r) = open(ep, node, a).await?;
+        wire::write_msg(&mut s, &v).await.map_err(|e| e.to_string())?;
+        let _ = s.finish();
+        match tokio::time::timeout(Duration::from_secs(15), wire::read_msg::<_, Value>(&mut r)).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Ok(json!({ "closed": e.to_string() })),
+            Err(_) => Ok(json!({ "closed": "sin respuesta" })),
+        }
+    }
+    pub async fn raw_frames(ep: &Endpoint, node: &str, a: &str, body: &str, n: usize) -> Result<Value, String> {
+        let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let (mut s, mut r) = open(ep, node, a).await?;
+        wire::write_msg(&mut s, &v).await.map_err(|e| e.to_string())?;
+        let _ = s.finish();
+        let mut sizes = vec![];
+        for _ in 0..n {
+            match tokio::time::timeout(Duration::from_secs(10), wire::read_frame(&mut r, 64 * 1024 * 1024)).await {
+                Ok(Ok(f)) => sizes.push(f.len()),
+                _ => break,
+            }
+        }
+        Ok(json!(sizes))
+    }
+    pub async fn raw_bytes(ep: &Endpoint, node: &str, a: &str, hexs: &str) -> Result<Value, String> {
+        let bytes = hex::decode(hexs).map_err(|e| e.to_string())?;
+        let (mut s, mut r) = open(ep, node, a).await?;
+        s.write_all(&bytes).await.map_err(|e| e.to_string())?;
+        let _ = s.finish();
+        let got = tokio::time::timeout(Duration::from_secs(5), r.read_to_end(1 << 20)).await;
+        Ok(json!({ "replyBytes": got.ok().and_then(|x| x.ok()).map(|b| b.len()).unwrap_or(0) }))
+    }
+    pub async fn forge(ep: &Endpoint, secret: &[u8; 32], sid: &str, to: &str, kind: &str, host: &str, epoch: Option<u64>) -> Result<Value, String> {
+        let cur = host939_core::lease::read(sid).ok_or("sin permiso")?;
+        let key = iroh::SecretKey::from_bytes(secret);
+        let me = key.public().to_string();
+        let k: host939_core::lease::LeaseKind = serde_json::from_value(json!(kind)).map_err(|e| e.to_string())?;
+        let mut l = host939_core::lease::Lease {
+            epoch: epoch.unwrap_or(cur.epoch + 1), host: if host == "yo" { me.clone() } else { host.to_string() }, host_name: "forjado".into(),
+            state: host939_core::lease::LeaseState::Hosting, since: chrono::Local::now().to_rfc3339(), required: (0, 0), kind: k,
+            issuer: me, prev: Some((cur.epoch, cur.host.clone(), cur.state)), votes: vec![], sig: None,
+        };
+        cert::sign(&key, sid, &mut l);
+        raw(ep, to, "ctrl", &json!({ "t": "lease", "server": sid, "lease": l }).to_string()).await
+    }
+    pub async fn replay(ep: &Endpoint, sid: &str, to: &str, idx: usize) -> Result<Value, String> {
+        let log = host939_core::lease::history(sid);
+        let l = log.get(idx).ok_or("no hay ese permiso en el historial")?;
+        raw(ep, to, "ctrl", &json!({ "t": "lease", "server": sid, "lease": l }).to_string()).await
+    }
+    pub async fn remote_info(ep: &Endpoint, node: &str) -> Result<Value, String> {
+        let id: EndpointId = node.parse().map_err(|_| "id inválido".to_string())?;
+        let info = ep.remote_info(id).await;
+        let addrs: Vec<String> = info.map(|i| i.addrs().map(|a| format!("{:?}", a.addr())).collect()).unwrap_or_default();
+        Ok(json!(addrs))
+    }
+}
+
 fn arg(name: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
     a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
@@ -127,10 +206,12 @@ async fn main() {
     let secret = identity::node_secret().unwrap();
     let local = Arc::new(Local { mgr: Manager::new(Arc::new(NoEvents)), probe: Probe::new(), fake, name: name.clone(), fakes: Default::default(), rt: tokio::runtime::Handle::current() });
     let timing = if std::env::var("H939_FAST").is_ok() {
-        Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15), request_ttl: Duration::from_secs(std::env::var("H939_REQUEST_TTL").ok().and_then(|v| v.parse().ok()).unwrap_or(120)) }
+        Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15), request_ttl: Duration::from_secs(std::env::var("H939_REQUEST_TTL").ok().and_then(|v| v.parse().ok()).unwrap_or(120)), ownership_wait: Duration::from_secs(std::env::var("H939_OWNERSHIP_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(20)) }
     } else { Timing::default() };
     // --relays: igual que la app (conexión directa y relays públicos solo como último recurso).
-    let relays = if std::env::args().any(|a| a == "--relays") { host939_p2p::Relays::PublicFallback } else { host939_p2p::Relays::Disabled };
+    // --private: modo privado (solo relays, sin transporte IP propio).
+    let relays = if std::env::args().any(|a| a == "--private") { host939_p2p::Relays::Private }
+        else if std::env::args().any(|a| a == "--relays") { host939_p2p::Relays::PublicFallback } else { host939_p2p::Relays::Disabled };
     let node = GroupNode::start(secret, &name, relays, local.clone(), timing).await.expect("nodo");
     assert_eq!(node.id(), node_id.node_id);
     say("##", &format!("listo {}", node.id()));
@@ -223,6 +304,56 @@ async fn main() {
                     host939_core::logo::set(&p(1), "preset:3", &png(256), &png(64)).map_err(|e| e.message).and_then(|_| node.refresh_card(&p(1)).map(|b| serde_json::json!(b)).map_err(|e| e.to_string()))
                 }
                 "card" => Ok(host939_core::network::load_share(&p(1)).card.unwrap_or_default()),
+                "invitefor" => node.invite_for(&p(1), &p(2), "prueba", p(3).parse().unwrap_or(24)).map(|t| serde_json::json!(t)).map_err(|e| e.to_string()),
+                "revoke" => node.revoke_invite(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "invites" => Ok(serde_json::to_value(host939_core::network::load_share(&p(1)).invites).unwrap()),
+                "expireinvites" => {
+                    // Solo pruebas: adelanta el vencimiento de todas las invitaciones de este nodo.
+                    let mut sh = host939_core::network::load_share(&p(1));
+                    for i in sh.invites.iter_mut() { i.expires_at = Some((chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339()); }
+                    host939_core::network::save_share(&p(1), &sh).map_err(|e| e.message)?;
+                    Ok(serde_json::json!(true))
+                }
+                "share_json" => Ok(serde_json::to_value(host939_core::network::load_share(&p(1))).unwrap()),
+                "remove" => node.remove_member(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "setrole" => {
+                    // La propietaria cambia el rol de una PC (firma una revisión nueva).
+                    let mut sh = host939_core::network::load_share(&p(1));
+                    for m in sh.members.iter_mut() { if m.node_id == p(2) { m.role = p(3); } }
+                    node.commit_share(&p(1), &mut sh).map(|_| serde_json::json!(true)).map_err(|e| e.to_string())
+                }
+                "transfer" => node.transfer_ownership(&p(1), &p(2)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "reccreate" => node.create_recovery_code(&p(1)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "recrotate" => node.rotate_recovery_code(&p(1), &p(2)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "recover" => node.recover_with_code(&p(1), &p(2)).await.map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "resetreq" => node.request_recovery_reset(&p(1)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "resetfinish" => node.finish_recovery_reset(&p(1)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "successor" => node.set_successor(&p(1), parts.get(2).map(|s| s.as_str())).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "succstart" => node.start_succession(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "succcancel" => node.cancel_succession(&p(1)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "succcomplete" => node.complete_succession(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "succstatus" => Ok(serde_json::json!(node.succession_status(&p(1)))),
+                "lease" => Ok(serde_json::to_value(host939_core::lease::read(&p(1))).unwrap()),
+                "leaselog" => Ok(serde_json::to_value(host939_core::lease::history(&p(1))).unwrap()),
+                "audit" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_dir(&p(1)).join("audit.jsonl")).unwrap_or_default())),
+                "rejected" => Ok(serde_json::json!(node.rejected_count(&p(1)))),
+                /* ── Red team: un nodo malicioso manda mensajes a mano (sin la lógica del grupo) ── */
+                // raw <nodo> <alpn> <json>: un mensaje y su respuesta, tal cual.
+                "raw" => redteam::raw(node.endpoint(), &p(1), &p(2), &parts[3..].join(" ")).await,
+                // rawframes <nodo> <alpn> <json> <n>: mensaje y hasta n respuestas en tramas.
+                "rawframes" => redteam::raw_frames(node.endpoint(), &p(1), &p(2), &parts[3..parts.len() - 1].join(" "), parts.last().and_then(|x| x.parse().ok()).unwrap_or(1)).await,
+                // rawbytes <nodo> <alpn> <hex>: bytes arbitrarios (mensajes malformados).
+                "rawbytes" => redteam::raw_bytes(node.endpoint(), &p(1), &p(2), &p(3)).await,
+                // forge <sid> <destino> <tipo> <anfitriona> [época]: permiso firmado por ESTA PC con el
+                // tipo y la anfitriona que se quiera, encadenado al permiso actual, enviado a <destino>.
+                "forge" => redteam::forge(node.endpoint(), &secret, &p(1), &p(2), &p(3), &p(4), parts.get(5).and_then(|x| x.parse().ok())).await,
+                // replay <sid> <destino> <índice>: reenvía un permiso viejo del historial.
+                "replay" => redteam::replay(node.endpoint(), &p(1), &p(2), p(3).parse().unwrap_or(0)).await,
+                // replaylist <sid> <destino> <archivo>: hace circular una lista firmada guardada.
+                "savelist" => { std::fs::write(p(2), serde_json::to_vec(&host939_core::network::load_share(&p(1))).unwrap()).map_err(|e| e.to_string())?; Ok(serde_json::json!(true)) }
+                "remoteinfo" => redteam::remote_info(node.endpoint(), &p(1)).await,
+                "myaddr" => Ok(serde_json::to_value(node.addr()).unwrap()),
+                "peersfile" => Ok(serde_json::json!(std::fs::read_to_string(paths::root().join("peers.json")).unwrap_or_default())),
                 "exit" => { node.shutdown().await; say("@@", "{\"ok\":true,\"v\":\"bye\"}"); std::process::exit(0) }
                 other => Err(format!("orden desconocida: {other}")),
             }

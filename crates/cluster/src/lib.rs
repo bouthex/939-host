@@ -104,6 +104,9 @@ pub struct Timing {
     pub release_wait: Duration,
     /// Una solicitud para ser anfitriona vence si nadie la responde en este tiempo.
     pub request_ttl: Duration,
+    /// Espera obligatoria para la sucesión de la propietaria y para cambiar un código de
+    /// recuperación perdido (72 h en uso real).
+    pub ownership_wait: Duration,
 }
 
 impl Default for Timing {
@@ -115,6 +118,7 @@ impl Default for Timing {
             seen_window: Duration::from_secs(180),
             release_wait: Duration::from_secs(90),
             request_ttl: Duration::from_secs(600),
+            ownership_wait: Duration::from_secs(72 * 3600),
         }
     }
 }
@@ -142,6 +146,8 @@ enum Req {
     Leave { server: String },
     /// Cadena de permisos firmados posteriores a la época `after` (para PCs atrasadas).
     LeaseChain { server: String, after: u64 },
+    /// La sucesora designada avisa que inició la espera para reemplazar a la propietaria.
+    Succession { server: String, claim: serde_json::Value },
 }
 
 impl Req {
@@ -149,7 +155,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } => server,
         }
     }
 }
@@ -169,6 +175,9 @@ pub struct Info {
     pub can_host: bool,
     pub score: u32,
     pub share_rev: u64,
+    /// Propietaria según la lista que tiene esta PC (para contar testigos de una recuperación).
+    #[serde(default)]
+    pub owner: String,
     pub addr: Option<EndpointAddr>,
     #[serde(default)]
     pub peers: Vec<EndpointAddr>,
@@ -226,6 +235,8 @@ struct SrvState {
     inbox: Vec<(String, Info)>,
     /// Permisos rechazados por firma, autoridad o encadenamiento (para diagnóstico y pruebas).
     rejected: u32,
+    /// Reclamo de sucesión en curso que vio esta PC.
+    claim: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -236,6 +247,8 @@ struct Outgoing { host: String, host_name: String, at: Instant, epoch: u64 }
 
 struct Inner {
     ep: Endpoint,
+    /// Modo de conexión de esta PC (directo, con relays o privado).
+    relays: Relays,
     /// Clave del nodo (la misma de iroh): firma los cambios de integrantes si esta PC es propietaria.
     key: iroh::SecretKey,
     me: String,
@@ -248,6 +261,8 @@ struct Inner {
     state: Mutex<HashMap<String, SrvState>>,
     routes: tokio::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     stopping: std::sync::atomic::AtomicBool,
+    /// Límite de intentos de unión (antes de autenticar).
+    join_limit: Mutex<RateLimit>,
 }
 
 /// Estado de un servidor compartido tal como lo ve esta PC (para la interfaz).
@@ -396,9 +411,9 @@ impl GroupNode {
             if let Ok(a) = serde_json::from_value::<EndpointAddr>(v) { peers.insert(k, a); }
         }
         let inner = Arc::new(Inner {
-            ep: ep.clone(), key: iroh::SecretKey::from_bytes(&secret), me, name: RwLock::new((name.to_string(), String::new())), local, timing, started: Instant::now(),
+            ep: ep.clone(), relays, key: iroh::SecretKey::from_bytes(&secret), me, name: RwLock::new((name.to_string(), String::new())), local, timing, started: Instant::now(),
             peers: RwLock::new(peers), conns: Default::default(), state: Default::default(), routes: Default::default(),
-            stopping: Default::default(),
+            stopping: Default::default(), join_limit: Mutex::new(RateLimit::new(5, 30)),
         });
         let h = Handler(inner.clone());
         let router = Router::builder(ep)
@@ -446,17 +461,25 @@ impl GroupNode {
         Ok(s)
     }
 
-    /// Crea una invitación. `role`: "coanfitrion" (guarda copia y puede hostear) o "jugador".
-    pub fn invite(&self, server: &str, role: &str, label: &str) -> Result<String> {
+    /// Crea una invitación que vence en 24 h. `role`: "coanfitrion" (guarda copia y puede hostear) o "jugador".
+    pub fn invite(&self, server: &str, role: &str, label: &str) -> Result<String> { self.invite_for(server, role, label, 24) }
+
+    /// Crea una invitación de un solo uso que vence en `hours` horas (entre 1 y 720).
+    pub fn invite_for(&self, server: &str, role: &str, label: &str, hours: u32) -> Result<String> {
         // Solo la propietaria invita: es la única que puede firmar la entrada de una PC nueva.
         if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede invitar a otras PCs."); }
         let mut s = network::load_share(server);
         if !s.enabled { bail!("Primero compartí el servidor."); }
         let secret = network::random_secret();
         let role = if role == "coanfitrion" { "coanfitrion" } else { "jugador" };
-        s.invites.push(Invite { secret: secret.clone(), label: label.chars().take(40).collect(), created_at: chrono::Local::now().to_rfc3339(), role: role.into() });
+        let hours = hours.clamp(1, 720) as i64;
+        s.invites.retain(|i| !i.expired());
+        if s.invites.len() >= 50 { bail!("Hay demasiadas invitaciones sin usar: revocá algunas antes de crear otra."); }
+        s.invites.push(Invite { secret: secret.clone(), label: label.chars().take(40).collect(), created_at: chrono::Local::now().to_rfc3339(), role: role.into(),
+            expires_at: Some((chrono::Utc::now() + chrono::Duration::hours(hours)).to_rfc3339()) });
         network::save_share(server, &s).map_err(|e| anyhow!(e.message))?;
-        Ok(host939_p2p::make_ticket(&self.inner.ep.addr(), &secret))
+        // Con relays el código lleva solo la identidad y el relay: nunca las IPs de esta PC.
+        Ok(host939_p2p::make_ticket(&host939_p2p::shareable(&self.inner.ep.addr(), self.inner.relays), &secret))
     }
 
     pub fn revoke_invite(&self, server: &str, secret: &str) -> Result<()> {
@@ -475,6 +498,15 @@ impl GroupNode {
         s.members.retain(|m| m.node_id != node || m.role == "propietario");
         self.inner.commit(server, &mut s)
     }
+
+    /// La propietaria firma y guarda un cambio de la lista (roles, por ejemplo).
+    pub fn commit_share(&self, server: &str, s: &mut ShareConfig) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede cambiar el grupo."); }
+        self.inner.commit(server, s)
+    }
+
+    /// Permisos rechazados desde que se abrió (diagnóstico y pruebas).
+    pub fn rejected_count(&self, server: &str) -> u32 { self.inner.with_state(server, |s| s.rejected) }
 
     /// La propietaria vuelve a publicar los datos públicos (por ejemplo, tras cambiar el logo, el
     /// nombre o la versión). Las demás PCs lo toman en la próxima consulta.
@@ -508,6 +540,196 @@ impl GroupNode {
             let _ = self.inner.rpc_timeout(&m.node_id, &Req::SyncNow { server: server.into() }, Duration::from_secs(3)).await;
         }
         Ok(())
+    }
+
+    /* ── Recuperación de la propiedad ── */
+
+    /// Crea el código de recuperación (solo si el grupo todavía no tiene). Se muestra una sola vez:
+    /// esta PC guarda únicamente la clave pública derivada, nunca el código.
+    pub fn create_recovery_code(&self, server: &str) -> Result<String> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede crear el código de recuperación."); }
+        let mut s = network::load_share(server);
+        if s.recovery.is_some() { bail!("Este grupo ya tiene un código de recuperación. Para cambiarlo usá el código actual."); }
+        let code = signed::new_recovery_code();
+        s.recovery = Some(signed::recovery_key(&code).ok_or_else(|| anyhow!("código inválido"))?.public().to_string());
+        self.inner.commit(server, &mut s)?;
+        audit(server, "recovery-created", &self.inner.me);
+        Ok(code)
+    }
+
+    /// Cambia el código usando el actual (el nuevo se muestra una sola vez).
+    pub fn rotate_recovery_code(&self, server: &str, current: &str) -> Result<String> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede cambiar el código."); }
+        let rk = signed::recovery_key(current).ok_or_else(|| anyhow!("El código no tiene el formato correcto."))?;
+        let mut s = network::load_share(server);
+        if s.recovery.as_deref() != Some(rk.public().to_string().as_str()) { bail!("Ese no es el código de recuperación de este grupo."); }
+        let code = signed::new_recovery_code();
+        s.recovery = Some(signed::recovery_key(&code).unwrap().public().to_string());
+        s.recovery_pending = None;
+        self.inner.commit(server, &mut s)?;
+        let mut s = network::load_share(server);
+        signed::sign_recovery(&rk, server, &mut s);
+        network::save_share(server, &s).map_err(|e| anyhow!(e.message))?;
+        audit(server, "recovery-rotated", &self.inner.me);
+        Ok(code)
+    }
+
+    /// La propietaria perdió el código: pide uno nuevo, que vale recién tras la espera de seguridad
+    /// (72 h). Si alguien robó la clave de la propietaria y lo intenta, quien tiene el código
+    /// verdadero puede recuperar el grupo antes de que venza.
+    pub fn request_recovery_reset(&self, server: &str) -> Result<String> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede pedirlo."); }
+        let code = signed::new_recovery_code();
+        let pk = signed::recovery_key(&code).unwrap().public().to_string();
+        let mut s = network::load_share(server);
+        s.recovery_pending = Some(pk.clone());
+        self.inner.commit(server, &mut s)?;
+        self.inner.mark_seen(server, &format!("reset:{pk}"));
+        audit(server, "recovery-reset-requested", &self.inner.me);
+        // El código queda guardado protegido en esta PC solo hasta que se aplique.
+        host939_core::identity::protect_to_file(&host939_core::paths::server_dir(server).join("recovery-pending.bin"), code.as_bytes()).map_err(|e| anyhow!(e.message))?;
+        Ok(code)
+    }
+
+    /// Aplica el código pedido con `request_recovery_reset` cuando ya pasó la espera.
+    pub fn finish_recovery_reset(&self, server: &str) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede hacerlo."); }
+        let mut s = network::load_share(server);
+        let Some(pk) = s.recovery_pending.clone() else { bail!("No hay un cambio de código pendiente."); };
+        let waited = self.inner.seen_for(server, &format!("reset:{pk}")).unwrap_or(0);
+        if waited < self.inner.timing.ownership_wait.as_secs() { bail!("Todavía no pasó la espera de seguridad."); }
+        s.recovery = Some(pk);
+        s.recovery_pending = None;
+        self.inner.commit(server, &mut s)?;
+        let _ = std::fs::remove_file(host939_core::paths::server_dir(server).join("recovery-pending.bin"));
+        audit(server, "recovery-reset-applied", &self.inner.me);
+        Ok(())
+    }
+
+    /// Recupera la propiedad en ESTA PC con el código. La propietaria anterior queda revocada,
+    /// se genera un código nuevo (se muestra una sola vez) y nada más cambia: mundos, copias,
+    /// integrantes y configuración quedan intactos.
+    pub async fn recover_with_code(&self, server: &str, code: &str) -> Result<String> {
+        let rk = signed::recovery_key(code).ok_or_else(|| anyhow!("El código no tiene el formato correcto."))?;
+        let cur = network::load_share(server);
+        if cur.recovery.as_deref() != Some(rk.public().to_string().as_str()) { bail!("Ese no es el código de recuperación de este grupo."); }
+        if cur.member(&self.inner.me).is_none() { bail!("Esta PC no es parte del grupo."); }
+        let old = signed::pin(&cur).unwrap_or_default();
+        if old == self.inner.me { bail!("Esta PC ya es la propietaria."); }
+        if lease::read(server).map(|l| l.held_by(&old)).unwrap_or(false) && self.inner.recently_ok(server, &old, self.inner.timing.host_dead) {
+            bail!("La propietaria está alojando el servidor y responde: pedile que te transfiera la propiedad.");
+        }
+        let mut s = cur.clone();
+        s.members.retain(|m| m.node_id != old);
+        for m in s.members.iter_mut() { if m.node_id == self.inner.me { m.role = "propietario".into(); } }
+        let new_code = signed::new_recovery_code();
+        s.recovery = Some(signed::recovery_key(&new_code).unwrap().public().to_string());
+        s.recovery_pending = None;
+        if s.successor.as_deref() == Some(self.inner.me.as_str()) { s.successor = None; }
+        s.succession = None;
+        s.rsig = None;
+        bump_rev(&mut s);
+        signed::sign(&self.inner.key, server, &mut s);
+        signed::sign_recovery(&rk, server, &mut s);
+        if signed::accept_with(server, &cur, &s, &signed::Ctx { seen_for: &|_| None, wait_secs: u64::MAX, witnesses: 0 }).is_err() { bail!("No se pudo armar la recuperación."); }
+        s.owner_pin = Some(self.inner.me.clone());
+        network::save_share(server, &s).map_err(|e| anyhow!(e.message))?;
+        audit(server, "recovered-with-code", &self.inner.me);
+        self.inner.local.note(server, "Recuperaste la propiedad del grupo con el código. Guardá el código nuevo: el anterior ya no sirve.");
+        self.inner.local.changed(server);
+        // El permiso de anfitrión: si la anterior lo tenía y no responde, se reasigna con la autoridad nueva.
+        if let Some(l) = lease::read(server) {
+            if l.held_by(&old) { let _ = self.inner.new_lease(server, l.epoch, LeaseKind::Owner); }
+        }
+        for m in s.members.iter().filter(|m| m.node_id != self.inner.me) {
+            let _ = self.inner.rpc_timeout(&m.node_id, &Req::SyncNow { server: server.into() }, Duration::from_secs(3)).await;
+        }
+        self.inner.broadcast_lease(server).await;
+        Ok(new_code)
+    }
+
+    /// La propietaria designa (o quita) a su sucesora. Solo coanfitrionas.
+    pub fn set_successor(&self, server: &str, node: Option<&str>) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede designar sucesora."); }
+        let mut s = network::load_share(server);
+        if let Some(n) = node { if !s.member(n).map(|m| m.role == "coanfitrion").unwrap_or(false) { bail!("La sucesora tiene que ser una coanfitriona del grupo."); } }
+        s.successor = node.map(String::from);
+        self.inner.commit(server, &mut s)?;
+        audit(server, if node.is_some() { "successor-set" } else { "successor-cleared" }, node.unwrap_or(""));
+        Ok(())
+    }
+
+    /// La sucesora inicia la espera: avisa a todas las PCs (la propietaria lo ve y puede cancelar).
+    pub async fn start_succession(&self, server: &str) -> Result<()> {
+        let s = network::load_share(server);
+        if s.successor.as_deref() != Some(self.inner.me.as_str()) { bail!("Esta PC no es la sucesora designada."); }
+        let owner = signed::pin(&s).unwrap_or_default();
+        if self.inner.recently_ok(server, &owner, Duration::from_secs(300)) { bail!("La propietaria respondió hace poco: pedile que te transfiera la propiedad."); }
+        let claim = signed::make_claim(&self.inner.key, server, &s);
+        self.inner.mark_seen(server, &signed::claim_id(&claim));
+        self.inner.with_state(server, |st| st.claim = Some(claim.clone()));
+        audit(server, "succession-started", &self.inner.me);
+        for m in s.members.iter().filter(|m| m.node_id != self.inner.me) {
+            let _ = self.inner.rpc_timeout(&m.node_id, &Req::Succession { server: server.into(), claim: claim.clone() }, Duration::from_secs(5)).await;
+        }
+        self.inner.local.note(server, &format!("Sucesión iniciada. Se puede completar en {} h si la propietaria no la cancela.", self.inner.timing.ownership_wait.as_secs() / 3600));
+        Ok(())
+    }
+
+    /// La propietaria cancela cualquier sucesión en curso (firma una revisión nueva: el reclamo queda viejo).
+    pub fn cancel_succession(&self, server: &str) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede cancelarla."); }
+        let mut s = network::load_share(server);
+        self.inner.commit(server, &mut s)?;
+        self.inner.with_state(server, |st| st.claim = None);
+        audit(server, "succession-cancelled", &self.inner.me);
+        Ok(())
+    }
+
+    /// La sucesora completa la sucesión cuando venció la espera sin que la propietaria la cancelara.
+    pub async fn complete_succession(&self, server: &str) -> Result<()> {
+        let cur = network::load_share(server);
+        let claim = self.inner.with_state(server, |st| st.claim.clone()).ok_or_else(|| anyhow!("No hay una sucesión en curso."))?;
+        let base = signed::check_claim(server, &cur, &claim).map_err(|e| anyhow!("{e}"))?;
+        if claim["successor"].as_str() != Some(self.inner.me.as_str()) { bail!("Esta PC no es la sucesora."); }
+        let waited = self.inner.seen_for(server, &signed::claim_id(&claim)).unwrap_or(0);
+        if waited < self.inner.timing.ownership_wait.as_secs() { bail!("Todavía no pasó la espera ({} h restantes).", (self.inner.timing.ownership_wait.as_secs() - waited) / 3600 + 1); }
+        let old = signed::pin(&cur).unwrap_or_default();
+        let mut s = base.clone();
+        s.members.retain(|m| m.node_id != old);
+        for m in s.members.iter_mut() { if m.node_id == self.inner.me { m.role = "propietario".into(); } }
+        s.successor = None;
+        s.succession = Some(claim.clone());
+        s.rsig = None;
+        let mut card = s.card.take().unwrap_or_else(|| serde_json::json!({}));
+        card["rev"] = serde_json::json!(signed::rev(&base) + 1);
+        s.card = Some(card);
+        signed::sign(&self.inner.key, server, &mut s);
+        let seen = |id: &str| self.inner.seen_for(server, id);
+        signed::accept_with(server, &cur, &s, &signed::Ctx { seen_for: &seen, wait_secs: self.inner.timing.ownership_wait.as_secs(), witnesses: 0 }).map_err(|e| anyhow!("{e}"))?;
+        s.owner_pin = Some(self.inner.me.clone());
+        s.enabled = true;
+        s.invites.clear();
+        network::save_share(server, &s).map_err(|e| anyhow!(e.message))?;
+        audit(server, "succession-completed", &self.inner.me);
+        self.inner.with_state(server, |st| st.claim = None);
+        if let Some(l) = lease::read(server) { if l.held_by(&old) { let _ = self.inner.new_lease(server, l.epoch, LeaseKind::Owner); } }
+        self.inner.local.note(server, "Sucesión completada: esta PC es la nueva propietaria. La anterior quedó fuera del grupo.");
+        for m in s.members.iter().filter(|m| m.node_id != self.inner.me) {
+            let _ = self.inner.rpc_timeout(&m.node_id, &Req::SyncNow { server: server.into() }, Duration::from_secs(3)).await;
+        }
+        self.inner.broadcast_lease(server).await;
+        self.inner.local.changed(server);
+        Ok(())
+    }
+
+    /// Reclamo de sucesión en curso (para la interfaz): (quién, segundos que faltan).
+    pub fn succession_status(&self, server: &str) -> Option<(String, u64)> {
+        let c = self.inner.with_state(server, |st| st.claim.clone())?;
+        let share = network::load_share(server);
+        if signed::check_claim(server, &share, &c).is_err() { return None; }
+        let waited = self.inner.seen_for(server, &signed::claim_id(&c)).unwrap_or(0);
+        Some((c["successor"].as_str().unwrap_or("").to_string(), self.inner.timing.ownership_wait.as_secs().saturating_sub(waited)))
     }
 
     /// Esta PC sale del grupo. La propietaria no puede: primero transfiere. Devuelve si la
@@ -588,14 +810,10 @@ impl GroupNode {
         }
         host939_core::instance::save(&cfg).map_err(|e| anyhow!(e.message))?;
         let mut mine = network::load_share(server);
-        // La lista de integrantes solo se toma si la firmó la propietaria; si no, se queda la local.
-        if signed::accept(server, &mine, &share) {
-            mine.owner_pin = signed::owner_of(&share);
-            mine.members = share.members; mine.auto_failover = share.auto_failover; mine.handover_on_quit = share.handover_on_quit;
-            mine.card = share.card; mine.sig = share.sig;
-        }
+        // La lista de integrantes solo se toma si pasa la verificación; si no, se queda la local.
         mine.enabled = true;
         network::save_share(server, &mine).map_err(|e| anyhow!(e.message))?;
+        self.inner.adopt_share(server, &share);
         Ok(())
     }
 
@@ -1072,10 +1290,69 @@ impl Inner {
             // Solo una transferencia (la firma la propietaria saliente) puede nombrar a otra.
             if signed::pin(&network::load_share(server)).as_deref() != Some(self.me.as_str()) { bail!("Solo la PC propietaria puede cambiar el grupo."); }
         }
+        if signed::owner_of(s).as_deref() != Some(self.me.as_str()) {
+            // Transferencia: la nueva propietaria no hereda el código ni la sucesora.
+            s.recovery = None; s.recovery_pending = None; s.successor = None;
+        }
+        s.succession = None;
+        s.rsig = None;
+        if s.successor.as_deref().map(|x| !s.member(x).map(|m| m.role == "coanfitrion").unwrap_or(false)).unwrap_or(false) { s.successor = None; }
         bump_rev(s);
         signed::sign(&self.key, server, s);
         s.owner_pin = signed::owner_of(s);
         network::save_share(server, s).map_err(|e| anyhow!(e.message))
+    }
+
+    /// Segundos desde que esta PC vio por primera vez un pedido con espera.
+    fn seen_for(&self, server: &str, id: &str) -> Option<u64> {
+        let m: HashMap<String, i64> = host939_core::paths::read_json(&host939_core::paths::server_dir(server).join("authority-seen.json")).unwrap_or_default();
+        m.get(id).map(|t| (chrono::Utc::now().timestamp() - t).max(0) as u64)
+    }
+    fn mark_seen(&self, server: &str, id: &str) -> bool {
+        let p = host939_core::paths::server_dir(server).join("authority-seen.json");
+        let mut m: HashMap<String, i64> = host939_core::paths::read_json(&p).unwrap_or_default();
+        if m.contains_key(id) { return false; }
+        if m.len() > 256 { m.clear(); }
+        m.insert(id.to_string(), chrono::Utc::now().timestamp());
+        let _ = host939_core::paths::write_json(&p, &m);
+        true
+    }
+
+    /// Verifica una lista recibida y la adopta (si corresponde). Devuelve si cambió.
+    fn adopt_share(&self, server: &str, remote: &ShareConfig) -> bool {
+        let mut mine = network::load_share(server);
+        let r = signed::rev(remote);
+        let owner = signed::owner_of(remote).unwrap_or_default();
+        let witnesses = self.with_state(server, |s| s.infos.values().filter(|i| i.share_rev == r && i.owner == owner).count());
+        let wait = self.timing.ownership_wait.as_secs();
+        let seen = |id: &str| self.seen_for(server, id);
+        match signed::accept_with(server, &mine, remote, &signed::Ctx { seen_for: &seen, wait_secs: wait, witnesses }) {
+            Ok(()) => {
+                let prev_owner = signed::pin(&mine);
+                mine.owner_pin = signed::owner_of(remote);
+                mine.members = remote.members.clone(); mine.auto_failover = remote.auto_failover; mine.handover_on_quit = remote.handover_on_quit;
+                mine.card = remote.card.clone(); mine.sig = remote.sig.clone();
+                mine.recovery = remote.recovery.clone(); mine.recovery_pending = remote.recovery_pending.clone();
+                mine.successor = remote.successor.clone(); mine.succession = remote.succession.clone(); mine.rsig = remote.rsig.clone();
+                if let Some(pk) = &mine.recovery_pending {
+                    if self.mark_seen(server, &format!("reset:{pk}")) {
+                        self.local.note(server, "La propietaria pidió cambiar el código de recuperación sin el código actual. Se aplica después de la espera de seguridad.");
+                    }
+                }
+                if prev_owner != mine.owner_pin {
+                    audit(server, "owner-changed", mine.owner_pin.as_deref().unwrap_or(""));
+                    self.local.note(server, "Cambió la propietaria del grupo (verificado con firma).");
+                }
+                // Si esta PC quedó fuera de la lista (revocada), deja de participar.
+                if mine.member(&self.me).is_none() { mine.enabled = false; self.local.note(server, "Esta PC ya no es parte del grupo de este servidor."); }
+                let _ = network::save_share(server, &mine);
+                true
+            }
+            Err(why) => {
+                debug(&format!("{} rechazó una lista de integrantes: {why}", self.name()));
+                false
+            }
+        }
     }
     /// Emite un permiso nuevo para esta PC (firmado) a partir de la época `expected`.
     fn new_lease(&self, server: &str, expected: u64, kind: LeaseKind) -> Result<Lease> {
@@ -1153,7 +1430,19 @@ impl Inner {
     fn name(&self) -> String { self.name.read().unwrap().0.clone() }
     fn symbol(&self) -> String { self.name.read().unwrap().1.clone() }
 
+    /// Guarda cómo llegar a una PC del grupo que se conectó a esta (lo que ya sabe iroh por la
+    /// conexión autenticada). Así la propietaria puede pasarle a las coanfitrionas cómo llegar a
+    /// cada jugadora (para votar y retransmitir el permiso), sin que las jugadoras se conecten entre sí.
+    async fn learn_from(&self, node: EndpointId) {
+        if let Some(info) = self.ep.remote_info(node).await {
+            let a = EndpointAddr::from_parts(node, info.addrs().map(|x| x.addr().clone()));
+            if !a.is_empty() { self.learn(a); }
+        }
+    }
+
     fn learn(&self, addr: EndpointAddr) {
+        // Con relays no hace falta guardar IPs de otras PCs (se las encuentra por su identidad).
+        let addr = host939_p2p::shareable(&addr, self.relays);
         let key = addr.id.to_string();
         if key == self.me { return; }
         let mut p = self.peers.write().unwrap();
@@ -1224,19 +1513,28 @@ impl Inner {
         }
     }
 
-    fn my_info(&self, server: &str) -> Info {
+    /// Lo que esta PC informa de sí misma a `requester`. Mínimo conocimiento: a una jugadora solo
+    /// lo necesario para jugar (quién aloja, si está encendido, la revisión del grupo); nunca
+    /// direcciones de red, puntos de restauración ni capacidad de hardware. Las direcciones solo
+    /// van a quien puede hostear, y sin IPs cuando hay relays.
+    fn my_info(&self, server: &str, requester: &str) -> Info {
         let share = network::load_share(server);
         let copy = has_copy(server);
-        let peers = {
+        let trusted = requester == self.me || share.member(requester).map(|m| m.can_host()).unwrap_or(false);
+        let peers = if trusted {
             let p = self.peers.read().unwrap();
-            share.members.iter().filter_map(|m| p.get(&m.node_id).cloned()).collect()
-        };
-        Info {
+            share.members.iter().filter(|m| m.node_id != requester).filter_map(|m| p.get(&m.node_id).map(|a| host939_p2p::shareable(a, self.relays))).collect()
+        } else { vec![] };
+        let base = Info {
             node: self.me.clone(), name: self.name(), symbol: self.symbol(), lease: lease::read(server),
+            latest: None, has_copy: false, running: self.local.is_running(server), can_host: false, score: 0,
+            share_rev: rev(&share).unwrap_or(0), owner: signed::owner_of(&share).unwrap_or_default(), addr: None, peers: vec![],
+        };
+        if !trusted { return base; }
+        Info {
             latest: if copy { snapshots::latest(server) } else { None }, has_copy: copy,
-            running: self.local.is_running(server),
             can_host: copy && share.member(&self.me).map(|m| m.can_host()).unwrap_or(false) && self.local.allow_hosting(server),
-            score: self.local.score(), share_rev: rev(&share).unwrap_or(0), addr: Some(self.ep.addr()), peers,
+            score: self.local.score(), addr: Some(host939_p2p::shareable(&self.ep.addr(), self.relays)), peers, ..base
         }
     }
 
@@ -1399,7 +1697,14 @@ impl Inner {
     async fn tick_server(self: &Arc<Self>, server: &str) {
         let share = network::load_share(server);
         if !share.enabled { return; }
-        let others: Vec<Member> = share.members.iter().filter(|m| m.node_id != self.me).cloned().collect();
+        // Una jugadora solo habla con quien aloja y con la propietaria: no necesita saber nada de
+        // las demás PCs (ni su dirección ni cuándo están conectadas).
+        let i_play = share.member(&self.me).map(|m| !m.can_host()).unwrap_or(true);
+        let host_now = lease::read(server).filter(|l| l.state == LeaseState::Hosting).map(|l| l.host);
+        let owner_now = signed::pin(&share);
+        let others: Vec<Member> = share.members.iter().filter(|m| m.node_id != self.me)
+            .filter(|m| !i_play || Some(&m.node_id) == host_now.as_ref() || Some(&m.node_id) == owner_now.as_ref() || m.can_host() && host_now.is_none())
+            .cloned().collect();
         // Cada PC se consulta por separado y su respuesta cuenta en cuanto llega: una PC lenta
         // (por ejemplo, la anfitriona vieja apagando su servidor) no puede hacer que las demás
         // parezcan caídas. No se manda otra consulta a una PC que todavía no respondió la anterior.
@@ -1420,7 +1725,8 @@ impl Inner {
                             s.inbox.push((node.clone(), info.clone()));
                             s.infos.insert(node, info);
                         }
-                        _ => {
+                        other => {
+                            debug(&format!("{} sin respuesta de {}: {:?}", me.name(), &node[..4], other.as_ref().err()));
                             // Contar cortes: respondía hace poco y ahora no.
                             if s.last_ok.get(&node).map(|t| t.elapsed() < me.timing.poll * 2).unwrap_or(false) { *s.drops.entry(node).or_default() += 1; }
                         }
@@ -1465,15 +1771,7 @@ impl Inner {
         }
         if let Some((_, from)) = newest_share {
             if let Ok(Resp::Config { share: remote, .. }) = self.rpc(&from, &Req::Config { server: server.into() }).await {
-                let mut mine = network::load_share(server);
-                if signed::accept(server, &mine, &remote) {
-                    mine.owner_pin = signed::owner_of(&remote);
-                    mine.members = remote.members; mine.auto_failover = remote.auto_failover; mine.handover_on_quit = remote.handover_on_quit; mine.card = remote.card; mine.sig = remote.sig;
-                    let _ = network::save_share(server, &mine);
-                    self.local.changed(server);
-                } else {
-                    debug(&format!("{} rechazó una lista de integrantes sin la firma de la propietaria (de {})", self.name(), &from[..8.min(from.len())]));
-                }
+                if self.adopt_share(server, &remote) { self.local.changed(server); }
             }
         }
 
@@ -1639,6 +1937,17 @@ impl Inner {
         Ok((send, recv))
     }
 
+    /// Solo la propietaria y las coanfitrionas reciben copias del mundo (las necesitan para
+    /// poder alojarlo). Una jugadora nunca, aunque pida los bloques directamente.
+    fn may_sync(&self, server: &str, node: &str) -> bool {
+        let ok = network::load_share(server).member(node).map(|m| m.can_host()).unwrap_or(false);
+        if !ok && self.is_member(server, node) {
+            self.local.note(server, "Se rechazó un pedido de copia del mundo de una PC jugadora.");
+            audit(server, "sync-denied", node);
+        }
+        ok
+    }
+
     fn is_member(&self, server: &str, node: &str) -> bool {
         !server.contains(['/', '\\', '.']) && network::load_share(server).member(node).is_some()
     }
@@ -1661,12 +1970,16 @@ impl std::fmt::Debug for Handler { fn fmt(&self, f: &mut std::fmt::Formatter<'_>
 impl ProtocolHandler for Handler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let remote = conn.remote_id().to_string();
+        let mut learned = false;
         loop {
             let Ok((mut send, mut recv)) = conn.accept_bi().await else { return Ok(()) };
             let inner = self.0.clone();
             let remote = remote.clone();
+            let learn = !std::mem::replace(&mut learned, true);
+            let rid = conn.remote_id();
             tokio::spawn(async move {
                 let Ok(req) = wire::read_msg::<_, Req>(&mut recv).await else { return };
+                if learn && inner.is_member(req.server(), &remote) { inner.learn_from(rid).await; }
                 let resp = if inner.is_member(req.server(), &remote) {
                     inner.with_state(req.server(), |s| { s.last_ok.insert(remote.clone(), Instant::now()); });
                     handle(&inner, &remote, req).await
@@ -1686,17 +1999,45 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
         Req::Info { server } => {
             // Solo pruebas: simula una PC que responde lento (por ejemplo, ocupada apagando).
             if let Some(ms) = std::env::var("H939_TEST_SLOW_INFO_MS").ok().and_then(|v| v.parse::<u64>().ok()) { tokio::time::sleep(Duration::from_millis(ms)).await; }
-            Resp::Info(inner.my_info(&server))
+            Resp::Info(inner.my_info(&server, remote))
         }
         Req::Config { server } => {
             let mut share = network::load_share(&server);
             share.invites.clear();
-            let config = host939_core::instance::load(&server).ok().and_then(|c| serde_json::to_value(c).ok());
+            // La configuración completa solo a quien puede hostear, y sin lo que depende de esta PC
+            // (memoria, argumentos de Java, errores con rutas locales).
+            let trusted = share.member(remote).map(|m| m.can_host()).unwrap_or(false);
+            let config = if trusted {
+                host939_core::instance::load(&server).ok().map(|mut c| { c.extra_jvm_args.clear(); c.install_error = None; c.java_choice = None; c }).and_then(|c| serde_json::to_value(c).ok())
+            } else { None };
             Resp::Config { config, share }
         }
         Req::Lease { server, lease: l } => {
             if inner.accept_lease(&server, &l, remote).await { inner.after_lease_change(&server).await; }
             Resp::Ok
+        }
+        Req::Succession { server, claim } => {
+            let share = network::load_share(&server);
+            if claim["successor"].as_str() != Some(remote) { return Resp::Err { msg: "El reclamo no es de esta PC.".into() }; }
+            match signed::check_claim(&server, &share, &claim) {
+                Ok(_) => {
+                    if inner.mark_seen(&server, &signed::claim_id(&claim)) {
+                        let name = share.member(remote).map(|m| m.name.clone()).unwrap_or_default();
+                        let hours = inner.timing.ownership_wait.as_secs() / 3600;
+                        let msg = if inner.is_owner(&server) {
+                            format!("{} inició la sucesión de la propiedad porque esta PC no respondía. Si seguís a cargo, cancelala en Grupo (tenés {hours} h).", nice(&name))
+                        } else {
+                            format!("{} inició la sucesión de la propiedad. Se completa en {hours} h si la propietaria no la cancela.", nice(&name))
+                        };
+                        inner.local.note(&server, &msg);
+                        audit(&server, "succession-claim", remote);
+                        inner.with_state(&server, |s| s.claim = Some(claim.clone()));
+                        inner.local.changed(&server);
+                    }
+                    Resp::Ok
+                }
+                Err(why) => Resp::Err { msg: why.into() },
+            }
         }
         Req::LeaseChain { server, after } => {
             Resp::Leases(lease::history(&server).into_iter().filter(|l| l.epoch > after || (l.epoch == after && l.state == LeaseState::Released)).take(512).collect())
@@ -1832,6 +2173,39 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
     }
 }
 
+/// Comparación en tiempo constante (secretos de invitación).
+fn ct_eq(a: &[u8], b: &[u8]) -> bool { a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0 }
+
+/// Ventana deslizante simple: `per_node` intentos por minuto por PC y `total` en total.
+struct RateLimit { per_node: usize, total: usize, hits: HashMap<String, Vec<Instant>>, all: Vec<Instant> }
+impl RateLimit {
+    fn new(per_node: usize, total: usize) -> Self { RateLimit { per_node, total, hits: HashMap::new(), all: vec![] } }
+    fn allow(&mut self, who: &str) -> bool {
+        let now = Instant::now();
+        let win = Duration::from_secs(60);
+        self.all.retain(|t| now.duration_since(*t) < win);
+        self.hits.retain(|_, v| { v.retain(|t| now.duration_since(*t) < win); !v.is_empty() });
+        if self.hits.len() > 4096 { self.hits.clear(); }
+        let mine = self.hits.entry(who.to_string()).or_default();
+        if mine.len() >= self.per_node || self.all.len() >= self.total { return false; }
+        mine.push(now);
+        self.all.push(now);
+        true
+    }
+}
+
+/// Registro local de operaciones sensibles (`audit.jsonl` del servidor): qué, quién y cuándo.
+/// Sin contenido de archivos, IPs ni secretos.
+pub fn audit(server: &str, what: &str, who: &str) {
+    use std::io::Write;
+    let p = host939_core::paths::server_dir(server).join("audit.jsonl");
+    if std::fs::metadata(&p).map(|m| m.len() > 2 * 1024 * 1024).unwrap_or(false) { let _ = std::fs::rename(&p, p.with_extension("jsonl.1")); }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let line = serde_json::json!({ "at": chrono::Utc::now().to_rfc3339(), "what": what, "who": who });
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 fn pcname_or(name: &str) -> String { host939_core::pcname::clean_name(name).unwrap_or_else(|| "Otra PC".into()) }
 
 #[derive(Clone)]
@@ -1848,11 +2222,11 @@ impl ProtocolHandler for SyncH {
                 let Ok(req) = wire::read_msg::<_, SyncReq>(&mut recv).await else { return };
                 match req {
                     SyncReq::Manifest { server, snap } => {
-                        let bytes = if inner.is_member(&server, &remote) { snapshots::manifest_bytes(&server, &snap).unwrap_or_default() } else { vec![] };
+                        let bytes = if inner.may_sync(&server, &remote) { snapshots::manifest_bytes(&server, &snap).unwrap_or_default() } else { vec![] };
                         let _ = wire::write_frame(&mut send, &bytes).await;
                     }
                     SyncReq::Blobs { server, hashes } => {
-                        let ok = inner.is_member(&server, &remote);
+                        let ok = inner.may_sync(&server, &remote);
                         for h in hashes.iter().take(1024) {
                             let data = if ok { snapshots::read_blob(&server, h).unwrap_or_default() } else { vec![] };
                             if wire::write_frame(&mut send, &data).await.is_err() { break; }
@@ -1934,10 +2308,25 @@ impl ProtocolHandler for JoinH {
         let inner = &self.0;
         let reply = match wire::read_msg::<_, JoinReq>(&mut recv).await {
             Ok(req) => {
-                let found = network::shared_servers().into_iter().find_map(|sid| {
+                // Límite de intentos antes de autenticar (por PC y en total): adivinar un secreto de
+                // 128 bits no es viable, pero así tampoco se puede usar para cargar a esta PC.
+                let limited = !inner.join_limit.lock().unwrap().allow(&remote);
+                let found = if limited || req.secret.len() != 32 { None } else { network::shared_servers().into_iter().find_map(|sid| {
                     let s = network::load_share(&sid);
-                    s.invites.iter().find(|i| i.secret == req.secret).cloned().map(|i| (sid, i))
-                });
+                    s.invites.iter().find(|i| ct_eq(i.secret.as_bytes(), req.secret.as_bytes())).cloned().map(|i| (sid, i))
+                }) };
+                // Vencida: se borra y se rechaza igual que una inexistente.
+                let found = match found {
+                    Some((sid, inv)) if inv.expired() => {
+                        let mut s = network::load_share(&sid);
+                        s.invites.retain(|i| i.secret != inv.secret);
+                        let _ = network::save_share(&sid, &s);
+                        inner.local.note(&sid, "Alguien intentó usar una invitación vencida; se borró.");
+                        audit(&sid, "invite-expired-used", &remote);
+                        None
+                    }
+                    f => f,
+                };
                 match found {
                     Some((sid, inv)) => {
                         let mut s = network::load_share(&sid);
@@ -1952,10 +2341,14 @@ impl ProtocolHandler for JoinH {
                         inner.local.changed(&sid);
                         let mut out = s.clone();
                         out.invites.clear();
-                        let peers = { let p = inner.peers.read().unwrap(); s.members.iter().filter_map(|m| p.get(&m.node_id).cloned()).collect() };
+                        audit(&sid, "join", &remote);
+                        inner.learn_from(conn.remote_id()).await;
+                        // Direcciones para llegar al grupo: con relays, solo identidad y relay (sin IPs).
+                        let peers = { let p = inner.peers.read().unwrap(); s.members.iter().filter(|m| m.node_id != remote).filter_map(|m| p.get(&m.node_id).map(|a| host939_p2p::shareable(a, inner.relays))).collect() };
                         JoinResp { ok: true, error: None, server: Some(sid), share: Some(out), role: Some(role.into()), peers }
                     }
-                    None => JoinResp { ok: false, error: Some("La invitación no es válida, ya se usó o fue revocada.".into()), server: None, share: None, role: None, peers: vec![] },
+                    None if limited => JoinResp { ok: false, error: Some("Demasiados intentos. Esperá un minuto.".into()), server: None, share: None, role: None, peers: vec![] },
+                    None => JoinResp { ok: false, error: Some("La invitación no es válida, venció, ya se usó o fue revocada.".into()), server: None, share: None, role: None, peers: vec![] },
                 }
             }
             Err(_) => JoinResp { ok: false, error: Some("Solicitud inválida.".into()), server: None, share: None, role: None, peers: vec![] },

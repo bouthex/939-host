@@ -31,6 +31,21 @@ pub struct Invite {
     pub created_at: String,
     #[serde(default = "default_role")]
     pub role: String,
+    /// Vence en esta fecha (RFC 3339). Invitaciones anteriores sin fecha: 24 h desde que se crearon.
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+impl Invite {
+    /// ¿Venció? Una fecha ilegible cuenta como vencida (falla cerrado).
+    pub fn expired(&self) -> bool {
+        let now = chrono::Utc::now();
+        let end = match &self.expires_at {
+            Some(e) => chrono::DateTime::parse_from_rfc3339(e).map(|d| d.with_timezone(&chrono::Utc)).ok(),
+            None => chrono::DateTime::parse_from_rfc3339(&self.created_at).map(|d| d.with_timezone(&chrono::Utc) + chrono::Duration::hours(24)).ok(),
+        };
+        end.map(|e| now >= e).unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,11 +70,26 @@ pub struct ShareConfig {
     /// Id de la PC propietaria en la que confía esta PC (se fija al unirse). Local: no se copia.
     #[serde(default)]
     pub owner_pin: Option<String>,
+    /// Clave pública de recuperación (derivada del código que guarda la propietaria fuera de la PC).
+    #[serde(default)]
+    pub recovery: Option<String>,
+    /// Cambio del código de recuperación pedido sin el código actual: vale recién tras la espera.
+    #[serde(default)]
+    pub recovery_pending: Option<String>,
+    /// Coanfitriona designada por la propietaria para reemplazarla si deja de responder.
+    #[serde(default)]
+    pub successor: Option<String>,
+    /// Registro verificable de una sucesión completada (reclamo firmado + lista base firmada).
+    #[serde(default)]
+    pub succession: Option<serde_json::Value>,
+    /// Firma con la clave de recuperación (recuperar la propiedad o cambiar el código).
+    #[serde(default)]
+    pub rsig: Option<String>,
 }
 
 impl Default for ShareConfig {
     fn default() -> Self {
-        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None }
+        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None }
     }
 }
 
