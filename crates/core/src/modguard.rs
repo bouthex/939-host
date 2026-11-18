@@ -46,6 +46,45 @@ fn is_mod_file(name: &str) -> bool {
 /// seguridad usar [`scan`], que los informa.
 pub fn jars(dir: &Path) -> BTreeMap<String, String> { scan(dir).0 }
 
+/// Huellas ya calculadas, por archivo, tamaño y fecha de modificación. Solo para los recorridos
+/// periódicos (aprobación automática y avisos, cada pocos segundos): sin esto, una carpeta de mods
+/// grande se volvía a leer entera en cada vuelta. Registrar lo que llega de otra PC y el control
+/// antes de encender calculan siempre la huella completa, y cada entrada desde otra PC vacía la
+/// caché (una restauración puede conservar tamaño y fecha con otro contenido).
+static HASH_CACHE: std::sync::Mutex<Option<std::collections::HashMap<std::path::PathBuf, (u64, std::time::SystemTime, String)>>> = std::sync::Mutex::new(None);
+
+fn clear_hash_cache() { *HASH_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None; }
+
+fn sha256_cached(p: &Path) -> Option<String> {
+    let m = std::fs::metadata(p).ok()?;
+    let key = (m.len(), m.modified().ok()?);
+    if let Some(Some((len, t, h))) = HASH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|c| c.get(p).cloned()) {
+        if (len, t) == key { return Some(h); }
+    }
+    let h = sha256_file(p)?;
+    HASH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(p.to_path_buf(), (key.0, key.1, h.clone()));
+    Some(h)
+}
+
+/// Como [`jars`], con la caché de huellas (solo para recorridos periódicos que no deciden qué se
+/// carga).
+fn jars_cached(dir: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    fn walk(base: &Path, dir: &Path, depth: u32, out: &mut BTreeMap<String, String>) {
+        if depth > 6 { return; }
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let Ok(t) = e.file_type() else { continue };
+            let p = e.path();
+            if t.is_dir() { walk(base, &p, depth + 1, out); continue; }
+            if !t.is_file() || !is_mod_file(&e.file_name().to_string_lossy()) { continue; }
+            let Ok(rel) = p.strip_prefix(base) else { continue };
+            if let Some(h) = sha256_cached(&p) { out.insert(rel.to_string_lossy().replace('\\', "/"), h); }
+        }
+    }
+    walk(dir, dir, 0, &mut out);
+    out
+}
+
 /// Como [`jars`], más la lista de mods cuya huella no se pudo calcular (en Windows, un archivo
 /// recién copiado puede estar bloqueado un instante, por ejemplo por el antivirus). Cada uno se
 /// reintenta unas veces antes de darlo por ilegible.
@@ -89,9 +128,11 @@ fn ingress() -> std::sync::MutexGuard<'static, ()> { INGRESS.lock().unwrap_or_el
 /// camino, lo que alcanzó a llegar queda registrado y apartado.
 pub fn foreign_write<T>(id: &str, from: &str, place: impl FnOnce() -> AppResult<T>) -> AppResult<(T, usize)> {
     let _g = ingress();
+    clear_hash_cache();
     let before = snapshot(id);
     let r = place();
     let n = record_received(id, &before, from);
+    clear_hash_cache();
     Ok((r?, n))
 }
 
@@ -221,7 +262,7 @@ pub fn quarantined(id: &str) -> Vec<Quarantined> {
     let q = quarantine_dir(id);
     let info = origins(id);
     let rejected: HashSet<String> = crate::network::load_share(id).rejected_mods.into_iter().collect();
-    jars(&q).into_iter().map(|(name, h)| Quarantined {
+    jars_cached(&q).into_iter().map(|(name, h)| Quarantined {
         size: std::fs::metadata(q.join(&name)).map(|m| m.len()).unwrap_or(0),
         from: info.get(&h).map(|o| o.from.clone()), at: info.get(&h).map(|o| o.at.clone()),
         rejected: rejected.contains(&h), name, sha256: h,
@@ -262,7 +303,7 @@ pub fn local_jars(id: &str) -> Vec<String> {
     };
     let rec = received(id);
     let rejected: HashSet<String> = crate::network::load_share(id).rejected_mods.into_iter().collect();
-    jars(&mods_dir(id)).into_values().filter(|h| !rec.contains(h) && !rejected.contains(h)).collect()
+    jars_cached(&mods_dir(id)).into_values().filter(|h| !rec.contains(h) && !rejected.contains(h)).collect()
 }
 
 /// Una decisión de la propietaria sobre un mod.
@@ -317,6 +358,34 @@ mod t {
         }).unwrap().1
     }
     fn sha(b: &[u8]) -> String { hex::encode(sha2::Sha256::digest(b)) }
+
+    /// La caché de huellas no deja pasar un archivo distinto con el mismo tamaño y la misma fecha
+    /// si llegó desde otra PC, y hace barato el recorrido periódico.
+    #[test]
+    fn cache_de_huellas_segura_y_barata() {
+        let id = &group("cache");
+        let m = mods_dir(id);
+        // Si otra prueba tiene el candado de entradas, local_jars espera a la vuelta siguiente (vacío).
+        let lj = |id: &str| { for _ in 0..200 { let v = local_jars(id); if !v.is_empty() { return v; } std::thread::sleep(std::time::Duration::from_millis(10)); } vec![] };
+        std::fs::write(m.join("propio.jar"), b"AAAA").unwrap();
+        assert_eq!(lj(id), vec![sha(b"AAAA")]);
+        // Una restauración de otra PC reemplaza el contenido conservando tamaño y fecha.
+        let t = std::fs::metadata(m.join("propio.jar")).unwrap().modified().unwrap();
+        foreign_write(id, "pc-coanfitriona", || {
+            std::fs::write(m.join("propio.jar"), b"BBBB").unwrap();
+            std::fs::File::options().write(true).open(m.join("propio.jar")).unwrap().set_modified(t).unwrap();
+            Ok(())
+        }).unwrap();
+        assert!(!local_jars(id).contains(&sha(b"BBBB")), "el contenido de otra PC no se toma por propio");
+        assert!(!m.join("propio.jar").exists(), "quedó en cuarentena");
+        // Costo: la segunda vuelta no vuelve a leer los archivos.
+        for i in 0..20 { std::fs::write(m.join(format!("grande{i}.jar")), vec![i as u8; 2 << 20]).unwrap(); }
+        let t0 = std::time::Instant::now(); lj(id); let first = t0.elapsed();
+        // Otras pruebas en paralelo pueden vaciar la caché global: se toma la mejor de varias vueltas.
+        let second = (0..5).map(|_| { let t0 = std::time::Instant::now(); lj(id); t0.elapsed() }).min().unwrap();
+        println!("    40 MB de mods: primera vuelta {first:?}, siguiente {second:?}");
+        assert!(second * 5 < first, "la vuelta siguiente tenía que usar la caché ({first:?} → {second:?})");
+    }
 
     #[test]
     fn lo_recibido_va_directo_a_la_cuarentena() {
