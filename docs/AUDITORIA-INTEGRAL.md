@@ -203,8 +203,19 @@ El script elevado de `hosts` solo se puede ejecutar en Windows: lo prueba la CI.
 ## 6. Resultados
 
 - **Linux (este entorno):** 115 pruebas automáticas, todas pasan.
-- **CI de Windows:** las 6 partes pasaron con el sistema de aprobación (`26ee4f8`). Los
-  resultados de los últimos commits están en la sección 11.
+- **CI de Windows:** las 6 partes pasaron con `30eb8dc`:
+  - dos máquinas reales, servidores y cliente reales, app instalada;
+  - script elevado de `hosts` en Windows real;
+  - archivos de Mojang contra Log4Shell;
+  - revocación, rechazo y cuarentena inmediata con nodos reales.
+- **Mods reales sin falsos positivos:** Lithium, FerriteCore, Fabric API y Chunky dan «sin
+  alertas conocidas»; Krypton da «precaución» por su código nativo.
+- **Instalador de prueba de `30eb8dc`:** artefacto `939Host-windows-prueba` en Actions, vence el
+  2 de diciembre.
+  - `939Host-0.9.0-instalador.exe`:
+    `222961b89d24eff0cf36e326249118dc3f94d4abaa6f77a26e631b107a7ad3fc`
+  - `939Host-0.9.0-portable.zip`:
+    `e70485f7f062758ecd2d8aa22041be0ae6ccbc94a2da8a55015b254347039486`
 - **Rendimiento:** sin cambios medibles en reposo, sincronización, traspaso ni uniones.
 
 | Medida (mediana de 3) | Ayer | Ahora |
@@ -272,7 +283,7 @@ Detalle en [`AUDITORIA-GITHUB.md`](AUDITORIA-GITHUB.md).
 
 ## 11. Qué falta para las pruebas finales con usuarios
 
-- [ ] CI de Windows verde con todos los commits de esta fase.
+- [x] CI de Windows verde con todos los commits de esta fase (`30eb8dc`).
 - [ ] Probar en una PC con Windows Defender activo el botón de direcciones `.939host` (aviso de
   UAC de «Windows PowerShell»).
 - [ ] Probar en dos o tres PCs reales de redes distintas: unirse, jugar, traspaso, modo privado.

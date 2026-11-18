@@ -16,6 +16,11 @@ no las haya.
 - **Qué no se atacó:** GitHub, Mojang, Modrinth, CurseForge, los servidores de n0, redes reales y
   la instalación de Minecraft del usuario.
 
+> **Continúa en [`AUDITORIA-INTEGRAL.md`](AUDITORIA-INTEGRAL.md):** fallas V17 a V21 (ayudante
+> elevado con DLL de la carpeta de la app, Log4Shell en versiones viejas, mods recibidos fuera de
+> la cuarentena hasta encender, costo de la aprobación automática, programas por nombre), sistema
+> de aprobación y análisis de mods, revocación y auditoría de GitHub.
+
 ## Resumen en números
 
 | Concepto | Cantidad |

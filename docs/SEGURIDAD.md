@@ -6,7 +6,9 @@ el código. Las pruebas están en `crates/cluster/src/cert.rs`, `crates/cluster/
 
 939 Host **no es invulnerable**, no tiene ninguna certificación y no promete seguridad absoluta.
 Al final se listan los riesgos que siguen existiendo. Los intentos de vulnerarlo, las fallas que
-encontraron y las mediciones de rendimiento están en [`RED-TEAM.md`](RED-TEAM.md).
+encontraron y las mediciones de rendimiento están en [`RED-TEAM.md`](RED-TEAM.md). La fase final
+(Windows, Log4Shell, sistema de aprobación de mods, identidad y GitHub) está en
+[`AUDITORIA-INTEGRAL.md`](AUDITORIA-INTEGRAL.md) y [`AUDITORIA-GITHUB.md`](AUDITORIA-GITHUB.md).
 
 ## Principios
 
