@@ -222,7 +222,14 @@ pub fn enforce(id: &str) -> AppResult<(Vec<String>, Vec<String>)> {
         if g.approved.contains(&h) || !g.strict {
             let dst = mods_dir(id).join(&name);
             if let Some(parent) = dst.parent() { let _ = std::fs::create_dir_all(parent); }
-            if !dst.exists() && std::fs::rename(q.join(&name), &dst).is_ok() { back.push(name); }
+            #[cfg(test)]
+            if let Some(f) = SWAP_HOOK.lock().unwrap().as_ref() { f(&q.join(&name)); }
+            if dst.exists() || std::fs::rename(q.join(&name), &dst).is_err() { continue; }
+            // Activación atómica (un rename) y huella comprobada otra vez sobre el archivo ya
+            // colocado: si cambió entre la primera lectura y el movimiento, vuelve a la cuarentena.
+            let now = sha256_file(&dst);
+            let ok = now.as_deref().map(|n| !g.rejected.contains(n) && (g.approved.contains(n) || !g.strict)).unwrap_or(false);
+            if ok { back.push(name); } else { move_to_quarantine(id, &name)?; }
         }
     }
     let rec = received(id);
@@ -243,6 +250,11 @@ pub fn enforce(id: &str) -> AppResult<(Vec<String>, Vec<String>)> {
     }
     Ok((moved, back))
 }
+
+/// Solo en pruebas: se ejecuta entre leer la huella de un mod aprobado y activarlo (para probar
+/// un reemplazo en ese instante).
+#[cfg(test)]
+static SWAP_HOOK: std::sync::Mutex<Option<Box<dyn Fn(&Path) + Send>>> = std::sync::Mutex::new(None);
 
 /// Un mod en la cuarentena de esta PC.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -358,6 +370,26 @@ mod t {
         }).unwrap().1
     }
     fn sha(b: &[u8]) -> String { hex::encode(sha2::Sha256::digest(b)) }
+
+    /// Un mod aprobado que se reemplaza entre la lectura de su huella y su activación no queda activo.
+    #[test]
+    fn activacion_comprueba_la_huella_otra_vez() {
+        let id = &group("activacion");
+        let m = mods_dir(id);
+        arrive(id, &[("bueno.jar", b"version aprobada")]);
+        set_share(id, |s| s.approved_mods = vec![sha(b"version aprobada")]);
+        *SWAP_HOOK.lock().unwrap() = Some(Box::new(|p: &Path| { if p.ends_with("bueno.jar") { std::fs::write(p, b"version cambiada").unwrap(); } }));
+        let r = enforce(id);
+        *SWAP_HOOK.lock().unwrap() = None;
+        let (_, back) = r.unwrap();
+        assert!(back.is_empty(), "no se activó: {back:?}");
+        assert!(!m.join("bueno.jar").exists(), "el contenido cambiado no queda en la carpeta activa");
+        assert!(quarantined(id).iter().any(|q| q.sha256 == sha(b"version cambiada")), "volvió a la cuarentena");
+        // Sin reemplazo: el aprobado que estaba apartado se activa normalmente.
+        std::fs::write(quarantine_dir(id).join("bueno.jar"), b"version aprobada").unwrap();
+        assert_eq!(enforce(id).unwrap().1, vec!["bueno.jar".to_string()]);
+        assert_eq!(sha256_file(&m.join("bueno.jar")).as_deref(), Some(sha(b"version aprobada").as_str()));
+    }
 
     /// La caché de huellas no deja pasar un archivo distinto con el mismo tamaño y la misma fecha
     /// si llegó desde otra PC, y hace barato el recorrido periódico.

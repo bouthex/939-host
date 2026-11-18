@@ -376,7 +376,7 @@ fn finish(mut r: ModReport, complete: bool) -> ModReport {
         _ if !complete => ("incompleto", "No se pudo revisar todo el archivo. Que no aparezcan alertas no significa nada."),
         Level::Precaucion => ("precaucion", "Tiene características poco comunes que conviene revisar."),
         Level::Info if r.modrinth.is_some() => ("sin_alertas", "Sin alertas conocidas y publicado en Modrinth. No garantiza que sea seguro."),
-        Level::Info => ("desconocido", "Sin alertas, pero no se pudo confirmar de dónde viene."),
+        Level::Info => ("desconocido", "Información insuficiente: sin alertas en el análisis, pero no se pudo confirmar de dónde viene."),
     };
     r.status = status.into();
     r.summary = summary.into();
@@ -419,6 +419,19 @@ async fn modrinth_lookup(sha512: &str) -> Result<Option<Provenance>, String> {
 
 fn cache_path(sha256: &str) -> std::path::PathBuf { crate::paths::root().join("cache").join("analisis-mods").join(format!("{sha256}.json")) }
 
+/// Análisis guardados como máximo (los más viejos se borran): no crece sin límite.
+const CACHE_MAX: usize = 500;
+
+fn prune_cache(max: usize) {
+    let dir = crate::paths::root().join("cache").join("analisis-mods");
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(&dir).into_iter().flatten().flatten()
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
+    if files.len() <= max { return; }
+    files.sort();
+    let drop = files.len() - max;
+    for (_, p) in files.into_iter().take(drop) { let _ = std::fs::remove_file(p); }
+}
+
 /// Análisis guardado de esta huella, si es de la versión actual del analizador.
 pub fn cached(sha256: &str) -> Option<ModReport> {
     if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
@@ -434,7 +447,7 @@ pub async fn analyze_cached(path: &Path) -> AppResult<ModReport> {
     }).await.map_err(|e| crate::error::AppError::new("scan", "El análisis se interrumpió").with_detail(e))?;
     if from_cache && !local.unchecked.iter().any(|u| u.starts_with("procedencia en Modrinth")) { return Ok(local); }
     let r = with_modrinth(local).await;
-    if !r.sha256.is_empty() { let _ = crate::paths::write_json(&cache_path(&r.sha256), &r); }
+    if !r.sha256.is_empty() { let _ = crate::paths::write_json(&cache_path(&r.sha256), &r); prune_cache(CACHE_MAX); }
     Ok(r)
 }
 
@@ -562,6 +575,16 @@ mod t {
         ok.modrinth = Some(Provenance { project: "p".into(), title: "t".into(), version: "1".into(), url: String::new() });
         assert_eq!(finish(ok.clone(), true).status, "sin_alertas");
         assert_eq!(finish(ok, false).status, "incompleto");
+    }
+
+    #[test]
+    fn la_cache_de_analisis_tiene_tope() {
+        let _ = crate::paths::init(std::env::temp_dir().join(format!("h939-modscan-root-{}", std::process::id())));
+        let dir = crate::paths::root().join("cache").join("analisis-mods");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..30 { std::fs::write(dir.join(format!("{i:064}.json")), b"{}").unwrap(); }
+        prune_cache(10);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 10);
     }
 
     /// Si Modrinth no responde (o no existe el archivo ahí), el resultado nunca es «sin alertas».

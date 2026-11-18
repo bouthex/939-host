@@ -244,6 +244,7 @@ pub async fn install(mgr: &Manager, id: String) {
             let run2 = run.clone();
             let out = tokio::task::spawn_blocking(move || {
                 let mut c = std::process::Command::new(java);
+                crate::java::sanitize_env(&mut c);
                 c.current_dir(&run2).arg("-jar").arg(&installer2).arg("--installServer");
                 #[cfg(windows)]
                 { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }

@@ -59,7 +59,7 @@ A['mods-reload'] = async () => { await loadMods(); paintMods(); };
 
 /* ── Solicitudes: mods que llegaron de otra PC y esperan la decisión de la propietaria ── */
 const RSTATUS = {
-  sin_alertas: 'Sin alertas conocidas', desconocido: 'Origen desconocido', precaucion: 'Precaución',
+  sin_alertas: 'Sin alertas conocidas', desconocido: 'Información insuficiente', precaucion: 'Precaución',
   sospechoso: 'Sospechoso', amenaza: 'Amenaza confirmada', incompleto: 'Análisis incompleto',
 };
 async function loadRequests() {

@@ -59,6 +59,10 @@ jobs:
         run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster --features host939-cluster/pruebas -- --test-threads 1
       - name: Loaders reales (Vanilla, Fabric, Forge, NeoForge)
         if: ${{ !cancelled() }}
+        # Si Java heredara _JAVA_OPTIONS (se aplica después de la línea de comandos), con 2 MB de
+        # memoria ningún servidor arrancaría: prueba de que 939 Host no la pasa a sus procesos.
+        env:
+          _JAVA_OPTIONS: -Xmx2m
         run: cargo test --locked -p host939-core --test e2e_real e2e_loaders -- --ignored --nocapture
       - name: Modrinth real
         if: ${{ !cancelled() }}
@@ -104,6 +108,19 @@ jobs:
       - name: Traspaso de anfitrión con servidores reales (dos PCs por P2P)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-cluster --features pruebas --test multi_node real_minecraft_handover -- --ignored --nocapture
+      - name: Estado de Windows Defender y Firewall (y detecciones durante las pruebas)
+        if: always()
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $out = @()
+          $st = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if ($st) { $out += "Defender: servicio=$($st.AMServiceEnabled) antivirus=$($st.AntivirusEnabled) tiempo real=$($st.RealTimeProtectionEnabled) descargas=$($st.IoavProtectionEnabled) comportamiento=$($st.BehaviorMonitorEnabled)" } else { $out += "Defender: no disponible en esta máquina" }
+          Get-NetFirewallProfile -ErrorAction SilentlyContinue | ForEach-Object { $out += "Firewall $($_.Name): activo=$($_.Enabled)" }
+          $det = @(Get-MpThreatDetection -ErrorAction SilentlyContinue)
+          if ($det.Count) { $det | ForEach-Object { $out += "Detección: $($_.ThreatID) en $($_.Resources -join ', ')" } } else { $out += "Detecciones de Defender durante la corrida: ninguna" }
+          $out | ForEach-Object { Write-Output $_; Add-Content $env:GITHUB_STEP_SUMMARY "- $_" }
+          if ($det | Where-Object { ($_.Resources -join ' ') -match '939|host939|powershell' }) { throw "Defender detectó algo relacionado con 939 Host" }
 
   app-windows:
     name: App instalada en Windows (interfaz real)
@@ -188,6 +205,22 @@ jobs:
           if (!(Test-Path $u)) { $u = Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host\*.exe" | Where-Object Name -match 'esinst|uninst' | Select-Object -First 1 -ExpandProperty FullName }
           if ($u) { Start-Process $u -ArgumentList '/S' -Wait; Start-Sleep 5 }
           if (Test-Path "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe") { throw "No se desinstaló" }
+          # Los servidores, mundos e identidad del usuario no se borran sin su consentimiento.
+          if (!(Test-Path "$env:LOCALAPPDATA\939Host")) { throw "La desinstalación borró la carpeta de datos del usuario" }
+          Write-Output "Desinstalado; la carpeta de datos del usuario se conserva."
+      - name: Estado de Windows Defender y Firewall (y detecciones durante las pruebas)
+        if: always()
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $out = @()
+          $st = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if ($st) { $out += "Defender: servicio=$($st.AMServiceEnabled) antivirus=$($st.AntivirusEnabled) tiempo real=$($st.RealTimeProtectionEnabled) descargas=$($st.IoavProtectionEnabled) comportamiento=$($st.BehaviorMonitorEnabled)" } else { $out += "Defender: no disponible en esta máquina" }
+          Get-NetFirewallProfile -ErrorAction SilentlyContinue | ForEach-Object { $out += "Firewall $($_.Name): activo=$($_.Enabled)" }
+          $det = @(Get-MpThreatDetection -ErrorAction SilentlyContinue)
+          if ($det.Count) { $det | ForEach-Object { $out += "Detección: $($_.ThreatID) en $($_.Resources -join ', ')" } } else { $out += "Detecciones de Defender durante la corrida: ninguna" }
+          $out | ForEach-Object { Write-Output $_; Add-Content $env:GITHUB_STEP_SUMMARY "- $_" }
+          if ($det | Where-Object { ($_.Resources -join ' ') -match '939|host939|powershell' }) { throw "Defender detectó algo relacionado con 939 Host" }
 
   # Dos máquinas Windows reales y separadas, P2P con relays como la app,
   # servidores de Minecraft reales, «Solicitar ser anfitrión» y traspaso con el mundo intacto.

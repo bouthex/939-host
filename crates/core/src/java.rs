@@ -143,3 +143,29 @@ mod pick_tests {
         assert_eq!(pick(8, Some(17), "1.12.2", Loader::Vanilla), (17, None));
     }
 }
+
+/// Variables de entorno que Java lee por su cuenta y que pueden cambiar cómo arranca (agregar un
+/// `-javaagent`, cambiar la configuración de Log4j o anular la protección contra Log4Shell, ya que
+/// `_JAVA_OPTIONS` se aplica después de la línea de comandos). Los procesos de Java de 939 Host no
+/// las heredan: solo valen los argumentos que arma 939 Host.
+pub const JAVA_ENV_BLOCKLIST: &[&str] = &["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH", "JAVA_OPTIONS", "JAVA_OPTS"];
+
+/// Quita esas variables del entorno de un proceso hijo.
+pub fn sanitize_env(c: &mut std::process::Command) -> &mut std::process::Command {
+    for k in JAVA_ENV_BLOCKLIST { c.env_remove(k); }
+    c
+}
+
+#[cfg(test)]
+mod env_t {
+    /// Un `_JAVA_OPTIONS` del entorno (se aplica después de la línea de comandos) no llega a Java.
+    #[test]
+    fn java_no_hereda_opciones_del_entorno() {
+        let mut c = std::process::Command::new("x");
+        c.env("_JAVA_OPTIONS", "-javaagent:malo.jar").env("PATH", "/usr/bin");
+        super::sanitize_env(&mut c);
+        let envs: Vec<(String, Option<String>)> = c.get_envs().map(|(k, v)| (k.to_string_lossy().into(), v.map(|v| v.to_string_lossy().into()))).collect();
+        for k in super::JAVA_ENV_BLOCKLIST { assert!(envs.iter().any(|(n, v)| n == k && v.is_none()), "{k} tiene que quitarse: {envs:?}"); }
+        assert!(envs.iter().any(|(n, v)| n == "PATH" && v.is_some()), "lo demás se conserva");
+    }
+}

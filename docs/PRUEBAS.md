@@ -180,7 +180,7 @@ PC anfitriona. Por eso la prueba definitiva usa dos Windows.
 ## 11. «Error de protocolo de red» y cliente real de Minecraft (15/11/2026)
 
 **Diagnóstico con datos reales:** registros del servidor «Eventos» (Fabric 26.2, sin mods) en la
-PC del usuario, leídos sin modificar nada. Minecraft autentica a Bouthex y 1–2 s después
+PC del usuario, leídos sin modificar nada. Minecraft autentica al jugador y 1–2 s después
 `lost connection: Disconnected`, sin «joined the game» y sin errores del servidor: corta el
 propio juego. El usuario confirmó que entró con el perfil del modpack 939 Z. Causa: mods en el
 cliente que el servidor no tiene. No es una falla de red de 939 Host.

@@ -288,6 +288,7 @@ impl Manager {
         crate::log4shell::check(&cfg.mc_version, &run_dir)?;
 
         let mut cmd = Command::new(&java);
+        java::sanitize_env(&mut cmd);
         cmd.current_dir(&run_dir).args(jvm_args(cfg));
         match &launch {
             Launch::Jar(j) => { cmd.arg("-jar").arg(j); }
