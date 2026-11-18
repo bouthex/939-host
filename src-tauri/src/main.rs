@@ -69,6 +69,7 @@ fn webview_memory(window: &tauri::Window) {
 /// (actualización de componentes, red en segundo plano, traducción, sugerencias). La interfaz es
 /// una sola página: un único proceso de render alcanza.
 fn browser_args() -> String {
+    #[cfg_attr(not(feature = "pruebas"), allow(unused_mut))]
     let mut a = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,OptimizationHints,MediaRouter,msEdgeTranslate,AutofillServerCommunication         --disable-background-networking --disable-component-update --disable-sync --no-pings --renderer-process-limit=1");
     // Puerto de depuración de WebView2 solo en la compilación de prueba de la CI (característica
     // `pruebas`): la app que se entrega no lo abre aunque exista la variable de entorno.
@@ -94,10 +95,28 @@ pub fn show_main(app: &AppHandle) {
         .build();
 }
 
-/// Salida completa: detiene todos los servidores de forma ordenada y libera todo.
+/// Nombres de los servidores encendidos (o iniciando o guardando) en esta PC.
+fn active_servers(app: &AppHandle) -> Vec<String> {
+    app.state::<process::Manager>().active_ids().into_iter()
+        .map(|id| host939_core::instance::load(&id).map(|c| c.name).unwrap_or(id)).collect()
+}
+
+fn tray_tooltip(app: &AppHandle, text: &str) {
+    if let Some(t) = app.tray_by_id("main-tray") { let _ = t.set_tooltip(Some(text)); }
+}
+
+fn list_names(v: &[String]) -> String {
+    match v.len() { 0 => String::new(), 1 => v[0].clone(), _ => format!("{} y {}", v[..v.len() - 1].join(", "), v[v.len() - 1]) }
+}
+
+/// Salida completa: pasa o guarda los servidores de forma ordenada y termina. La ventana se
+/// cierra enseguida (antes quedaba abierta y parecía colgada mientras se guardaba); el cierre
+/// sigue en segundo plano, con el estado en el ícono de la bandeja.
 pub fn begin_quit(app: &AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) { return; }
     let _ = app.emit("app-quitting", ());
+    if let Some(w) = app.get_webview_window("main") { let _ = w.destroy(); }
+    tray_tooltip(app, "939 Host — cerrando: guardando los servidores…");
     let app = app.clone();
     std::thread::spawn(move || {
         // Primero el grupo: cada servidor que hostea esta PC pasa a otra PC encendida o se
@@ -107,6 +126,53 @@ pub fn begin_quit(app: &AppHandle) {
         }
         app.state::<process::Manager>().stop_all();
         app.exit(0);
+    });
+}
+
+/// «Salir» desde el ícono de la bandeja. Con servidores encendidos pregunta (ventana nativa,
+/// aparece al instante aunque la interfaz esté cerrada). Si ya se está cerrando, ofrece forzarlo.
+fn tray_quit(app: &AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let app = app.clone();
+    if QUITTING.load(Ordering::SeqCst) {
+        std::thread::spawn(move || {
+            let force = app.dialog().message("939 Host todavía está guardando los servidores. Si cerrás ahora, se puede perder lo que no llegó a guardarse.")
+                .title("Cerrando 939 Host").kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom("Cerrar igual".into(), "Esperar".into())).blocking_show();
+            if force { app.exit(0); }
+        });
+        return;
+    }
+    let active = active_servers(&app);
+    if active.is_empty() { begin_quit(&app); return; }
+    std::thread::spawn(move || {
+        let what = if active.len() == 1 { format!("{} está encendido", active[0]) } else { format!("{} están encendidos", list_names(&active)) };
+        let ok = app.dialog().message(format!("{what}. Si salís, se guarda y se detiene (si es compartido y lo activaste, pasa a otra PC del grupo).\n\nPara que siga funcionando, cerrá solo la ventana: 939 Host queda en la bandeja."))
+            .title("Salir de 939 Host").kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Salir y detener".into(), "Cancelar".into())).blocking_show();
+        if ok { begin_quit(&app); }
+    });
+}
+
+/// Hilo de fondo: mientras haya servidores encendidos, Windows no suspende la PC (si está
+/// activado) y el ícono de la bandeja dice qué sigue funcionando.
+fn start_background_watch(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut awake = None;
+        loop {
+            let active = active_servers(&app);
+            let want = !active.is_empty() && settings::load().keep_awake_while_hosting;
+            if awake != Some(want) { hardware::keep_awake(want); awake = Some(want); }
+            if !QUITTING.load(Ordering::SeqCst) {
+                let tip = match active.len() {
+                    0 => "939 Host".to_string(),
+                    1 => format!("939 Host — {} encendido", active[0]),
+                    n => format!("939 Host — {n} servidores encendidos"),
+                };
+                tray_tooltip(&app, &tip);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
     });
 }
 
@@ -147,7 +213,7 @@ fn main() {
             app.manage(network::Cluster::default());
 
             let open = MenuItem::with_id(app, "open", "Abrir 939 Host", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Salir (detiene los servidores)", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Salir de 939 Host…", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             let mut tray = TrayIconBuilder::with_id("main-tray")
                 .tooltip("939 Host")
@@ -155,7 +221,7 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_main(app),
-                    "quit" => begin_quit(app),
+                    "quit" => tray_quit(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -166,6 +232,7 @@ fn main() {
             if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
             tray.build(app)?;
             commands::start_snapshot_scheduler(app.handle().clone());
+            start_background_watch(app.handle().clone());
             // Con --minimized (inicio con Windows) arranca solo en la bandeja.
             if !std::env::args().any(|a| a == "--minimized") {
                 if let Some(w) = app.get_webview_window("main") {
@@ -185,12 +252,21 @@ fn main() {
             if let WindowEvent::Resized(_) = event { webview_memory(window); }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if QUITTING.load(Ordering::SeqCst) { return; }
-                if !settings::load().close_to_tray {
-                    api.prevent_close();
-                    begin_quit(window.app_handle());
+                // Cerrar la ventana nunca detiene un servidor encendido: la ventana se destruye
+                // (libera la memoria de la interfaz) y 939 Host sigue en la bandeja con los
+                // servidores y la red del grupo. Salir del todo es explícito (bandeja → Salir).
+                let app = window.app_handle();
+                let s = settings::load();
+                let active = active_servers(app);
+                if active.is_empty() {
+                    if !s.close_to_tray { api.prevent_close(); begin_quit(app); }
+                    return;
                 }
-                // Con "cerrar a la bandeja", la ventana se destruye (libera la memoria de la
-                // interfaz) y la app sigue en la bandeja con los servidores andando.
+                if !s.background_hint_shown {
+                    // La primera vez se explica dentro de la ventana; la interfaz la cierra después.
+                    api.prevent_close();
+                    let _ = app.emit("background-hint", serde_json::json!({ "servers": active }));
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -236,6 +312,7 @@ fn main() {
             commands::list_runtimes,
             commands::jvm_preview,
             commands::quit_app,
+            commands::close_to_background,
             commands::notify_ui_ready,
             commands::mods_search,
             commands::mods_versions,

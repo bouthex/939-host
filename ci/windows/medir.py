@@ -42,6 +42,16 @@ def cpu(seconds=10):
     return round(used / seconds * 100, 2)
 
 
+def processes():
+    """Cuántos procesos hay de 939 Host, Java y WebView2 (para el cierre de la ventana)."""
+    out = {}
+    for p in psutil.process_iter(["name"]):
+        n = (p.info["name"] or "").lower().removesuffix(".exe")
+        key = {"939host": "939Host", "java": "java", "javaw": "java", "msedgewebview2": "msedgewebview2"}.get(n)
+        if key: out[key] = out.get(key, 0) + 1
+    return out
+
+
 def started_at():
     r = [p for p in psutil.process_iter(["name", "create_time"]) if (p.info["name"] or "").lower() == "939host.exe"]
     return min(p.info["create_time"] for p in r) if r else None

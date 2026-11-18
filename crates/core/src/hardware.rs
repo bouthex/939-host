@@ -246,3 +246,15 @@ pub fn host_score(probe: &Probe) -> u32 {
     // RAM libre hasta 16 GB (más no suma para un servidor de amigos) y CPU por núcleo.
     (cpu / 10) + (avail_gb.min(16) as u32) * 12
 }
+
+/// Pide a Windows que no suspenda la PC (la pantalla se puede apagar igual). El pedido vale para
+/// el hilo que lo hace mientras siga vivo: lo usa un hilo dedicado de la app.
+pub fn keep_awake(on: bool) {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Power::*;
+        SetThreadExecutionState(if on { ES_CONTINUOUS | ES_SYSTEM_REQUIRED } else { ES_CONTINUOUS });
+    }
+    #[cfg(not(windows))]
+    let _ = on;
+}

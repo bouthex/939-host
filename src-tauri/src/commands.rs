@@ -325,6 +325,15 @@ pub fn jvm_preview(config: ServerConfig) -> String { process::jvm_args(&config).
 #[tauri::command]
 pub fn quit_app(app: AppHandle) { crate::begin_quit(&app); }
 
+/// Cierra la ventana dejando los servidores funcionando (después de explicarlo una vez).
+#[tauri::command]
+pub fn close_to_background(app: AppHandle) -> AppResult<()> {
+    let mut s = settings::load();
+    if !s.background_hint_shown { s.background_hint_shown = true; settings::save(&s)?; }
+    if let Some(w) = app.get_webview_window("main") { let _ = w.destroy(); }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn notify_ui_ready(app: AppHandle) { let _ = app.emit("ui-ready", ()); }
 

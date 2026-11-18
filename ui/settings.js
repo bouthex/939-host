@@ -32,8 +32,9 @@ routes.settings = async function renderSettings() {
         <section class="section" id="set-general"><h2>General</h2><div class="card">
           <div class="switch" style="cursor:default;align-items:center"><div class="row" style="gap:14px">${pcAvatar(s.nodeSymbol, 44, 'inv lg')}<div class="grow"><b>${esc(s.nodeName)}</b><span class="sm t2" style="display:block">Así ven tus amigos a esta PC en el grupo. Es solo un nombre: no cambia su identidad ni sus permisos.</span></div></div><button class="btn" data-a="identity">${icon('edit', 16)}Cambiar</button></div>
           ${sw('startWithWindows', 'Iniciar con Windows', 'Arranca en la bandeja, sin abrir la ventana, para que tus servidores compartidos estén disponibles.')}
-          ${sw('closeToTray', 'Seguir en la bandeja al cerrar la ventana', 'Los servidores siguen funcionando y la interfaz se cierra por completo para liberar memoria.')}
-          <div class="switch" style="cursor:default"><div class="grow"><b>Salir de 939 Host</b><span class="sm t2">Detiene todos los servidores de forma ordenada y deja de participar en el grupo.</span></div><button class="btn" data-a="quit">${icon('logout', 16)}Salir</button></div>
+          ${sw('closeToTray', 'Seguir en la bandeja al cerrar la ventana', 'Sin servidores encendidos, cerrar la ventana también puede cerrar 939 Host. Con un servidor encendido, cerrar la ventana nunca lo detiene.')}
+          ${sw('keepAwakeWhileHosting', 'No suspender la PC mientras aloja un servidor', 'Windows puede apagar la pantalla, pero no suspende la PC mientras haya un servidor encendido. Un servidor no puede seguir funcionando en una PC suspendida o apagada.')}
+          <div class="switch" style="cursor:default"><div class="grow"><b>Salir de 939 Host</b><span class="sm t2">Guarda y detiene todos los servidores (los compartidos pasan a otra PC si lo activaste) y deja de participar en el grupo. Para que un servidor siga funcionando, cerrá solo la ventana.</span></div><button class="btn" data-a="quit">${icon('logout', 16)}Salir</button></div>
         </div></section>
 
         <section class="section" id="set-look"><h2>Apariencia</h2><div class="card">

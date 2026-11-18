@@ -1058,7 +1058,10 @@ impl GroupNode {
             let snap = { let l2 = inner.local.clone(); let s2 = server.to_string(); tokio::task::spawn_blocking(move || l2.snapshot(&s2, "Al soltar el servidor", "auto")).await?.map_err(|e| anyhow!(e))? };
             let need = snap.freshness();
             let share = network::load_share(server);
-            let others: Vec<String> = share.members.iter().filter(|m| m.node_id != inner.me && m.can_host()).map(|m| m.node_id.clone()).collect();
+            // Solo se espera a las PCs conectadas: esperar a una apagada solo demoraba el cierre
+            // 90 s (lo copia cuando vuelva; el permiso soltado exige este punto para encender).
+            let others: Vec<String> = share.members.iter().filter(|m| m.node_id != inner.me && m.can_host())
+                .filter(|m| inner.recently_ok(server, &m.node_id, inner.timing.poll * 3)).map(|m| m.node_id.clone()).collect();
             for o in &others { let _ = inner.rpc(o, &Req::SyncNow { server: server.into() }).await; }
             let deadline = Instant::now() + inner.timing.release_wait;
             let mut confirmed = 0;

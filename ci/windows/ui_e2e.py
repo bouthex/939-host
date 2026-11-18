@@ -218,6 +218,36 @@ async def main():
             await p.keyboard.press('Escape')
         await shot("oscuro-amigos")
 
+        # ── Cerrar la ventana con el servidor encendido: el servidor sigue (§14) ──
+        if ok:
+            async def close_window_keeps_server():
+                await p.click('[data-a=nav][data-route=servers]')
+                await p.evaluate("window.__TAURI__.window.getCurrentWindow().close()")
+                await p.wait_for_selector('.dialog', timeout=10000)
+                await shot("cerrar-ventana-aviso", 300)
+                await p.click('.dialog .btn.pri')
+                await asyncio.sleep(6)
+                procs = medir.processes()
+                if not procs.get("939Host"):
+                    raise RuntimeError("939 Host terminó al cerrar la ventana")
+                if not procs.get("java"):
+                    raise RuntimeError("el servidor se detuvo al cerrar la ventana")
+                return f"ventana cerrada; siguen 939 Host ({procs['939Host']}) y Java ({procs['java']}); WebView2: {procs.get('msedgewebview2', 0)}"
+            closed = await step("cerrar la ventana no detiene el servidor", close_window_keeps_server())
+            if closed:
+                async def reopen():
+                    nonlocal b, p
+                    import subprocess
+                    subprocess.Popen([os.path.join(os.environ["LOCALAPPDATA"], "Programs", "939 Host", "939Host.exe")])
+                    b, p = await find_page(pw)
+                    p.on("pageerror", lambda e: errors.append(str(e)))
+                    await p.wait_for_selector(".nav-wrap", timeout=60000)
+                    await p.click('.li[data-id]')
+                    await p.click('.tab[data-v=summary]')
+                    return await wait_state(["Listo para jugar", "Funcionando"], 60)
+                await step("reabrir la app: recupera el estado real del servidor", reopen())
+                await shot("reabierta-estado-real", 800)
+
         # ── Apagar con confirmación ──
         await p.click('[data-a=nav][data-route=servers]')
         await p.click('.li[data-id]')

@@ -52,6 +52,14 @@ async function boot() {
     const m = ev.payload.message || '';
     if (/anfitri|pasado|tomó|Recuperando|Deteniendo|se unió|no pudo|soltado|mod\(s\)/i.test(m)) toast(m, /no pudo|Deteniendo/.test(m) ? 'error' : 'ok');
   });
+  // Primera vez que se cierra la ventana con servidores encendidos: se explica qué pasa.
+  await listen('background-hint', async (ev) => {
+    const names = ev.payload?.servers || [];
+    const what = names.length === 1 ? `<b>${esc(names[0])}</b> sigue encendido` : `<b>${names.length} servidores</b> siguen encendidos`;
+    const r = await dialog({ title: 'Cerrar la ventana', body: `<p>${what}. Al cerrar la ventana, 939 Host sigue funcionando en la bandeja (junto al reloj) y tus amigos pueden seguir jugando.</p><p class="sm t2">Para detener todo y salir: ícono de la bandeja → <b>Salir de 939 Host…</b>. Si la PC se apaga o se suspende, el servidor no puede seguir en esta PC.</p>`, buttons: [{ label: 'Salir y detener', value: 'quit' }, { label: 'Cerrar la ventana', value: 'bg', kind: 'pri' }] });
+    if (r === 'bg') invoke('close_to_background').catch(fail);
+    else if (r === 'quit') invoke('quit_app');
+  });
   await listen('app-quitting', () => {
     if (dialogOpen) dialogOpen(false);
     $('#modal-root').innerHTML = `<div class="overlay"><div class="dialog"><div class="row">${CINTA(48)}<h2>Cerrando 939 Host</h2></div><p>Pasando o guardando los servidores de forma ordenada. Puede tardar hasta un minuto y medio si otra PC está copiando el último estado. No apagues la PC todavía.</p><div class="bar indet"><i></i></div></div></div>`;
