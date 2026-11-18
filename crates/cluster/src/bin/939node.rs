@@ -25,6 +25,8 @@ struct Local {
     fake: bool,
     name: String,
     fakes: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Servidores simulados detenidos sin punto posterior (como `Runtime::exited_unsaved`).
+    exited: Mutex<std::collections::HashSet<String>>,
     rt: tokio::runtime::Handle,
 }
 
@@ -87,17 +89,23 @@ impl LocalHost for Local {
     }
     fn stop(&self, server: &str) -> Result<(), String> {
         if self.fake {
-            if let Some(t) = self.fakes.lock().unwrap().remove(server) { t.abort(); }
+            if let Some(t) = self.fakes.lock().unwrap().remove(server) { t.abort(); self.exited.lock().unwrap().insert(server.to_string()); }
             std::thread::sleep(Duration::from_millis(100));
             return Ok(());
         }
         if !self.mgr.runtime(server).lock().unwrap().is_active() { return Ok(()); }
         self.mgr.stop(server).map_err(|e| e.message)?;
-        if self.mgr.wait_inactive(server, Duration::from_secs(120)) { Ok(()) } else { Err("no se detuvo a tiempo".into()) }
+        if self.mgr.wait_inactive(server, Duration::from_secs(620)) { Ok(()) } else { Err("no se detuvo a tiempo".into()) }
     }
     fn snapshot(&self, server: &str, label: &str, kind: &str) -> Result<SnapshotInfo, String> {
         let mc = instance::load(server).map(|c| c.mc_version).unwrap_or_default();
-        snapshots::take(&self.mgr, server, label, kind, &mc).map_err(|e| e.message)
+        let r = snapshots::take(&self.mgr, server, label, kind, &mc).map_err(|e| e.message);
+        if r.is_ok() && !self.is_running(server) { self.exited.lock().unwrap().remove(server); }
+        r
+    }
+    fn exited_unsaved(&self, server: &str) -> bool {
+        if self.fake { return self.exited.lock().unwrap().remove(server); }
+        self.mgr.take_exit_unsaved(server)
     }
     fn profile(&self) -> host939_cluster::HostProfile {
         host939_cluster::HostProfile { cpu: "CPU de prueba".into(), cores: 4, ram_total_mb: std::env::var("H939_RAM").ok().and_then(|s| s.parse().ok()).unwrap_or(16384), ram_free_mb: 8192, cpu_score: Some(self.score()), disk_free_gb: Some(100.0) }
@@ -235,7 +243,7 @@ async fn main() {
     }
     let node_id = identity::load_or_create_node().expect("identidad");
     let secret = identity::node_secret().unwrap();
-    let local = Arc::new(Local { mgr: Manager::new(Arc::new(NoEvents)), probe: Probe::new(), fake, name: name.clone(), fakes: Default::default(), rt: tokio::runtime::Handle::current() });
+    let local = Arc::new(Local { mgr: Manager::new(Arc::new(NoEvents)), probe: Probe::new(), fake, name: name.clone(), fakes: Default::default(), exited: Default::default(), rt: tokio::runtime::Handle::current() });
     let timing = if std::env::var("H939_FAST").is_ok() {
         Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15), request_ttl: Duration::from_secs(std::env::var("H939_REQUEST_TTL").ok().and_then(|v| v.parse().ok()).unwrap_or(120)), ownership_wait: Duration::from_secs(std::env::var("H939_OWNERSHIP_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(20)) }
     } else { Timing::default() };
@@ -300,8 +308,19 @@ async fn main() {
                     std::fs::write(paths::server_run_dir(&p(1)).join("world").join(p(2)), p(3)).map_err(|e| e.to_string())?;
                     Ok(serde_json::json!(true))
                 }
+                // Copia vieja en disco de una PC que no aloja (como la que queda de un traspaso anterior).
+                "writestale" => {
+                    let w = paths::server_run_dir(&p(1)).join("world");
+                    std::fs::create_dir_all(&w).map_err(|e| e.to_string())?;
+                    if !w.join("level.dat").exists() { std::fs::write(w.join("level.dat"), b"viejo").map_err(|e| e.to_string())?; }
+                    std::fs::write(w.join(p(2)), p(3)).map_err(|e| e.to_string())?;
+                    Ok(serde_json::json!(true))
+                }
                 "read" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_run_dir(&p(1)).join("world").join(p(2))).ok())),
                 "snapshot" => { let (l, s) = (local.clone(), p(1)); tokio::task::spawn_blocking(move || l.snapshot(&s, "prueba", "auto")).await.unwrap().map(|i| serde_json::to_value(i).unwrap()) }
+                // Punto «manual» como el botón de la interfaz (en una PC que no aloja queda como copia local).
+                "manualsnap" => { let (l, s) = (local.clone(), p(1)); tokio::task::spawn_blocking(move || l.snapshot(&s, "manual de prueba", "manual")).await.unwrap().map(|i| serde_json::to_value(i).unwrap()) }
+                "latest" => Ok(serde_json::to_value(snapshots::latest(&p(1))).unwrap()),
                 "snapshots" => Ok(serde_json::to_value(snapshots::list(&p(1))).unwrap()),
                 "handover" => node.handover(&p(1), parts.get(2).map(|s| s.as_str())).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
                 "release" => node.release(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),

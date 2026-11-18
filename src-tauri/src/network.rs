@@ -69,8 +69,9 @@ impl LocalHost for AppLocal {
         let mgr = self.0.state::<Manager>();
         if !mgr.runtime(server).lock().unwrap().is_active() { return Ok(()); }
         mgr.stop(server).map_err(|e| e.message)?;
-        if mgr.wait_inactive(server, Duration::from_secs(150)) { Ok(()) } else { Err("El servidor no se detuvo a tiempo.".into()) }
+        if mgr.wait_inactive(server, Duration::from_secs(620)) { Ok(()) } else { Err("El servidor no se detuvo a tiempo.".into()) }
     }
+    fn exited_unsaved(&self, server: &str) -> bool { self.0.state::<Manager>().take_exit_unsaved(server) }
     fn snapshot(&self, server: &str, label: &str, kind: &str) -> Result<SnapshotInfo, String> {
         let mc = instance::load(server).map(|c| c.mc_version).unwrap_or_default();
         snapshots::take(&self.0.state::<Manager>(), server, label, kind, &mc).map_err(|e| e.message)
@@ -171,7 +172,11 @@ pub fn quit_blocking(app: &AppHandle) -> Vec<String> {
 pub async fn before_start(app: &AppHandle, id: &str) -> AppResult<()> {
     if !network::load_share(id).enabled { return Ok(()); }
     let node = app.state::<Cluster>().inner().node().await?.clone();
-    node.prepare_start(id).await.map_err(|e| AppError::new("lease", e.to_string()))
+    node.prepare_start(id).await.map_err(|e| {
+        let msg = e.to_string();
+        // Pedido enviado a una anfitriona con el servidor apagado: no es un error, es un aviso.
+        match msg.strip_prefix("PEDIDO:") { Some(m) => AppError::new("requested", m.to_string()), None => AppError::new("lease", msg) }
+    })
 }
 
 /* ── Comandos ── */

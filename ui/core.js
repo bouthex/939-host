@@ -128,7 +128,11 @@ function toast(message, kind = 'ok', detail = '') {
   setTimeout(() => el.remove(), kind === 'error' ? 8000 : 3500);
 }
 function errMsg(e) { return typeof e === 'string' ? e : e?.message || 'Ocurrió un error inesperado.'; }
-function fail(e) { console.error(e); toast(errMsg(e), 'error', e?.detail || ''); }
+function fail(e) {
+  // Un pedido aceptado (traspaso desde una anfitriona con el servidor apagado) no es un error.
+  if (e?.code === 'requested') { toast(errMsg(e)); return; }
+  console.error(e); toast(errMsg(e), 'error', e?.detail || '');
+}
 async function call(cmd, args, okMsg) {
   try { const r = await invoke(cmd, args); if (okMsg) toast(okMsg); return r; } catch (e) { fail(e); throw e; }
 }

@@ -42,7 +42,7 @@ pub struct SnapshotInfo {
     pub id: String,
     pub created_at: String,
     pub label: String,
-    /// auto | manual | seguridad
+    /// auto | manual | seguridad | local (ver [`counts_for_sync`])
     pub kind: String,
     pub mc_version: String,
     pub file_count: usize,
@@ -64,6 +64,28 @@ pub struct SnapshotInfo {
 impl SnapshotInfo {
     /// Clave de "frescura": primero la época, después el orden.
     pub fn freshness(&self) -> (u64, u64) { (self.epoch, self.seq) }
+    /// ¿Forma parte de la línea del servidor (lo que se sincroniza y se levanta al alojar)?
+    pub fn counts_for_sync(&self) -> bool { counts_for_sync(&self.kind) }
+}
+
+/// Los puntos «seguridad» (antes de restaurar, copia apartada) y «local» (tomados en una PC que
+/// no era la anfitriona de un servidor compartido) quedan solo en esta PC: nunca pasan por
+/// «el estado más reciente». Si contaran, una PC con su copia vieja podía tomar un punto propio
+/// con la época actual y un número de orden mayor que el último de la anfitriona, y al alojar
+/// levantaba esa copia vieja (se perdían los bloques y el inventario recientes).
+pub fn counts_for_sync(kind: &str) -> bool { kind != "seguridad" && kind != "local" }
+
+/// ¿Esta PC escribe la línea del servidor? Sí si no está compartido, si todavía no hay permiso o
+/// si esta PC tiene el permiso de anfitriona. Si otra PC lo tiene (o lo soltó otra PC), lo que
+/// hay en disco acá puede ser viejo.
+pub fn writes_line(id: &str) -> bool {
+    let share = crate::network::load_share(id);
+    if !share.enabled { return true; }
+    match (crate::lease::read(id), crate::lease::local_node()) {
+        (None, _) => true,
+        (Some(l), Some(me)) => l.held_by(&me),
+        (Some(_), None) => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +168,8 @@ pub(crate) fn capture(id: &str, label: &str, kind: &str, mc_version: &str) -> Ap
     if !run.join("world").join("level.dat").exists() {
         return Err(AppError::invalid("Todavía no hay mundo: iniciá el servidor una vez para que se genere."));
     }
+    // Un punto «auto» o «manual» de una PC que no es la anfitriona queda como copia local.
+    let kind = if counts_for_sync(kind) && !writes_line(id) { "local" } else { kind };
     let started = Instant::now();
     // Índice del último punto para no releer archivos sin cambios.
     let previous: HashMap<String, FileEntry> = list(id).first()
@@ -187,7 +211,7 @@ pub(crate) fn capture(id: &str, label: &str, kind: &str, mc_version: &str) -> Ap
         files.push(FileEntry { path: rel, size, mtime_ms: mt, blocks });
     }
     let now = chrono::Local::now();
-    let seq = list(id).iter().filter(|s| s.kind != "seguridad").map(|s| s.seq).max().unwrap_or(0).saturating_add(1);
+    let seq = list(id).iter().filter(|s| s.counts_for_sync()).map(|s| s.seq).max().unwrap_or(0).saturating_add(1);
     let info = SnapshotInfo {
         epoch: crate::lease::read(id).map(|l| l.epoch).unwrap_or(0),
         seq,
@@ -207,7 +231,7 @@ pub(crate) fn capture(id: &str, label: &str, kind: &str, mc_version: &str) -> Ap
 }
 
 fn default_label(kind: &str) -> &'static str {
-    match kind { "auto" => "Automático", "seguridad" => "Antes de restaurar", _ => "Manual" }
+    match kind { "auto" => "Automático", "seguridad" => "Antes de restaurar", "local" => "Copia local (esta PC no era la anfitriona)", _ => "Manual" }
 }
 
 fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -237,7 +261,10 @@ pub fn take(mgr: &Manager, id: &str, label: &str, kind: &str, mc_version: &str) 
             let _ = mgr.send_command(id, "save-on");
             r
         } else {
-            capture(id, label, kind, mc_version)
+            let r = capture(id, label, kind, mc_version);
+            // Lo que dejó en disco la última detención ya quedó en un punto.
+            if r.is_ok() { rt.lock().unwrap().exited_unsaved = false; }
+            r
         }
     })();
     rt.lock().unwrap().busy = None;
@@ -346,7 +373,15 @@ fn same_as_disk(run: &Path, snap: &Snapshot) -> bool {
 
 /// El punto más reciente del servidor lógico (ignora los de seguridad, que son locales).
 pub fn latest(id: &str) -> Option<SnapshotInfo> {
-    list(id).into_iter().filter(|s| s.kind != "seguridad").max_by(|a, b| a.freshness().cmp(&b.freshness()).then(a.created_at.cmp(&b.created_at)))
+    // Puntos creados en esta PC con versiones anteriores, en una época en la que la anfitriona
+    // era otra PC: son copias locales viejas aunque digan «auto» o «manual» (ver `counts_for_sync`).
+    let me = crate::lease::local_node();
+    let hist = crate::lease::history(id);
+    let foreign_epoch = |s: &SnapshotInfo| match &me {
+        Some(me) if s.origin == *me => hist.iter().rev().find(|l| l.epoch == s.epoch).map(|l| l.host != *me).unwrap_or(false),
+        _ => false,
+    };
+    list(id).into_iter().filter(|s| s.counts_for_sync() && !foreign_epoch(s)).max_by(|a, b| a.freshness().cmp(&b.freshness()).then(a.created_at.cmp(&b.created_at)))
 }
 
 /// Índice comprimido tal como está guardado, para enviarlo.
@@ -662,6 +697,40 @@ mod tests {
         materialize(&b, &s1.id, "26.2").unwrap();
         let h = crate::modguard::sha256_file(&run_b.join("mods/troyano.jar")).unwrap();
         assert!(crate::modguard::received(&b).contains(&h), "el mod llegado de otra PC queda marcado como recibido");
+    }
+
+    /// Regresión del bloque de tierra: en una PC que no aloja un servidor compartido, un punto
+    /// «manual» o «auto» queda como copia local y no pasa por «lo más reciente». También se
+    /// descartan los puntos que versiones anteriores crearon en esa situación.
+    #[test]
+    fn punto_de_pc_que_no_aloja_no_compite() {
+        crate::lease::set_local_node("pc-que-recibe");
+        let me = crate::lease::local_node().unwrap();
+        let id = setup();
+        let host = capture(&id, "", "auto", "26.2").unwrap();
+        assert!(host.counts_for_sync());
+        // Se comparte y la anfitriona pasa a ser otra PC (época 3).
+        crate::network::save_share(&id, &crate::network::ShareConfig { enabled: true, ..Default::default() }).unwrap();
+        let l = crate::lease::Lease { epoch: 3, host: "otra-pc".into(), host_name: "Otra".into(), state: crate::lease::LeaseState::Hosting, since: String::new(), required: (0, 0), kind: crate::lease::LeaseKind::Claim, issuer: "otra-pc".into(), prev: None, votes: vec![], sig: None };
+        crate::lease::store(&id, &l).unwrap();
+        assert!(!writes_line(&id));
+        std::fs::write(paths::server_run_dir(&id).join("world/level.dat"), b"copia-vieja").unwrap();
+        let mine = capture(&id, "", "manual", "26.2").unwrap();
+        assert_eq!(mine.kind, "local");
+        assert_eq!(latest(&id).unwrap().id, host.id, "la copia local no reemplaza a lo último de la anfitriona");
+        // Punto heredado: dice «manual», lo creó esta PC y es de la época de otra anfitriona.
+        let mut legacy = read_snapshot(&id, &mine.id).unwrap();
+        legacy.info.id = format!("{}-viejo", legacy.info.id);
+        legacy.info.kind = "manual".into();
+        legacy.info.epoch = 3;
+        legacy.info.seq = 99;
+        legacy.info.origin = me.clone();
+        write_snapshot(&id, &legacy).unwrap();
+        assert_eq!(latest(&id).unwrap().id, host.id, "un punto viejo de una época ajena no gana por número de orden");
+        // El mismo punto, si lo hubiera tomado la anfitriona de esa época, sí cuenta.
+        legacy.info.origin = "otra-pc".into();
+        write_snapshot(&id, &legacy).unwrap();
+        assert_eq!(latest(&id).unwrap().id, legacy.info.id);
     }
 
     /// Red team (vuelta 2): un índice comprimido chico que al descomprimirse ocupa cientos de MB

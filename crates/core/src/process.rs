@@ -61,6 +61,14 @@ pub struct Runtime {
     join_watch: crate::reach::JoinWatch,
     /// Contexto para explicar entradas fallidas: versión, loader, mods.
     join_ctx: (String, String, usize),
+    /// El proceso terminó (detención, cierre forzado o caída) y todavía no se tomó un punto con
+    /// lo que quedó en disco. En un servidor compartido, la anfitriona lo publica enseguida para
+    /// que «Detener» no deje el estado final solo en esta PC.
+    pub exited_unsaved: bool,
+    /// Última línea que escribió el servidor (para no cortar un guardado largo).
+    last_output: Option<Instant>,
+    /// La última detención terminó con cierre forzado (el mundo puede no estar guardado).
+    pub forced_stop: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -318,6 +326,8 @@ impl Manager {
             rt.last_error = None;
             rt.needs_restart = false;
             rt.stop_requested = false;
+            rt.forced_stop = false;
+            rt.last_output = Some(Instant::now());
             rt.mspt = None;
             rt.mspt_p95 = None;
             rt.metrics_supported = true;
@@ -359,6 +369,7 @@ impl Manager {
                 r.pid = None;
                 r.players.clear();
                 r.reset_live();
+                r.exited_unsaved = true;
                 let code = status.ok().and_then(|s| s.code());
                 if r.stop_requested || code == Some(0) {
                     r.status = Some(RunStatus::Stopped);
@@ -401,7 +412,9 @@ impl Manager {
         Ok(())
     }
 
-    /// Detención ordenada: `stop` por consola y, si no responde en 90 s, cierre forzado.
+    /// Detención ordenada: `stop` por consola. Un servidor grande con mods puede tardar varios
+    /// minutos en guardar: mientras siga escribiendo en la consola se lo espera (hasta 10 min).
+    /// Solo se cierra forzadamente si pasan 90 s sin terminar y además lleva 60 s en silencio.
     pub fn stop(&self, id: &str) -> AppResult<()> {
         let rt_arc = self.runtime(id);
         let pid = {
@@ -426,13 +439,22 @@ impl Manager {
         let ev = self.events.clone();
         let id = id.to_string();
         std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(90);
-            while Instant::now() < deadline {
-                if !rt.lock().unwrap().is_active() { return; }
+            let begun = Instant::now();
+            loop {
+                {
+                    let r = rt.lock().unwrap();
+                    if !r.is_active() { return; }
+                    let quiet = r.last_output.map(|t| t.elapsed()).unwrap_or(begun.elapsed());
+                    if stop_gives_up(begun.elapsed(), quiet) { break; }
+                }
                 std::thread::sleep(Duration::from_millis(500));
             }
             if let Some(pid) = pid {
-                rt.lock().unwrap().push_log("── 939 Host: el servidor no respondió en 90 s; se cerró forzadamente ──".into());
+                {
+                    let mut r = rt.lock().unwrap();
+                    r.forced_stop = true;
+                    r.push_log(format!("── 939 Host: el servidor dejó de responder ({} s sin terminar de guardar); se cerró forzadamente ──", begun.elapsed().as_secs()));
+                }
                 force_kill(pid);
                 ev.server_changed(&id);
             }
@@ -453,7 +475,14 @@ impl Manager {
         }
     }
 
-    /// Espera a que el servidor quede detenido (o caído). Devuelve false si venció el tiempo.
+    /// ¿Terminó el proceso sin que después se haya tomado un punto? (lo consume: devuelve true una vez)
+    pub fn take_exit_unsaved(&self, id: &str) -> bool {
+        let rt = self.runtime(id);
+        let mut r = rt.lock().unwrap();
+        if r.is_active() { return false; }
+        std::mem::take(&mut r.exited_unsaved)
+    }
+
     /// Vuelve a comprobar la conexión real de un servidor encendido.
     pub fn check_connection(&self, id: &str, port: u16) -> AppResult<()> {
         let rt = self.runtime(id);
@@ -465,6 +494,7 @@ impl Manager {
     /// Olvida el último problema de entrada (después de que el usuario lo leyó).
     pub fn clear_join_issue(&self, id: &str) { self.runtime(id).lock().unwrap().join_issue = None; self.changed(id); }
 
+    /// Espera a que el servidor quede detenido (o caído). Devuelve false si venció el tiempo.
     pub fn wait_inactive(&self, id: &str, timeout: Duration) -> bool {
         let rt = self.runtime(id);
         let deadline = Instant::now() + timeout;
@@ -475,17 +505,12 @@ impl Manager {
         false
     }
 
-    /// Detiene todos los servidores (al salir de la app). Espera hasta 120 s en total.
+    /// Detiene todos los servidores (al salir de la app). Cada uno tiene la misma espera adaptativa
+    /// que `stop` (no se corta un guardado que avanza); acá solo se espera a que terminen.
     pub fn stop_all(&self) {
         let ids = self.active_ids();
         for id in &ids { let _ = self.stop(id); }
-        let deadline = Instant::now() + Duration::from_secs(120);
-        for id in &ids {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if !self.wait_inactive(id, left) {
-                if let Some(pid) = self.runtime(id).lock().unwrap().pid { force_kill(pid); }
-            }
-        }
+        for id in &ids { self.wait_inactive(id, Duration::from_secs(620)); }
     }
 
     /// Envía un comando y espera la confirmación de guardado de Minecraft ("Saved the game").
@@ -503,6 +528,7 @@ impl Manager {
 }
 
 fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: String, is_err: bool, port: u16) {
+    rt.lock().unwrap().last_output = Some(Instant::now());
     let mut changed = false;
     let mut hide = false;
     let mut probe_after_start = false;
@@ -716,6 +742,12 @@ fn split_args(s: &str) -> Vec<String> {
     out
 }
 
+/// ¿Se deja de esperar a que el servidor termine de guardar? Nunca antes de 90 s; después, solo si
+/// lleva 60 s sin escribir nada. Tope absoluto: 10 minutos.
+pub fn stop_gives_up(elapsed: Duration, quiet: Duration) -> bool {
+    elapsed >= Duration::from_secs(600) || (elapsed >= Duration::from_secs(90) && quiet >= Duration::from_secs(60))
+}
+
 fn check_port(port: u16) -> AppResult<()> {
     // Se prueba en loopback: no dispara el aviso del firewall de Windows para 939 Host.
     match std::net::TcpListener::bind(("127.0.0.1", port)) {
@@ -816,6 +848,16 @@ mod launch_tests {
         c.loader = loader;
         c.loader_version = version.map(String::from);
         c
+    }
+
+    /// Un guardado largo que sigue avanzando no se corta; uno colgado sí.
+    #[test]
+    fn detener_espera_mientras_guarda() {
+        let s = Duration::from_secs;
+        assert!(!stop_gives_up(s(30), s(30)), "nunca antes de 90 s");
+        assert!(!stop_gives_up(s(200), s(5)), "a los 200 s sigue escribiendo: se espera");
+        assert!(stop_gives_up(s(95), s(61)), "a los 95 s y un minuto en silencio: se corta");
+        assert!(stop_gives_up(s(600), s(0)), "tope absoluto de 10 minutos");
     }
 
     #[test]

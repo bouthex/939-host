@@ -146,9 +146,10 @@ fn group_protocol_fake_servers() {
         [&mut a, &mut b, &mut c].iter_mut().all(|n| n.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 3)
     });
 
-    // B no puede encender: el permiso es de A.
-    assert!(b.err(&format!("start {sid}")).contains("hosteando"));
+    // B no puede encender en paralelo: A lo tiene encendido. (Con A apagada se lo pasaría sola:
+    // ver `tierra_e_inventario_no_retroceden`.)
     a.ok(&format!("start {sid}"));
+    assert!(b.err(&format!("start {sid}")).contains("hosteando"));
     a.ok(&format!("write {sid} marca.txt m1"));
     let s1 = a.ok(&format!("snapshot {sid}"));
     println!("✔ A es anfitriona; B no puede encender en paralelo (un solo escritor)");
@@ -661,3 +662,64 @@ fn server_logo_reaches_players_and_survives_handover() {
     println!("✔ tras pasar el servidor a B, el logo sigue en todas las PCs");
 }
 
+
+/// Regresión del bloque de tierra (prueba entre bout y Archi): una PC colocó tierra, detuvo el
+/// servidor y la otra lo encendió con un estado viejo (la tierra desapareció y volvió al
+/// inventario). Causas que cubre:
+/// 1. Un punto tomado en una PC que NO aloja (botón «Crear punto», copia vieja en disco) recibía la
+///    época actual y un número de orden mayor que el último de la anfitriona: al alojar, esa PC
+///    levantaba su copia vieja.
+/// 2. «Detener» no publicaba el estado final: quedaba solo en la PC anfitriona.
+/// 3. Encender en otra PC con la anfitriona conectada y apagada exigía un traspaso manual.
+#[test]
+fn tierra_e_inventario_no_retroceden() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok("create Tierra 25841").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25842"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} bloque.txt pasto"));
+    a.ok(&format!("write {sid} inventario.txt 1-tierra"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia el primer punto", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+
+    // B tiene en disco una copia vieja y alguien crea un punto ahí (como el botón «Crear punto»).
+    b.ok(&format!("writestale {sid} bloque.txt pasto"));
+    b.ok(&format!("writestale {sid} inventario.txt 1-tierra"));
+    let local = b.ok(&format!("manualsnap {sid}"));
+    assert_eq!(local["kind"], "local", "un punto en una PC que no aloja queda como copia local");
+    assert_eq!(fresh(&b.ok(&format!("latest {sid}"))), fresh(&s1), "la copia local no pasa por «lo más reciente»");
+    println!("✔ el punto de una PC que no aloja queda como copia local y no compite con la anfitriona");
+
+    // En A se coloca la tierra (sale del inventario) y se detiene el servidor con «Detener».
+    a.ok(&format!("write {sid} bloque.txt tierra"));
+    a.ok(&format!("write {sid} inventario.txt vacio"));
+    a.ok(&format!("stop {sid}"));
+    wait("B recibe el estado final sin traspaso", Duration::from_secs(25), || fresh(&b.status(&sid)["myLatest"]) > fresh(&s1));
+    println!("✔ «Detener» publicó el estado final y B lo copió");
+
+    // B enciende: A está conectada y apagada, así que se lo pasa sola.
+    let e = b.err(&format!("start {sid}"));
+    assert!(e.contains("te lo está pasando"), "{e}");
+    wait("B queda alojando", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "la tierra sigue colocada");
+    assert_eq!(b.ok(&format!("read {sid} inventario.txt")).as_str(), Some("vacio"), "el inventario no vuelve atrás");
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap());
+    println!("✔ B encendió con la tierra colocada y el inventario correcto");
+
+    // B juega, detiene y su PC se apaga de golpe: A recupera con lo último (publicado al detener).
+    b.ok(&format!("write {sid} bloque.txt piedra"));
+    b.ok(&format!("stop {sid}"));
+    wait("A recibe el estado final de B", Duration::from_secs(25), || a.ok(&format!("latest {sid}"))["origin"].as_str() == Some(&id_of(&mut b)));
+    let pid_b = b.pid();
+    signal(pid_b, "KILL");
+    wait("A puede recuperar (B dejó de responder)", Duration::from_secs(90), || a.cmd(&format!("take {sid}"))["ok"].as_bool().unwrap());
+    assert_eq!(a.ok(&format!("read {sid} bloque.txt")).as_str(), Some("piedra"), "lo hecho antes de detener no se pierde aunque la PC se apague");
+    println!("✔ con la PC anfitriona apagada de golpe después de detener, no se perdió nada");
+}
+
+fn id_of(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }

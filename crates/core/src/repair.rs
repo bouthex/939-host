@@ -275,7 +275,7 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
             technical: tail(&log, "OutOfMemoryError", 3) });
     }
     if regex::Regex::new(r"(?i)(exception reading .*level\.dat|failed to load level|couldn't load chunk|corrupted chunk|region file .* is truncated)").unwrap().is_match(&log) {
-        let snap = crate::snapshots::list(&cfg.id).into_iter().find(|s| s.kind != "seguridad");
+        let snap = crate::snapshots::list(&cfg.id).into_iter().find(|s| s.counts_for_sync());
         add(&mut problems, Problem { id: "world".into(), kind: "world".into(),
             title: "Parte del mundo está dañada".into(),
             explanation: "Minecraft no pudo leer un archivo del mundo. Suele pasar si la PC se apagó de golpe mientras guardaba.".into(),

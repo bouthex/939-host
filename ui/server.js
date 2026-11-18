@@ -281,7 +281,7 @@ tabDraw.backups = async (el) => {
   const [snaps, zips] = await Promise.all([invoke('snapshots_list', { id }), invoke('list_backups', { id })]);
   const running = state.server.status === 'running';
   const st = snaps.stats;
-  const KIND = { auto: 'Automático', manual: 'Manual', seguridad: 'Seguridad' };
+  const KIND = { auto: 'Automático', manual: 'Manual', seguridad: 'Seguridad', local: 'Copia local' };
   const groups = {};
   for (const s of snaps.items) { const d = new Date(s.createdAt).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' }); (groups[d] = groups[d] || []).push(s); }
   el.innerHTML = `<div class="stack" style="gap:16px">

@@ -434,8 +434,20 @@ pub async fn snapshot_take(app: AppHandle, id: String, label: String) -> AppResu
 pub async fn snapshot_restore(app: AppHandle, id: String, snap_id: String) -> AppResult<()> {
     blocking(move || {
         let cfg = instance::load(&id)?;
-        snapshots::restore(&app.state::<Manager>(), &id, &snap_id, &cfg.mc_version)?;
-        host939_core::properties::write_for(&cfg)
+        // En un servidor compartido solo restaura la PC anfitriona: en otra PC el resultado se
+        // pisaría al alojar con el estado del grupo (y parecería que no hizo nada).
+        if !snapshots::writes_line(&id) {
+            return Err(AppError::invalid("Este servidor lo aloja otra PC del grupo. Para volver a un punto, primero pedí el servidor (o pedile a quien lo aloja que restaure)."));
+        }
+        let mgr = app.state::<Manager>();
+        snapshots::restore(&mgr, &id, &snap_id, &cfg.mc_version)?;
+        host939_core::properties::write_for(&cfg)?;
+        // Lo restaurado pasa a ser el estado más reciente del servidor (y lo copian las demás PCs).
+        if host939_core::network::load_share(&id).enabled {
+            let label = snapshots::list(&id).into_iter().find(|s| s.id == snap_id).map(|s| format!("Restaurado: {}", s.label)).unwrap_or_else(|| "Restaurado".into());
+            snapshots::take(&mgr, &id, &label, "auto", &cfg.mc_version)?;
+        }
+        Ok(())
     }).await
 }
 
