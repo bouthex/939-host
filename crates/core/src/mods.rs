@@ -555,6 +555,10 @@ pub struct ImportReport {
     pub skipped_duplicate: Vec<String>,
     pub skipped_existing: Vec<String>,
     pub not_mods: Vec<String>,
+    /// Mods del servidor que declaraban como obligatoria una dependencia de cliente (por ejemplo,
+    /// Mod Menu): se ajustó con el archivo oficial de Fabric para que el servidor no la exija.
+    #[serde(default)]
+    pub client_deps_ignored: Vec<String>,
 }
 
 /// Copia los mods de otra carpeta (por ejemplo, la de un perfil de Minecraft) al servidor.
@@ -575,7 +579,7 @@ pub fn import_files(cfg: &ServerConfig, files: &[PathBuf]) -> AppResult<ImportRe
         for e in rd.flatten() { if let Some(m) = jar_meta(&e.path()) { present.insert(m.id); } }
     }
     let mut best: HashMap<String, (std::time::SystemTime, PathBuf, String)> = HashMap::new();
-    let mut r = ImportReport { copied: vec![], skipped_client: vec![], skipped_duplicate: vec![], skipped_existing: vec![], not_mods: vec![] };
+    let mut r = ImportReport { copied: vec![], skipped_client: vec![], skipped_duplicate: vec![], skipped_existing: vec![], not_mods: vec![], client_deps_ignored: vec![] };
     let mut metas = vec![];
     for p in files {
         if !p.is_file() { continue; }
@@ -584,11 +588,22 @@ pub fn import_files(cfg: &ServerConfig, files: &[PathBuf]) -> AppResult<ImportRe
         let mtime = std::fs::metadata(p).and_then(|x| x.modified()).unwrap_or(std::time::UNIX_EPOCH);
         match jar_meta(p) { Some(m) => metas.push((mtime, p.clone(), name, m)), None => r.not_mods.push(name) }
     }
-    // Un mod "solo de cliente" se copia igual si otro mod del servidor lo declara como dependencia:
-    // Fabric no lo carga en el servidor, pero exige que esté presente.
-    let needed: HashSet<String> = metas.iter().filter(|(_, _, _, m)| m.environment != "client").flat_map(|(_, _, _, m)| m.depends.clone()).collect();
+    // Un mod «solo de cliente» nunca se copia al servidor. Si un mod del servidor lo declara como
+    // obligatorio (pasa con Mod Menu), en Fabric se usa el archivo oficial de dependencias para
+    // que el servidor no lo exija. Antes se copiaba igual y el reparador después pedía quitarlo:
+    // quitar → falta → instalar → quitar…
+    let client_ids: HashSet<String> = metas.iter().filter(|(_, _, _, m)| m.environment == "client").map(|(_, _, _, m)| m.id.clone()).collect();
+    if cfg.loader == Loader::Fabric {
+        let run = paths::server_run_dir(&cfg.id);
+        for (_, _, _, m) in metas.iter().filter(|(_, _, _, m)| m.environment != "client") {
+            for d in m.depends.iter().filter(|d| client_ids.contains(*d)) {
+                crate::repair::add_fabric_override(&run, &m.id, d)?;
+                r.client_deps_ignored.push(format!("{} → {d}", if m.name.is_empty() { &m.id } else { &m.name }));
+            }
+        }
+    }
     for (mtime, p, name, m) in metas {
-        if m.environment == "client" && !needed.contains(&m.id) { r.skipped_client.push(format!("{} ({name})", if m.name.is_empty() { &m.id } else { &m.name })); continue; }
+        if m.environment == "client" { r.skipped_client.push(format!("{} ({name})", if m.name.is_empty() { &m.id } else { &m.name })); continue; }
         if present.contains(&m.id) { r.skipped_existing.push(name); continue; }
         match best.get(&m.id) {
             Some((t, _, _)) if *t >= mtime => r.skipped_duplicate.push(name),

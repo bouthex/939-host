@@ -280,7 +280,7 @@ A['mod-remove'] = async (el) => {
 };
 function importReport(r) {
   const part = (label, list) => (list.length ? `<div class="kv"><span class="k">${label}</span><span class="sm" style="max-width:60%">${esc(list.join(', '))}</span></div>` : '');
-  return dialog({ title: r.copied.length ? `${r.copied.length} ${r.copied.length === 1 ? 'mod agregado' : 'mods agregados'}` : 'No se agregó ningún mod', body: `<div>${part('Agregados', r.copied)}${part('Solo para jugadores (omitidos)', r.skippedClient)}${part('Duplicados (se usó el más nuevo)', r.skippedDuplicate)}${part('Ya estaban', r.skippedExisting)}${part('No son mods', r.notMods)}</div><p class="sm">Los archivos originales no se modificaron.</p>`, confirm: 'Listo', cancel: null });
+  return dialog({ title: r.copied.length ? `${r.copied.length} ${r.copied.length === 1 ? 'mod agregado' : 'mods agregados'}` : 'No se agregó ningún mod', body: `<div>${part('Agregados', r.copied)}${part('Solo para jugadores (omitidos)', r.skippedClient)}${part('Dependencias de cliente que el servidor ya no exige', r.clientDepsIgnored || [])}${part('Duplicados (se usó el más nuevo)', r.skippedDuplicate)}${part('Ya estaban', r.skippedExisting)}${part('No son mods', r.notMods)}</div><p class="sm">Los archivos originales no se modificaron.</p>`, confirm: 'Listo', cancel: null });
 }
 async function importPaths(paths) {
   if (isActive(state.server)) { toast('Detené el servidor antes de agregar mods.', 'error'); return; }

@@ -38,6 +38,12 @@ pub enum Action {
     SetMemory { mb: u32 },
     /// Registra la aceptación del EULA (solo con autorización explícita).
     AcceptEula,
+    /// Fabric: un mod del servidor declara como obligatoria una dependencia que solo existe en el
+    /// cliente (por ejemplo, Mod Menu). Se usa el mecanismo oficial de Fabric Loader
+    /// (`config/fabric_loader_dependencies.json`, «-depends») para que el servidor no la exija.
+    /// No modifica ningún jar.
+    #[serde(rename_all = "camelCase")]
+    IgnoreClientDependency { mod_id: String, dep: String },
     /// Vuelve a un punto de restauración (afecta al mundo: siempre con autorización).
     #[serde(rename_all = "camelCase")]
     RestoreSnapshot { snap_id: String, label: String },
@@ -127,8 +133,14 @@ pub struct JarInfo {
     pub name: String,
     pub version: String,
     pub environment: String,
-    /// id de dependencia → condiciones (alguna tiene que cumplirse)
+    /// Dependencias OBLIGATORIAS en el servidor: id → condiciones (alguna tiene que cumplirse).
+    /// En Forge/NeoForge las de `side="CLIENT"` no cuentan acá.
     pub depends: BTreeMap<String, Vec<String>>,
+    /// Dependencias opcionales (Fabric `recommends`/`suggests`, Forge `mandatory=false`, NeoForge
+    /// `type="optional"`, o de lado cliente): nunca hacen falta para que el servidor arranque.
+    pub optional: BTreeSet<String>,
+    /// Incompatibilidades declaradas (Fabric `breaks`, NeoForge `type="incompatible"`).
+    pub breaks: BTreeMap<String, Vec<String>>,
     /// ids que aporta este jar (propio, `provides` y jars anidados)
     pub provides: BTreeSet<String>,
 }
@@ -175,6 +187,10 @@ pub fn read_jar(path: &Path) -> JarInfo {
         info.version = s("version");
         info.environment = if s("environment").is_empty() { "*".into() } else { s("environment") };
         if let Some(Value::Object(d)) = v.get("depends") { for (k, c) in d { info.depends.insert(k.clone(), cond_list(c)); } }
+        for key in ["recommends", "suggests"] {
+            if let Some(Value::Object(d)) = v.get(key) { info.optional.extend(d.keys().cloned()); }
+        }
+        if let Some(Value::Object(d)) = v.get("breaks") { for (k, c) in d { info.breaks.insert(k.clone(), cond_list(c)); } }
         provides_of(&mut z, 0, &mut info.provides);
         return info;
     }
@@ -190,8 +206,107 @@ pub fn read_jar(path: &Path) -> JarInfo {
         info.version = field("version");
         info.environment = "*".into();
         info.provides.insert(info.id.clone());
+        for d in forge_deps(&t) {
+            if d.mod_id.is_empty() { continue; }
+            if d.incompatible { info.breaks.insert(d.mod_id, vec![d.range]); }
+            else if d.required && d.side != "CLIENT" { info.depends.insert(d.mod_id, vec![d.range]); }
+            else { info.optional.insert(d.mod_id); }
+        }
     }
     info
+}
+
+/// Una dependencia de `mods.toml` / `neoforge.mods.toml`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ForgeDep { pub mod_id: String, pub required: bool, pub incompatible: bool, pub side: String, pub range: String }
+
+/// Lee los bloques `[[dependencies.<mod>]]`. Forge usa `mandatory=true|false`; NeoForge,
+/// `type="required"|"optional"|"incompatible"|"discouraged"`. `side` = BOTH | CLIENT | SERVER.
+pub fn forge_deps(toml: &str) -> Vec<ForgeDep> {
+    let mut out: Vec<ForgeDep> = vec![];
+    let mut cur: Option<ForgeDep> = None;
+    for raw in toml.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.starts_with("[[") || (line.starts_with('[') && !line.starts_with("[[")) {
+            if let Some(d) = cur.take() { out.push(d); }
+            if line.starts_with("[[dependencies") {
+                // Forge: obligatoria por defecto si no dice nada; NeoForge también («required»).
+                cur = Some(ForgeDep { required: true, side: "BOTH".into(), ..Default::default() });
+            }
+            continue;
+        }
+        let Some(d) = cur.as_mut() else { continue };
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+        match k.trim() {
+            "modId" => d.mod_id = v,
+            "mandatory" => d.required = v == "true",
+            "type" => { let t = v.to_lowercase(); d.required = t == "required"; d.incompatible = t == "incompatible"; }
+            "side" => d.side = v.to_uppercase(),
+            "versionRange" => d.range = v,
+            _ => {}
+        }
+    }
+    if let Some(d) = cur { out.push(d); }
+    out
+}
+
+/// ¿`version` está en un rango de Maven (Forge/NeoForge)? `[1.20.1,1.21)`, `[47,)`, `(,2.0]`,
+/// varios rangos separados por coma, o una versión suelta (= «cualquiera desde esa»).
+pub fn maven_matches(range: &str, version: &str) -> bool {
+    let r = range.trim();
+    if r.is_empty() || r == "*" { return true; }
+    if !r.starts_with(['[', '(']) { return cmp_ver(version, r) != std::cmp::Ordering::Less; }
+    let mut parts = vec![];
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in r.char_indices() {
+        match c { '[' | '(' => { if depth == 0 { start = i; } depth += 1; } ']' | ')' => { depth -= 1; if depth == 0 { parts.push(&r[start..=i]); } } _ => {} }
+    }
+    parts.iter().any(|p| {
+        let (lo_inc, hi_inc) = (p.starts_with('['), p.ends_with(']'));
+        let inner = &p[1..p.len() - 1];
+        let (lo, hi) = match inner.split_once(',') { Some((a, b)) => (a.trim(), b.trim()), None => (inner.trim(), inner.trim()) };
+        use std::cmp::Ordering::*;
+        let lo_ok = lo.is_empty() || match cmp_ver(version, lo) { Greater => true, Equal => lo_inc, Less => false };
+        let hi_ok = hi.is_empty() || match cmp_ver(version, hi) { Less => true, Equal => hi_inc, Greater => false };
+        lo_ok && hi_ok
+    })
+}
+
+/// Mods conocidos que solo funcionan en el cliente (sirven aunque no haya internet). Con internet
+/// también vale lo que dice Modrinth (`server_side: unsupported`).
+pub const KNOWN_CLIENT_ONLY: &[&str] = &[
+    "modmenu", "sodium", "iris", "indium", "continuity", "entityculling", "betterf3", "zoomify",
+    "sodium-extra", "reeses-sodium-options", "lambdynlights", "dynamic_fps", "dynamicfps", "cull-leaves",
+];
+
+/// Archivo oficial de Fabric Loader para corregir dependencias mal declaradas.
+pub const FABRIC_OVERRIDES: &str = "config/fabric_loader_dependencies.json";
+
+/// Agrega «`mod_id` no exige `dep`» al archivo de Fabric, conservando lo que ya hubiera.
+pub fn add_fabric_override(run_dir: &Path, mod_id: &str, dep: &str) -> AppResult<()> {
+    let path = run_dir.join(FABRIC_OVERRIDES);
+    let mut v: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({ "version": 1, "overrides": {} }));
+    if !v.get("overrides").map(|o| o.is_object()).unwrap_or(false) { v["overrides"] = serde_json::json!({}); }
+    v["version"] = 1.into();
+    let entry = v["overrides"].as_object_mut().unwrap().entry(mod_id.to_string()).or_insert_with(|| serde_json::json!({}));
+    if !entry.is_object() { *entry = serde_json::json!({}); }
+    let minus = entry.as_object_mut().unwrap().entry("-depends".to_string()).or_insert_with(|| serde_json::json!({}));
+    if !minus.is_object() { *minus = serde_json::json!({}); }
+    minus.as_object_mut().unwrap().insert(dep.to_string(), "*".into());
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| AppError::io("No se pudo crear la carpeta config", e))?;
+    paths::write_atomic(&path, serde_json::to_string_pretty(&v).unwrap().as_bytes())
+}
+
+/// Dependencias que el archivo de Fabric ya hace ignorar: (mod, dependencia).
+pub fn fabric_overrides(run_dir: &Path) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    let Some(v) = std::fs::read_to_string(run_dir.join(FABRIC_OVERRIDES)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return out };
+    if let Some(Value::Object(o)) = v.get("overrides") {
+        for (m, e) in o { if let Some(Value::Object(d)) = e.get("-depends") { for k in d.keys() { out.insert((m.clone(), k.clone())); } } }
+    }
+    out
 }
 
 const BUILTIN: &[&str] = &["minecraft", "java", "fabricloader", "fabric-loader", "quilt_loader", "forge", "neoforge"];
@@ -303,6 +418,36 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
             by_hash.get(&h).map(|v| (j.file.clone(), v.clone()))
         }).collect();
 
+        // ── Conjunto completo antes de proponer nada ──
+        // Qué mods solo funcionan en el cliente, qué exige cada mod del servidor y qué dependencias
+        // ya se corrigieron con el archivo oficial de Fabric. Con esto una misma dependencia nunca
+        // recibe dos reparaciones opuestas («apartar» y «volver a instalar»): ese era el bucle de
+        // Mod Menu (Stone Vaults, Dungeons and Towers… lo declaran como obligatorio).
+        let run_dir = paths::server_run_dir(&cfg.id);
+        let overrides = fabric_overrides(&run_dir);
+        let client_jar_of: HashMap<String, &JarInfo> = jars.iter().filter(|j| !j.corrupt && j.environment == "client").flat_map(|j| j.provides.iter().map(move |p| (p.clone(), j))).collect();
+        let server_provided: BTreeSet<String> = jars.iter().filter(|j| !j.corrupt && j.environment != "client").flat_map(|j| j.provides.iter().cloned()).collect();
+        let mut server_side_cache: HashMap<String, Option<modrinth::Project>> = HashMap::new();
+        // dependencia → mods del servidor que la exigen (id, nombre)
+        let mut needs: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for j in jars.iter().filter(|j| !j.corrupt && j.environment != "client" && !j.kind.is_empty()) {
+            for dep in j.depends.keys() {
+                if BUILTIN.contains(&dep.as_str()) || overrides.contains(&(j.id.clone(), dep.clone())) { continue; }
+                needs.entry(dep.clone()).or_default().push((j.id.clone(), if j.name.is_empty() { j.id.clone() } else { j.name.clone() }));
+            }
+        }
+        let mut client_deps: BTreeSet<String> = BTreeSet::new();
+        for dep in needs.keys() {
+            if server_provided.contains(dep) { continue; }
+            let client = if client_jar_of.contains_key(dep) || KNOWN_CLIENT_ONLY.contains(&dep.as_str()) { true } else if online {
+                let p = src.projects(&[modrinth_slug(dep)]).await.ok().and_then(|p| p.into_iter().next());
+                let c = p.as_ref().map(|p| !modrinth::runs_on_server(&p.server_side)).unwrap_or(false);
+                server_side_cache.insert(dep.clone(), p);
+                c
+            } else { false };
+            if client { client_deps.insert(dep.clone()); }
+        }
+
         // Duplicados por id.
         let mut seen: HashMap<String, &JarInfo> = HashMap::new();
         for j in jars.iter().filter(|j| !j.id.is_empty()) {
@@ -342,6 +487,8 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
                 continue;
             }
             if j.environment == "client" {
+                // Si un mod del servidor lo exige, se resuelve junto con esa dependencia (abajo).
+                if j.provides.iter().any(|p| client_deps.contains(p) && needs.contains_key(p)) { continue; }
                 add(&mut problems, Problem { id: format!("client-{}", j.file), kind: "client_only".into(),
                     title: format!("{label} es solo para el Minecraft de cada jugador"),
                     explanation: "Es un mod de cliente: no tiene que estar en el servidor y puede impedir que arranque.".into(),
@@ -349,8 +496,9 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
                     technical: vec![] });
                 continue;
             }
+            let range_ok = |conds: &Vec<String>, v: &str| if j.kind == "fabric" { conds.iter().any(|c| fabric_matches(c, v)) } else { conds.iter().any(|c| maven_matches(c, v)) };
             if let Some(conds) = j.depends.get("minecraft") {
-                if !conds.iter().any(|c| fabric_matches(c, &cfg.mc_version)) {
+                if !range_ok(conds, &cfg.mc_version) {
                     let fix = replacement(&format!("La versión instalada pide Minecraft {}", conds.join(" o "))).or_else(|| Some(Fix { summary: format!("Apartar {label}"), changes: vec![format!("No se encontró una versión para {}; se aparta a la Papelera", cfg.mc_version)], actions: vec![Action::SetAside { file: j.file.clone() }], needs_authorization: false }));
                     add(&mut problems, Problem { id: format!("mc-{}", j.file), kind: "mc_version".into(),
                         title: format!("{label} es para otra versión de Minecraft"),
@@ -359,9 +507,24 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
                 }
             }
             for (dep, conds) in &j.depends {
-                if BUILTIN.contains(&dep.as_str()) || provided.contains(dep) { continue; }
+                if BUILTIN.contains(&dep.as_str()) || overrides.contains(&(j.id.clone(), dep.clone())) || client_deps.contains(dep) { continue; }
+                if provided.contains(dep) {
+                    // Está, pero ¿en una versión que este mod acepta?
+                    if let Some(d) = jars.iter().find(|x| !x.corrupt && x.id == *dep && !x.version.is_empty()) {
+                        if !range_ok(conds, &d.version) {
+                            let dl = if d.name.is_empty() { d.id.clone() } else { d.name.clone() };
+                            add(&mut problems, Problem { id: format!("depver-{dep}-{}", j.id), kind: "dependency_version".into(),
+                                title: format!("{label} necesita otra versión de {dl}"),
+                                explanation: format!("{label} pide {dl} {}, y está instalada la {}.", conds.join(" o "), d.version),
+                                fix: Some(Fix { summary: format!("Cambiar {dl} por una versión compatible con {} {}", cfg.loader.name(), cfg.mc_version), changes: vec![format!("Apartar {} e instalar la versión compatible de Modrinth (si existe)", d.file)],
+                                    actions: vec![Action::SetAside { file: d.file.clone() }, Action::InstallVersion { project_id: modrinth_slug(dep), version_id: String::new(), title: dl.clone(), version_number: String::new(), replaces: Some(d.file.clone()) }], needs_authorization: false }),
+                                technical: vec![format!("{} depende de {dep} {}; instalada {}", j.file, conds.join(" | "), d.version)] });
+                        }
+                    }
+                    continue;
+                }
                 let slug = modrinth_slug(dep);
-                let found = if online { src.projects(&[slug.clone()]).await.ok().and_then(|p| p.into_iter().next()) } else { None };
+                let found = match server_side_cache.get(dep) { Some(p) => p.clone(), None if online => src.projects(&[slug.clone()]).await.ok().and_then(|p| p.into_iter().next()), None => None };
                 add(&mut problems, Problem { id: format!("dep-{dep}"), kind: "missing_dependency".into(),
                     title: format!("A {label} le falta {dep}"),
                     explanation: format!("{label} necesita «{dep}» para funcionar, y no está instalado."),
@@ -369,6 +532,39 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
                     technical: vec![format!("{} depende de {dep} {}", j.file, conds.join(" | "))] });
             }
         }
+        // Incompatibilidades declaradas entre dos mods instalados.
+        for j in jars.iter().filter(|j| !j.corrupt) {
+            for (other, conds) in &j.breaks {
+                let Some(o) = jars.iter().find(|x| !x.corrupt && x.provides.contains(other) && x.file != j.file) else { continue };
+                let ok = if j.kind == "fabric" { conds.iter().any(|c| fabric_matches(c, &o.version)) } else { conds.iter().any(|c| maven_matches(c, &o.version)) };
+                if !ok { continue; }
+                let (a, b) = (if j.name.is_empty() { &j.id } else { &j.name }, if o.name.is_empty() { &o.id } else { &o.name });
+                add(&mut problems, Problem { id: format!("breaks-{}-{}", j.id, o.id), kind: "conflict".into(),
+                    title: format!("{a} no funciona junto con {b}"),
+                    explanation: format!("{a} declara que es incompatible con {b} {}. Hay que elegir uno de los dos (o una versión de {b} que no esté en ese rango).", o.version),
+                    fix: None, technical: vec![format!("{} rompe {other} {}", j.file, conds.join(" | "))] });
+            }
+        }
+
+        // Dependencias obligatorias que solo existen en el cliente.
+        for dep in &client_deps {
+            let Some(who) = needs.get(dep) else { continue };
+            let client_jar = client_jar_of.get(dep);
+            let dl = client_jar.map(|c| if c.name.is_empty() { c.id.clone() } else { c.name.clone() }).unwrap_or_else(|| dep.clone());
+            let names: Vec<String> = who.iter().map(|(_, n)| n.clone()).collect();
+            let list = match names.len() { 1 => names[0].clone(), _ => format!("{} y {}", names[..names.len() - 1].join(", "), names[names.len() - 1]) };
+            let mut actions: Vec<Action> = who.iter().map(|(m, _)| Action::IgnoreClientDependency { mod_id: m.clone(), dep: dep.clone() }).collect();
+            let mut changes = vec![format!("En {FABRIC_OVERRIDES} (archivo oficial de Fabric Loader): {list} deja{} de exigir «{dep}» en el servidor. No se modifica ningún mod.", if names.len() > 1 { "n" } else { "" })];
+            if let Some(c) = client_jar { actions.push(Action::SetAside { file: c.file.clone() }); changes.push(format!("Apartar {} del servidor (va a la Papelera)", c.file)); }
+            changes.push(format!("{dl} sigue en el Minecraft de cada jugador, donde sí funciona."));
+            add(&mut problems, Problem { id: format!("cdep-{dep}"), kind: "client_dependency".into(),
+                title: format!("{list} {} {dl}, que solo funciona en el cliente", if names.len() > 1 { "piden" } else { "pide" }),
+                explanation: format!("{dl} es un mod de cliente: en un servidor dedicado no se carga. {list} lo declara{} como obligatorio aunque en el servidor no lo usa{}. Por eso, al quitarlo, el servidor lo volvía a pedir. La solución no es instalarlo en el servidor: es indicarle a Fabric que no lo exija ahí.",
+                    if names.len() > 1 { "n" } else { "" }, if names.len() > 1 { "n" } else { "" }),
+                fix: (want == "fabric").then(|| Fix { summary: format!("Que el servidor no exija {dl} y dejarlo solo en el cliente"), changes, actions, needs_authorization: false }),
+                technical: who.iter().map(|(m, _)| format!("{m} depende de {dep} (obligatoria); {dep} es solo de cliente")).collect() });
+        }
+
         // Error de mixin que nombra a un mod (solo si no se encontró otra causa).
         if problems.is_empty() {
             if let Some(c) = RE_MIXIN_MOD.captures(&log) {
@@ -478,6 +674,11 @@ pub async fn apply<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, action
             }
             Action::SetMemory { mb } => { cfg.memory_mb = *mb; applied.push(format!("Memoria {mb} MB")); }
             Action::AcceptEula => { cfg.eula_accepted_at = Some(chrono::Local::now().to_rfc3339()); applied.push("EULA aceptado".into()); }
+            Action::IgnoreClientDependency { mod_id, dep } => {
+                progress(&format!("Ajustando dependencias de {mod_id}"), frac);
+                add_fabric_override(&paths::server_run_dir(&cfg.id), mod_id, dep)?;
+                applied.push(format!("{mod_id} ya no exige {dep} en el servidor"));
+            }
             Action::RestoreSnapshot { snap_id, label } => {
                 progress(&format!("Restaurando «{label}»"), frac);
                 crate::snapshots::restore(mgr, &cfg.id, snap_id, &cfg.mc_version)?;
@@ -546,5 +747,156 @@ mod tests {
         assert_eq!(j.depends["minecraft"], vec![">=26.2".to_string()]);
         std::fs::write(tmp.path().join("roto.jar"), b"no es un zip").unwrap();
         assert!(read_jar(&tmp.path().join("roto.jar")).corrupt);
+    }
+
+    // ───── Regresión del bucle de Mod Menu ─────
+
+    struct Offline;
+    impl Source for Offline {
+        async fn version(&self, id: &str) -> AppResult<modrinth::Version> { Err(AppError::not_found(id)) }
+        async fn project_versions(&self, _: &str, _: &str, _: &str) -> AppResult<Vec<modrinth::Version>> { Ok(vec![]) }
+        async fn projects(&self, _: &[String]) -> AppResult<Vec<modrinth::Project>> { Ok(vec![]) }
+        async fn versions_by_sha1(&self, _: &[String]) -> AppResult<HashMap<String, modrinth::Version>> { Ok(HashMap::new()) }
+    }
+
+    fn cfg_fabric() -> ServerConfig {
+        use crate::model::JvmProfile;
+        let _ = paths::init(std::env::temp_dir().join("939host-repair-tests"));
+        let mut b = [0u8; 4];
+        getrandom::getrandom(&mut b).unwrap();
+        let id = format!("r{}", hex::encode(b));
+        std::fs::create_dir_all(paths::server_run_dir(&id).join("mods")).unwrap();
+        ServerConfig {
+            id, name: "T".into(), logo: None, description: String::new(), mc_version: "26.2".into(), loader: Loader::Fabric, loader_version: None, java_major: 25, java_required: 25, java_choice: None,
+            // Puerto libre: otras pruebas en paralelo pueden usar el 25565 (y el reparador lo diría).
+            memory_mb: 2048, jvm_profile: JvmProfile::Balanced, extra_jvm_args: String::new(), port: crate::ports::free_near(47000, &[]).unwrap_or(47001), max_players: 8, motd: String::new(),
+            online_mode: true, whitelist: true, difficulty: "hard".into(), gamemode: "survival".into(), hardcore: false, pvp: true, level_seed: String::new(),
+            level_type: "minecraft:normal".into(), view_distance: 10, simulation_distance: 8, spawn_protection: 16, allow_flight: false, enable_command_block: false,
+            sync_interval_min: 15, restore_interval_min: 15, installed: true, install_error: None, eula_accepted_at: Some("hoy".into()), created_at: String::new(),
+            identity: Default::default(), extra_properties: Default::default(),
+        }
+    }
+
+    fn jar(dir: &Path, file: &str, entry: &str, body: &str) {
+        use std::io::Write;
+        let mut z = zip::ZipWriter::new(std::fs::File::create(dir.join(file)).unwrap());
+        z.start_file(entry, zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(body.as_bytes()).unwrap();
+        z.finish().unwrap();
+    }
+
+    /// Metadatos como los reales: Mod Menu es `environment: client`; Stone Vaults y Dungeons and
+    /// Towers lo declaran en `depends` (obligatorio) y JEI/EMI solo en `suggests`.
+    fn mods_like_the_real_ones(dir: &Path, with_modmenu: bool) {
+        jar(dir, "fabric-api.jar", "fabric.mod.json", r#"{"id":"fabric-api","name":"Fabric API","version":"0.140.0","provides":["fabric"],"depends":{"fabricloader":"*","minecraft":">=26.2"}}"#);
+        jar(dir, "stonevaults.jar", "fabric.mod.json", r#"{"id":"stonevaults","name":"Stone Vaults","version":"1.4","environment":"*","depends":{"fabric-api":"*","modmenu":"*","minecraft":"26.2"},"suggests":{"emi":"*"}}"#);
+        jar(dir, "dungeons-and-towers.jar", "fabric.mod.json", r#"{"id":"mr_dungeons_andtaverns","name":"Dungeons and Towers","version":"5.0","depends":{"modmenu":">=10","minecraft":"26.2"},"recommends":{"jei":"*"}}"#);
+        if with_modmenu { jar(dir, "modmenu.jar", "fabric.mod.json", r#"{"id":"modmenu","name":"Mod Menu","version":"17.0.0","environment":"client","depends":{"minecraft":"26.2"}}"#); }
+    }
+
+    #[tokio::test]
+    async fn mod_menu_no_genera_un_bucle() {
+        let cfg = cfg_fabric();
+        let dir = mods::mods_dir(&cfg.id);
+        mods_like_the_real_ones(&dir, true);
+        let mgr = Manager::new(std::sync::Arc::new(crate::events::NoEvents));
+        let d = analyze(&Offline, &mgr, &cfg, 8192, false).await;
+        // Una sola explicación para Mod Menu: ni «apartalo» por un lado ni «instalalo» por el otro.
+        assert!(!d.problems.iter().any(|p| p.kind == "client_only"), "{:?}", d.problems.iter().map(|p| &p.title).collect::<Vec<_>>());
+        assert!(!d.problems.iter().any(|p| p.kind == "missing_dependency"), "una dependencia de cliente no se manda a instalar");
+        assert!(!d.problems.iter().any(|p| p.title.contains("emi") || p.title.contains("jei")), "las opcionales no son problemas");
+        let p = d.problems.iter().find(|p| p.kind == "client_dependency").expect("explica la causa real");
+        assert!(p.title.contains("Stone Vaults") && p.title.contains("Dungeons and Towers") && p.title.contains("Mod Menu"), "{}", p.title);
+        let fix = p.fix.clone().unwrap();
+        assert!(fix.actions.contains(&Action::SetAside { file: "modmenu.jar".into() }));
+        assert!(fix.actions.contains(&Action::IgnoreClientDependency { mod_id: "stonevaults".into(), dep: "modmenu".into() }));
+        assert!(!fix.actions.iter().any(|a| matches!(a, Action::InstallVersion { .. })));
+
+        // Se aplica y se vuelve a analizar: ya no queda nada que reparar (sin bucle).
+        apply(&Offline, &mgr, &cfg, &fix.actions, |_, _| {}).await.unwrap();
+        assert!(!dir.join("modmenu.jar").exists());
+        let ov = fabric_overrides(&paths::server_run_dir(&cfg.id));
+        assert!(ov.contains(&("stonevaults".into(), "modmenu".into())) && ov.contains(&("mr_dungeons_andtaverns".into(), "modmenu".into())));
+        let again = analyze(&Offline, &mgr, &cfg, 8192, false).await;
+        assert!(again.problems.is_empty(), "después de reparar no vuelve a pedir nada: {:?}", again.problems.iter().map(|p| &p.title).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn sin_mod_menu_tampoco_lo_manda_a_instalar() {
+        let cfg = cfg_fabric();
+        mods_like_the_real_ones(&mods::mods_dir(&cfg.id), false);
+        let mgr = Manager::new(std::sync::Arc::new(crate::events::NoEvents));
+        let d = analyze(&Offline, &mgr, &cfg, 8192, false).await;
+        let p = d.problems.iter().find(|p| p.kind == "client_dependency").expect("reconoce Mod Menu como de cliente aunque no esté");
+        assert!(!p.fix.as_ref().unwrap().actions.iter().any(|a| matches!(a, Action::InstallVersion { .. } | Action::SetAside { .. })));
+    }
+
+    #[test]
+    fn importar_no_copia_mod_menu_y_ajusta_la_dependencia() {
+        let cfg = cfg_fabric();
+        let src = tempfile::tempdir().unwrap();
+        mods_like_the_real_ones(src.path(), true);
+        let r = mods::import_folder(&cfg, src.path()).unwrap();
+        assert!(r.skipped_client.iter().any(|x| x.contains("Mod Menu")));
+        assert!(!mods::mods_dir(&cfg.id).join("modmenu.jar").exists());
+        assert_eq!(r.client_deps_ignored.len(), 2, "{:?}", r.client_deps_ignored);
+        assert!(fabric_overrides(&paths::server_run_dir(&cfg.id)).contains(&("stonevaults".into(), "modmenu".into())));
+    }
+
+    #[test]
+    fn archivo_de_fabric_conserva_lo_que_habia() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("config")).unwrap();
+        std::fs::write(tmp.path().join(FABRIC_OVERRIDES), r#"{"version":1,"overrides":{"otro":{"+depends":{"x":">=2"}}}}"#).unwrap();
+        add_fabric_override(tmp.path(), "stonevaults", "modmenu").unwrap();
+        add_fabric_override(tmp.path(), "stonevaults", "modmenu").unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(tmp.path().join(FABRIC_OVERRIDES)).unwrap()).unwrap();
+        assert_eq!(v["overrides"]["otro"]["+depends"]["x"], ">=2", "no se pierde lo que puso otra persona");
+        assert_eq!(v["overrides"]["stonevaults"]["-depends"]["modmenu"], "*");
+    }
+
+    #[test]
+    fn forge_y_neoforge_distinguen_obligatorias_opcionales_y_de_cliente() {
+        let toml = r#"
+modLoader="javafml"
+[[mods]]
+modId="aventura"
+displayName="Aventura"
+version="2.0"
+[[dependencies.aventura]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    side="BOTH"
+[[dependencies.aventura]]
+    modId="geckolib"
+    mandatory=true
+    versionRange="[4.4,5)"
+    side="BOTH"
+[[dependencies.aventura]]
+    modId="jei"
+    mandatory=false
+    side="BOTH"
+[[dependencies.aventura]]
+    modId="oculus" # solo pantalla
+    type="required"
+    side="CLIENT"
+[[dependencies.aventura]]
+    modId="optifine"
+    type="incompatible"
+    versionRange="[1,)"
+"#;
+        let d = forge_deps(toml);
+        assert_eq!(d.len(), 5);
+        let tmp = tempfile::tempdir().unwrap();
+        jar(tmp.path(), "aventura.jar", "META-INF/mods.toml", toml);
+        let j = read_jar(&tmp.path().join("aventura.jar"));
+        assert!(j.depends.contains_key("geckolib") && j.depends.contains_key("forge"));
+        assert!(!j.depends.contains_key("jei") && j.optional.contains("jei"), "opcional");
+        assert!(!j.depends.contains_key("oculus") && j.optional.contains("oculus"), "de lado cliente no es obligatoria en el servidor");
+        assert!(j.breaks.contains_key("optifine"));
+        assert!(maven_matches("[4.4,5)", "4.6.1") && !maven_matches("[4.4,5)", "5.0") && !maven_matches("[4.4,5)", "4.3"));
+        assert!(maven_matches("[47,)", "52.0.1") && maven_matches("(,2.0]", "2.0") && !maven_matches("(,2.0)", "2.0"));
+        assert!(maven_matches("[1.20.1,1.21),[1.21.4,1.22)", "1.21.5") && !maven_matches("[1.20.1,1.21),[1.21.4,1.22)", "1.21.2"));
     }
 }
