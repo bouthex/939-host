@@ -138,4 +138,43 @@ mod tests {
         let s = "Zombis ñandú \\ prueba";
         assert_eq!(unescape(&escape(s)), s);
     }
+
+    /// Red team (vuelta 2): una coanfitriona activa la consola remota en el `server.properties`
+    /// que viaja con cada punto de restauración, o en la configuración avanzada. En la PC que aloja
+    /// un servidor del grupo, RCON, query y el protocolo de administración quedan apagados o locales.
+    #[test]
+    fn otra_pc_no_abre_la_consola_remota_en_un_servidor_del_grupo() {
+        let _ = paths::init(std::env::temp_dir().join(format!("h939-props-{}", std::process::id())));
+        let cfg_for = |id: &str| -> ServerConfig {
+            let mut c: ServerConfig = serde_json::from_value(serde_json::json!({
+                "id": id, "name": "x", "description": "", "mcVersion": "1.21.1", "loader": "vanilla",
+                "loaderVersion": null, "javaMajor": 21, "memoryMb": 1024, "jvmProfile": "balanced", "extraJvmArgs": "", "port": 25565,
+                "maxPlayers": 4, "motd": "", "onlineMode": true, "whitelist": false, "difficulty": "easy", "gamemode": "survival",
+                "hardcore": false, "pvp": true, "levelSeed": "", "levelType": "minecraft:normal", "viewDistance": 8, "simulationDistance": 6,
+                "spawnProtection": 0, "allowFlight": false, "enableCommandBlock": false, "syncIntervalMin": 15, "restoreIntervalMin": 15,
+                "installed": true, "installError": null, "eulaAcceptedAt": "x", "createdAt": "x",
+                "identity": { "publicKey": "a", "accessCode": "X" }, "extraProperties": {}
+            })).unwrap();
+            c.extra_properties.insert("enable-rcon".into(), "true".into());
+            c.extra_properties.insert("rcon.password".into(), "clave-de-otra-pc".into());
+            c
+        };
+        let hostile = "enable-rcon=true\nrcon.port=25575\nenable-query=true\nmanagement-server-enabled=true\nmanagement-server-host=0.0.0.0\n";
+        let prepare = |id: &str, shared: bool| {
+            let dir = paths::server_run_dir(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("server.properties"), hostile).unwrap();
+            crate::network::save_share(id, &crate::network::ShareConfig { enabled: shared, ..Default::default() }).unwrap();
+            write_for(&cfg_for(id)).unwrap();
+            read(&dir.join("server.properties"))
+        };
+        let p = prepare(&format!("props-grupo-{}", std::process::id()), true);
+        assert_eq!(p.get("enable-rcon").map(String::as_str), Some("false"), "{p:?}");
+        assert_eq!(p.get("enable-query").map(String::as_str), Some("false"), "{p:?}");
+        assert_eq!(p.get("management-server-enabled").map(String::as_str), Some("false"), "{p:?}");
+        assert_eq!(p.get("management-server-host").map(String::as_str), Some("localhost"), "{p:?}");
+        // Un servidor que no se comparte es de esta PC: su dueña puede usar RCON si quiere.
+        let p = prepare(&format!("props-solo-{}", std::process::id()), false);
+        assert_eq!(p.get("enable-rcon").map(String::as_str), Some("true"), "{p:?}");
+    }
 }

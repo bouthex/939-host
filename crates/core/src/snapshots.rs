@@ -660,6 +660,32 @@ mod tests {
         assert!(crate::modguard::received(&b).contains(&h), "el mod llegado de otra PC queda marcado como recibido");
     }
 
+    /// Red team (vuelta 2): un índice comprimido chico que al descomprimirse ocupa cientos de MB
+    /// (bomba de compresión) mandado por otra PC. Se corta en 128 MB y se rechaza.
+    #[test]
+    fn bomba_de_compresion_en_el_indice_se_rechaza() {
+        use std::io::Write;
+        // Un índice válido, rellenado con 200 MB de espacios (JSON válido): sin el límite se
+        // aceptaría; comprimido ocupa unos cientos de KB.
+        let a = setup();
+        let s1 = capture(&a, "", "manual", "26.2").unwrap();
+        let json = serde_json::to_vec(&read_snapshot(&a, &s1.id).unwrap()).unwrap();
+        let pack = |pad_mb: usize| {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            enc.write_all(&json[..1]).unwrap();
+            let chunk = vec![b' '; 1024 * 1024];
+            for _ in 0..pad_mb { enc.write_all(&chunk).unwrap(); }
+            enc.write_all(&json[1..]).unwrap();
+            enc.finish().unwrap()
+        };
+        assert!(manifest_info(&pack(1)).is_ok(), "control: el mismo índice con poco relleno es válido");
+        let bomb = pack(200);
+        assert!(bomb.len() < 2 * 1024 * 1024, "la bomba tiene que ser chica: {}", bomb.len());
+        assert!(manifest_info(&bomb).is_err(), "un índice de 200 MB descomprimidos tenía que rechazarse");
+        // Más grande que el límite de 64 MB comprimidos: ni se intenta descomprimir.
+        assert!(manifest_info(&vec![0u8; 64 * 1024 * 1024 + 1]).is_err());
+    }
+
     #[test]
     fn secuencia_enorme_no_desborda() {
         let a = setup();

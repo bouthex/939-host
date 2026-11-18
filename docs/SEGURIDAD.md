@@ -5,7 +5,8 @@ el código. Las pruebas están en `crates/cluster/src/cert.rs`, `crates/cluster/
 `crates/cluster/tests/seguridad.rs`, `crates/core/src/files.rs` y `crates/core/src/modguard.rs`.
 
 939 Host **no es invulnerable**, no tiene ninguna certificación y no promete seguridad absoluta.
-Al final se listan los riesgos que siguen existiendo.
+Al final se listan los riesgos que siguen existiendo. Los intentos de vulnerarlo, las fallas que
+encontraron y las mediciones de rendimiento están en [`RED-TEAM.md`](RED-TEAM.md).
 
 ## Principios
 

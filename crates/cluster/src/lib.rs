@@ -411,6 +411,17 @@ fn usable_fresh(cur: Option<&Lease>, share: &ShareConfig, node: &str, latest: &O
     match latest { Some(l) if sync_source_ok(cur, share, node, l.epoch) => l.freshness(), _ => (0, 0) }
 }
 
+/// ¿Esta PC puede votar por `candidate` para reemplazar a la anfitriona de la época `epoch`?
+/// Sin estado: el voto único por época se controla aparte. `cand` es la frescura que anuncia la
+/// candidata (sin firma): no puede ser de una época que esta PC no verificó.
+#[allow(clippy::too_many_arguments)]
+fn vote_conditions(l: &Lease, me: &str, epoch: u64, candidate: &str, remote: &str, cand: (u64, u64), mine: (u64, u64), host_dead: bool, candidate_can_host: bool) -> bool {
+    if l.epoch != epoch || l.state != LeaseState::Hosting || l.host == candidate || l.host == me { return false; }
+    if !host_dead { return false; }
+    if cand < mine || cand.0 > l.epoch { return false; }
+    candidate_can_host && candidate == remote
+}
+
 fn has_copy(server: &str) -> bool { host939_core::instance::load(server).is_ok() }
 
 fn mc_version(server: &str) -> String { host939_core::instance::load(server).map(|c| c.mc_version).unwrap_or_default() }
@@ -2176,12 +2187,10 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             let mine = fresh(&snapshots::latest(&server));
             let agree = inner.with_state(&server, |s| {
                 let Some(l) = &l else { return false };
-                if l.epoch != epoch || l.state != LeaseState::Hosting || l.host == candidate || l.host == inner.me { return false; }
                 let host_seen = s.last_ok.get(&l.host).copied().unwrap_or(inner.started);
-                if host_seen.elapsed() < inner.timing.host_dead.mul_f32(0.8) { return false; }
-                if cand < mine || cand.0 > l.epoch { return false; }
-                if !network::load_share(&server).member(&candidate).map(|m| m.can_host()).unwrap_or(false) { return false; }
-                if candidate != remote { return false; }
+                let host_dead = host_seen.elapsed() >= inner.timing.host_dead.mul_f32(0.8);
+                let can_host = network::load_share(&server).member(&candidate).map(|m| m.can_host()).unwrap_or(false);
+                if !vote_conditions(l, &inner.me, epoch, &candidate, remote, cand, mine, host_dead, can_host) { return false; }
                 match &s.voted {
                     Some((e, c)) if *e == epoch && *c != candidate => false,
                     _ => { s.voted = Some((epoch, candidate.clone())); true }
@@ -2526,5 +2535,22 @@ mod sync_sources {
         let fake: Option<SnapshotInfo> = serde_json::from_value(serde_json::json!({ "id": "x", "createdAt": "", "label": "", "kind": "auto", "mcVersion": "", "fileCount": 0, "totalBytes": 0, "newBytes": 0, "pauseMs": 0, "epoch": 999u64, "seq": u64::MAX })).ok();
         assert!(fake.is_some());
         assert_eq!(usable_fresh(Some(&cur), &share, "coan", &fake), (0, 0));
+    }
+
+    /// Red team (vuelta 3): una candidata anuncia una copia «de la época 999» (el anuncio no tiene
+    /// firma) para ganarle a las demás en la votación. Solo cuenta lo que esta PC verificó.
+    #[test]
+    fn voto_rechaza_epocas_no_verificadas_y_suplantaciones() {
+        let l = lease_at(5, "anfitriona");
+        let ok = |cand: (u64, u64), remote: &str, dead: bool, can: bool| vote_conditions(&l, "yo", 5, "cand", remote, cand, (5, 3), dead, can);
+        assert!(ok((5, 3), "cand", true, true), "control: voto legítimo");
+        assert!(!ok((999, 0), "cand", true, true), "época no verificada");
+        assert!(!ok((6, 0), "cand", true, true), "época siguiente sin permiso");
+        assert!(!ok((5, 2), "cand", true, true), "copia más vieja que la mía");
+        assert!(!ok((5, 3), "otra", true, true), "pide el voto por otra PC");
+        assert!(!ok((5, 3), "cand", false, true), "la anfitriona todavía responde");
+        assert!(!ok((5, 3), "cand", true, false), "una jugadora no puede ser candidata");
+        assert!(!vote_conditions(&l, "yo", 4, "cand", "cand", (5, 3), (5, 3), true, true), "época de la votación vieja");
+        assert!(!vote_conditions(&l, "anfitriona", 5, "cand", "cand", (5, 3), (5, 3), true, true), "la anfitriona no vota contra sí misma");
     }
 }
