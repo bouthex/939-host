@@ -507,3 +507,18 @@ async fn e2e_modpack_mrpack() {
     println!("✔ servidor creado desde un .mrpack: {} {} con {} mods verificados, arranca", loader_label(info.loader), mc, names.len());
 }
 fn loader_label(l: Loader) -> &'static str { l.name() }
+
+/// Los archivos de Mojang contra Log4Shell se descargan con la huella que dice el código (red real).
+#[tokio::test]
+#[ignore]
+async fn e2e_log4shell_archivos() {
+    for (v, name) in [("1.12.2", "112-116"), ("1.8.9", "17-111")] {
+        let d = std::env::temp_dir().join(format!("h939-l4s-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        host939_core::log4shell::ensure(v, &d).await.unwrap_or_else(|e| panic!("{v}: {} {:?}", e.message, e.detail));
+        host939_core::log4shell::check(v, &d).expect("verificado");
+        let xml = std::fs::read_to_string(d.join(host939_core::log4shell::CONFIG_FILE)).unwrap();
+        assert!(xml.contains("<Configuration"), "{v}: es una configuración de Log4j");
+        println!("✔ protección de Mojang para {v} ({name}) descargada y verificada");
+    }
+}

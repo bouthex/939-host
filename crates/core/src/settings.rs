@@ -141,7 +141,7 @@ pub fn apply_autostart(enabled: bool) -> AppResult<()> {
             // se maneja con la tarea de inicio del paquete, que el usuario activa en Windows.
             return Err(crate::error::AppError::invalid("En la versión de Microsoft Store, activalo en Configuración de Windows → Aplicaciones → Inicio → 939 Host."));
         }
-        let mut cmd = std::process::Command::new("reg");
+        let mut cmd = std::process::Command::new(crate::paths::windows_program("reg.exe"));
         if enabled {
             cmd.args(["add", KEY, "/v", "939 Host", "/t", "REG_SZ", "/d", &format!("\"{}\" --minimized", exe.display()), "/f"]);
         } else {

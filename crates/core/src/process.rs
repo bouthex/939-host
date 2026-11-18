@@ -285,6 +285,7 @@ impl Manager {
             .ok_or_else(|| AppError::new("java", format!("Falta Java {}. Reinstalá el servidor desde Ajustes → Avanzado.", cfg.java_major)))?;
         let launch = launch_target(cfg)
             .ok_or_else(|| AppError::new("missing", "Falta el archivo del servidor. Reinstalalo desde Ajustes → Avanzado."))?;
+        crate::log4shell::check(&cfg.mc_version, &run_dir)?;
 
         let mut cmd = Command::new(&java);
         cmd.current_dir(&run_dir).args(jvm_args(cfg));
@@ -694,6 +695,8 @@ pub fn jvm_args(cfg: &ServerConfig) -> Vec<String> {
     if cfg.java_major >= 24 { args.push("--enable-native-access=ALL-UNNAMED".into()); }
     args.push("-Dfile.encoding=UTF-8".into());
     args.extend(split_args(&cfg.extra_jvm_args));
+    // Al final, para que ningún argumento extra la pise (Java toma el último -D repetido).
+    args.extend(crate::log4shell::jvm_flags(&cfg.mc_version));
     args
 }
 
@@ -746,7 +749,7 @@ fn force_kill(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).status();
+        let _ = Command::new(crate::paths::windows_program("taskkill.exe")).args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).status();
     }
     #[cfg(not(windows))]
     {

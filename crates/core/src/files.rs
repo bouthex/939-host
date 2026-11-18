@@ -232,7 +232,7 @@ pub fn search(id: &str, q: &str, active: bool, limit: usize) -> AppResult<Vec<En
 /// cuarentena de mods. Quien escribe acá decide qué código se ejecuta, sin pasar por la
 /// aprobación de mods: desde otra PC no se puede crear, reemplazar, mover ni borrar.
 const RUNTIME_DIRS: &[&str] = &["libraries", "versions", ".fabric", "mods-cuarentena"];
-const RUNTIME_FILES: &[&str] = &["server.jar", "fabric-server-launch.jar", "fabric-server-launcher.properties", "run.bat", "run.sh", "user_jvm_args.txt"];
+const RUNTIME_FILES: &[&str] = &["server.jar", "fabric-server-launch.jar", "fabric-server-launcher.properties", "run.bat", "run.sh", "user_jvm_args.txt", "log4j2-939host.xml"];
 
 /// ¿Puede otra PC del grupo escribir en `rel`? (además de las reglas de `check_write`).
 pub fn remote_write_check(id: &str, rel: &str) -> AppResult<()> {

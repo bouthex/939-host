@@ -279,6 +279,8 @@ pub async fn install(mgr: &Manager, id: String) {
             }
         }
 
+        report("Protegiendo contra fallas conocidas de esta versión", 0.96);
+        crate::log4shell::ensure(&cfg.mc_version, &run).await?;
         report("Escribiendo la configuración", 0.97);
         properties::write_for(&cfg)?;
         let eula = format!("# Aceptado en 939 Host el {}\n# https://aka.ms/MinecraftEULA\neula=true\n", cfg.eula_accepted_at.clone().unwrap_or_default());

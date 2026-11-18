@@ -126,3 +126,10 @@ pub fn dir_size(path: &Path) -> u64 {
     }
     total
 }
+
+/// Programa de Windows por ruta absoluta (`System32`, o la carpeta de Windows para `explorer.exe`).
+/// Nunca se busca por nombre: Windows mira primero la carpeta de la app.
+pub fn windows_program(name: &str) -> PathBuf {
+    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+    if name.eq_ignore_ascii_case("explorer.exe") { root.join(name) } else { root.join("System32").join(name) }
+}

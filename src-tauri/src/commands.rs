@@ -292,7 +292,7 @@ mod link_tests {
 pub fn open_path(target: &str) -> AppResult<()> {
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer").arg(target).spawn().map_err(|e| AppError::io("No se pudo abrir", e))?;
+        std::process::Command::new(host939_core::paths::windows_program("explorer.exe")).arg(target).spawn().map_err(|e| AppError::io("No se pudo abrir", e))?;
     }
     #[cfg(not(windows))]
     {

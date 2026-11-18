@@ -447,7 +447,7 @@ fn mods_de_otra_pc_necesitan_aprobacion() {
     // (argumentos de Java de Forge/NeoForge, librerías, el servidor, el lanzador de Fabric) no se
     // puede escribir desde otra PC, con ninguna forma de escribir la ruta.
     for target in ["libraries/net/neoforged/neoforge/21.1.77/win_args.txt", "LIBRARIES/x.jar", "server.jar", "Server.JAR", "fabric-server-launch.jar",
-                   "fabric-server-launcher.properties", "versions/26.2/server.jar", ".fabric/x.jar", "mods-cuarentena/malo.jar", "./libraries/a.jar"] {
+                   "fabric-server-launcher.properties", "versions/26.2/server.jar", ".fabric/x.jar", "mods-cuarentena/malo.jar", "./libraries/a.jar", "Log4j2-939host.XML"] {
         let e = b.err(&format!("fput {sid} {} {target}", evil.display()));
         assert!(e.contains("qué programa se ejecuta"), "{target}: {e}");
     }

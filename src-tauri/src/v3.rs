@@ -438,7 +438,7 @@ pub fn profile_open(path: String, reveal: bool) -> AppResult<()> {
     if p.extension().and_then(|x| x.to_str()) != Some("mrpack") || !p.is_file() { return Err(AppError::invalid("Archivo de perfil inválido.")); }
     if reveal {
         #[cfg(windows)]
-        { std::process::Command::new("explorer").arg(format!("/select,{}", p.display())).spawn().map_err(|e| AppError::io("No se pudo abrir la carpeta", e))?; return Ok(()); }
+        { std::process::Command::new(host939_core::paths::windows_program("explorer.exe")).arg(format!("/select,{}", p.display())).spawn().map_err(|e| AppError::io("No se pudo abrir la carpeta", e))?; return Ok(()); }
         #[cfg(not(windows))]
         { return crate::commands::open_path(&p.parent().unwrap().display().to_string()); }
     }
