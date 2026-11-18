@@ -266,6 +266,12 @@ struct Inner {
     stopping: std::sync::atomic::AtomicBool,
     /// Límite de intentos de unión (antes de autenticar).
     join_limit: Mutex<RateLimit>,
+    /// Pedidos de control por PC (antes de mirar si es del grupo: cada uno lee disco).
+    ctrl_limit: Mutex<RateLimit>,
+    /// «Sincronizá ya»: cada uno dispara una vuelta de consultas a todo el grupo.
+    sync_now_limit: Mutex<RateLimit>,
+    /// Pedidos de datos (sincronización y archivos) por PC. Una copia de 2 GB son ~260 pedidos.
+    data_limit: Mutex<RateLimit>,
 }
 
 /// Estado de un servidor compartido tal como lo ve esta PC (para la interfaz).
@@ -435,6 +441,8 @@ impl GroupNode {
             ep: ep.clone(), relays, key: iroh::SecretKey::from_bytes(&secret), me, name: RwLock::new((name.to_string(), String::new())), local, timing, started: Instant::now(),
             peers: RwLock::new(peers), conns: Default::default(), state: Default::default(), routes: Default::default(),
             stopping: Default::default(), join_limit: Mutex::new(RateLimit::new(5, 30)),
+            ctrl_limit: Mutex::new(RateLimit::new(CTRL_PER_MIN, 20_000)), sync_now_limit: Mutex::new(RateLimit::new(12, 200)),
+            data_limit: Mutex::new(RateLimit::new(3000, 50_000)),
         });
         let h = Handler(inner.clone());
         let router = Router::builder(ep)
@@ -2052,6 +2060,13 @@ impl ProtocolHandler for Handler {
             let rid = conn.remote_id();
             tokio::spawn(async move {
                 let Ok(req) = wire::read_req::<_, Req>(&mut recv).await else { return };
+                // Límite por PC: el uso normal es de unos pocos pedidos por segundo; una PC que manda
+                // cientos (del grupo o no) no puede ocupar disco, CPU ni red de esta.
+                if !inner.ctrl_limit.lock().unwrap().allow(&remote) {
+                    let _ = wire::write_msg(&mut send, &Resp::Err { msg: "Demasiados pedidos; esperá un momento.".into() }).await;
+                    let _ = send.finish();
+                    return;
+                }
                 if !host939_core::paths::valid_server_id(req.server()) {
                     let _ = wire::write_msg(&mut send, &Resp::Err { msg: "Servidor inválido.".into() }).await;
                     let _ = send.finish();
@@ -2155,6 +2170,7 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             Resp::Vote { agree, sig }
         }
         Req::SyncNow { server } => {
+            if !inner.sync_now_limit.lock().unwrap().allow(remote) { return Resp::Ok; }
             let inner2 = inner.clone();
             tokio::spawn(async move { inner2.tick_server(&server).await; });
             Resp::Ok
@@ -2263,6 +2279,10 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
 fn ct_eq(a: &[u8], b: &[u8]) -> bool { a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0 }
 
 /// Ventana deslizante simple: `per_node` intentos por minuto por PC y `total` en total.
+/// Pedidos de control por minuto y por PC. Con la consulta normal (cada 5 s, o 0,7 s en las
+/// pruebas) una PC manda menos de 100 por minuto por servidor.
+const CTRL_PER_MIN: usize = 600;
+
 struct RateLimit { per_node: usize, total: usize, hits: HashMap<String, Vec<Instant>>, all: Vec<Instant> }
 impl RateLimit {
     fn new(per_node: usize, total: usize) -> Self { RateLimit { per_node, total, hits: HashMap::new(), all: vec![] } }
@@ -2306,6 +2326,7 @@ impl ProtocolHandler for SyncH {
             let remote = remote.clone();
             tokio::spawn(async move {
                 let Ok(req) = wire::read_req::<_, SyncReq>(&mut recv).await else { return };
+                if !inner.data_limit.lock().unwrap().allow(&remote) { let _ = send.reset(3u32.into()); return; }
                 match req {
                     SyncReq::Manifest { server, snap } => {
                         let bytes = if inner.may_sync(&server, &remote) { snapshots::manifest_bytes(&server, &snap).unwrap_or_default() } else { vec![] };

@@ -151,6 +151,10 @@ fn three(tmp: &std::path::Path, env: &[(&str, &str)], port: u16) -> (Node, Node,
     b.ok(&format!("setport {sid} {}", port + 1));
     let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
     c.ok(&format!("join {t}"));
+    // Peor caso: la jugadora C conoce la dirección de B por fuera del protocolo (misma red o una
+    // conexión anterior). 939 Host ya no se la da al unirse, pero B tiene que rechazarla igual.
+    let addr_b = b.ok("myaddr");
+    c.ok(&format!("knowaddr {addr_b}"));
     (a, b, c, sid)
 }
 
@@ -347,6 +351,18 @@ fn mensajes_malformados_y_enormes() {
     assert!(a.ok(&format!("running {sid}")).as_bool().unwrap());
     wait("el grupo sigue completo", Duration::from_secs(20), || b.status(&sid)["members"].as_array().unwrap().len() == 3);
     println!("✔ mensajes malformados, enormes y desconocidos en los 5 protocolos: rechazados sin afectar al grupo");
+    // Inundación de pedidos desde una jugadora: pasado el límite por PC se rechazan, y el grupo
+    // (las demás PCs) sigue funcionando. Incluye «sincronizá ya», que dispara consultas a todos.
+    let r = c.ok(&format!(r#"rawflood {ia} ctrl {{"t":"syncNow","server":"{sid}"}} 200"#));
+    let r2 = c.ok(&format!(r#"rawflood {ia} ctrl {{"t":"info","server":"{sid}"}} 700"#));
+    println!("    inundación: {r} {r2}");
+    assert!(r2["limited"].as_u64().unwrap() > 0, "sin límite de pedidos: {r2}");
+    assert!(a.ok(&format!("running {sid}")).as_bool().unwrap());
+    let before = b.status(&sid)["members"].as_array().unwrap().len();
+    assert_eq!(before, 3);
+    let r = b.ok(&format!(r#"raw {ia} ctrl {{"t":"info","server":"{sid}"}}"#));
+    assert_eq!(r["t"], "info", "la coanfitriona quedó afuera por la inundación de otra PC: {r}");
+    println!("✔ inundación de pedidos: limitada por PC; las demás siguen atendidas");
 }
 
 #[test]
@@ -427,6 +443,19 @@ fn mods_de_otra_pc_necesitan_aprobacion() {
     let evil = tmp.path().join("malo.jar");
     std::fs::write(&evil, b"codigo malicioso").unwrap();
     b.ok(&format!("fput {sid} {} mods/malo.jar", evil.display()));
+    // Desvíos de la cuarentena por el administrador remoto: lo que decide qué programa arranca
+    // (argumentos de Java de Forge/NeoForge, librerías, el servidor, el lanzador de Fabric) no se
+    // puede escribir desde otra PC, con ninguna forma de escribir la ruta.
+    for target in ["libraries/net/neoforged/neoforge/21.1.77/win_args.txt", "LIBRARIES/x.jar", "server.jar", "Server.JAR", "fabric-server-launch.jar",
+                   "fabric-server-launcher.properties", "versions/26.2/server.jar", ".fabric/x.jar", "mods-cuarentena/malo.jar", "./libraries/a.jar"] {
+        let e = b.err(&format!("fput {sid} {} {target}", evil.display()));
+        assert!(e.contains("qué programa se ejecuta"), "{target}: {e}");
+    }
+    b.ok(&format!("fput {sid} {} config/permitido.jar", evil.display()));
+    let e = b.err(&format!("fmv {sid} config/permitido.jar libraries/permitido.jar"));
+    assert!(e.contains("qué programa se ejecuta"), "mover a libraries: {e}");
+    assert!(b.err(&format!("fmkdir {sid} libraries/nueva")).contains("qué programa se ejecuta"));
+    println!("✔ la coanfitriona no puede reemplazar el servidor, las librerías ni los argumentos de Java desde su PC");
     // Pasa a la coanfitriona y vuelve: en cada encendido, lo recibido sin aprobar se aparta.
     a.ok(&format!("handover {sid} {ib}"));
     wait("B aloja", Duration::from_secs(30), || b.ok(&format!("running {sid}")).as_bool().unwrap());

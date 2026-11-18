@@ -64,6 +64,11 @@ impl ProtocolHandler for FilesH {
             let remote = remote.clone();
             tokio::spawn(async move {
                 let Ok(req) = wire::read_req::<_, FileReq>(&mut recv).await else { return };
+                if !inner.data_limit.lock().unwrap().allow(&remote) {
+                    let _ = wire::write_msg(&mut send, &FileResp { ok: false, error: Some("Demasiados pedidos; esperá un momento.".into()), code: Some("busy".into()), ..Default::default() }).await;
+                    let _ = send.finish();
+                    return;
+                }
                 let _ = inner.serve_files(&remote, req, &mut send, &mut recv).await;
                 let _ = send.finish();
                 let _ = send.stopped().await;
@@ -101,6 +106,18 @@ impl Inner {
         let _g = if write {
             match write_lock(&server) { Some(g) => Some(g), None => return wire::write_msg(send, &FileResp { ok: false, error: Some("Hay otra operación con archivos en curso en este servidor.".into()), code: Some("busy".into()), ..Default::default() }).await }
         } else { None };
+        // Desde otra PC no se toca lo que decide qué programa arranca (ver `remote_write_check`).
+        let targets: Vec<&str> = match &req {
+            FileReq::Mkdir { path, .. } | FileReq::Delete { path, .. } | FileReq::Upload { path, .. } => vec![path.as_str()],
+            FileReq::Transfer { from, to, mv, .. } => if *mv { vec![from.as_str(), to.as_str()] } else { vec![to.as_str()] },
+            _ => vec![],
+        };
+        for t in targets {
+            if let Err(e) = lf::remote_write_check(&server, t) {
+                super::audit(&server, "file-runtime-denied", remote);
+                return wire::write_msg(send, &FileResp { ok: false, error: Some(e.message), code: Some("denied".into()), ..Default::default() }).await;
+            }
+        }
         let resp = match req {
             FileReq::List { path, .. } => lf::list(&server, &path, active).map(|entries| FileResp { ok: true, entries, ..Default::default() }).unwrap_or_else(fail),
             FileReq::Search { q, .. } => lf::search(&server, &q, active, 200).map(|entries| FileResp { ok: true, entries, ..Default::default() }).unwrap_or_else(fail),

@@ -227,6 +227,27 @@ pub fn search(id: &str, q: &str, active: bool, limit: usize) -> AppResult<Vec<En
     Ok(out)
 }
 
+/// Lo que define qué programa arranca la PC anfitriona: el servidor, el lanzador de Fabric, las
+/// librerías y los argumentos de Java de Forge/NeoForge (`libraries/…/win_args.txt`), y la
+/// cuarentena de mods. Quien escribe acá decide qué código se ejecuta, sin pasar por la
+/// aprobación de mods: desde otra PC no se puede crear, reemplazar, mover ni borrar.
+const RUNTIME_DIRS: &[&str] = &["libraries", "versions", ".fabric", "mods-cuarentena"];
+const RUNTIME_FILES: &[&str] = &["server.jar", "fabric-server-launch.jar", "fabric-server-launcher.properties", "run.bat", "run.sh", "user_jvm_args.txt"];
+
+/// ¿Puede otra PC del grupo escribir en `rel`? (además de las reglas de `check_write`).
+pub fn remote_write_check(id: &str, rel: &str) -> AppResult<()> {
+    let r = clean(rel)?;
+    let real = resolve(id, rel).unwrap_or_else(|_| r.clone());
+    for p in [r.as_path(), real.as_path()] {
+        let t = top(p).to_lowercase();
+        let single = p.components().count() == 1;
+        if RUNTIME_DIRS.contains(&t.as_str()) || (single && RUNTIME_FILES.contains(&t.as_str())) {
+            return Err(AppError::new("denied", "Esa parte del servidor define qué programa se ejecuta: solo se cambia desde la PC anfitriona (o reinstalando el servidor)."));
+        }
+    }
+    Ok(())
+}
+
 fn check_write(id: &str, rel: &Path, active: bool) -> AppResult<()> {
     if let Some(why) = protected(id, rel, active) { return Err(AppError::busy(why)); }
     Ok(())

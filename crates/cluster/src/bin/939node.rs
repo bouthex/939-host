@@ -123,10 +123,38 @@ mod redteam {
             _ => b"939host/desconocido/9",
         }
     }
+    /// Direcciones que el atacante conoce por fuera del protocolo (misma red, captura de tráfico).
+    static KNOWN: std::sync::Mutex<Vec<EndpointAddr>> = std::sync::Mutex::new(Vec::new());
+    pub fn know(addr: &str) -> Result<Value, String> {
+        let a: EndpointAddr = serde_json::from_str(addr).map_err(|e| e.to_string())?;
+        KNOWN.lock().unwrap().push(a);
+        Ok(json!(true))
+    }
+    fn addr_of(id: EndpointId) -> EndpointAddr {
+        KNOWN.lock().unwrap().iter().rev().find(|a| a.id == id).cloned().unwrap_or_else(|| EndpointAddr::new(id))
+    }
     async fn open(ep: &Endpoint, node: &str, a: &str) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream), String> {
         let id: EndpointId = node.parse().map_err(|_| "id inválido".to_string())?;
-        let c = tokio::time::timeout(Duration::from_secs(10), ep.connect(EndpointAddr::new(id), alpn(a))).await.map_err(|_| "sin respuesta".to_string())?.map_err(|e| format!("conexión rechazada: {e}"))?;
+        let c = tokio::time::timeout(Duration::from_secs(10), ep.connect(addr_of(id), alpn(a))).await.map_err(|_| "sin respuesta".to_string())?.map_err(|e| format!("conexión rechazada: {e}"))?;
         c.open_bi().await.map_err(|e| e.to_string())
+    }
+    /// Manda `n` pedidos iguales por una misma conexión, uno tras otro; devuelve cuántos fueron
+    /// rechazados por el límite de pedidos.
+    pub async fn flood(ep: &Endpoint, node: &str, a: &str, body: &str, n: usize) -> Result<Value, String> {
+        let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let id: EndpointId = node.parse().map_err(|_| "id inválido".to_string())?;
+        let c = tokio::time::timeout(Duration::from_secs(10), ep.connect(addr_of(id), alpn(a))).await.map_err(|_| "sin respuesta".to_string())?.map_err(|e| format!("conexión rechazada: {e}"))?;
+        let (mut limited, mut answered) = (0usize, 0usize);
+        for _ in 0..n {
+            let Ok((mut s, mut r)) = c.open_bi().await else { break };
+            if wire::write_msg(&mut s, &v).await.is_err() { break; }
+            let _ = s.finish();
+            if let Ok(Ok(resp)) = tokio::time::timeout(Duration::from_secs(5), wire::read_msg::<_, Value>(&mut r)).await {
+                answered += 1;
+                if resp["msg"].as_str().unwrap_or("").contains("Demasiados pedidos") { limited += 1; }
+            }
+        }
+        Ok(json!({ "answered": answered, "limited": limited }))
     }
     pub async fn raw(ep: &Endpoint, node: &str, a: &str, body: &str) -> Result<Value, String> {
         let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
@@ -354,6 +382,8 @@ async fn main() {
                 "raw" => redteam::raw(node.endpoint(), &p(1), &p(2), &parts[3..].join(" ")).await,
                 // rawframes <nodo> <alpn> <json> <n>: mensaje y hasta n respuestas en tramas.
                 "rawframes" => redteam::raw_frames(node.endpoint(), &p(1), &p(2), &parts[3..parts.len() - 1].join(" "), parts.last().and_then(|x| x.parse().ok()).unwrap_or(1)).await,
+                // rawflood <nodo> <alpn> <json> <n>: n pedidos seguidos por una conexión.
+                "rawflood" => redteam::flood(node.endpoint(), &p(1), &p(2), &parts[3..parts.len() - 1].join(" "), parts.last().and_then(|x| x.parse().ok()).unwrap_or(1)).await,
                 // rawbytes <nodo> <alpn> <hex>: bytes arbitrarios (mensajes malformados).
                 "rawbytes" => redteam::raw_bytes(node.endpoint(), &p(1), &p(2), &p(3)).await,
                 // forge <sid> <destino> <tipo> <anfitriona> [época]: permiso firmado por ESTA PC con el
@@ -365,6 +395,8 @@ async fn main() {
                 "savelist" => { std::fs::write(p(2), serde_json::to_vec(&host939_core::network::load_share(&p(1))).unwrap()).map_err(|e| e.to_string())?; Ok(serde_json::json!(true)) }
                 "remoteinfo" => redteam::remote_info(node.endpoint(), &p(1)).await,
                 "myaddr" => Ok(serde_json::to_value(node.addr()).unwrap()),
+                // knowaddr <json>: el atacante conoce la dirección de otra PC por fuera del protocolo.
+                "knowaddr" => redteam::know(&parts[1..].join(" ")),
                 "ticketinfo" => { let (a, _) = host939_p2p::parse_ticket(&p(1)).map_err(|e| e.to_string())?; Ok(serde_json::json!({ "ips": a.ip_addrs().count(), "relays": a.relay_urls().count() })) }
                 "peersfile" => Ok(serde_json::json!(std::fs::read_to_string(paths::root().join("peers.json")).unwrap_or_default())),
                 "exit" => { node.shutdown().await; say("@@", "{\"ok\":true,\"v\":\"bye\"}"); std::process::exit(0) }
