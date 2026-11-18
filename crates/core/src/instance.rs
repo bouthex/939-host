@@ -314,6 +314,11 @@ pub async fn install(mgr: &Manager, id: String) {
         }
         Err(e) => {
             if let Ok(mut cfg) = load(&id) { cfg.install_error = Some(e.message.clone()); let _ = save(&cfg); }
+            // El motivo técnico (qué descarga falló y por qué) queda en la consola local para poder
+            // diagnosticar; la consola no se comparte con otras PCs del grupo.
+            if let Some(d) = e.detail.as_deref().filter(|d| !d.is_empty()) {
+                ev.console_line(&id, &format!("[939 Host] La instalación falló: {} Motivo: {d}", e.message));
+            }
             ev.install_progress(&InstallProgress { id: id.clone(), message: "La instalación falló".into(), fraction: 0.0, done: true, error: Some(e.message.clone()) });
         }
     }

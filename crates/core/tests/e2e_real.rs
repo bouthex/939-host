@@ -329,7 +329,10 @@ async fn e2e_cambio_version() {
     println!("✔ actualizado a {new}: copia verificada, mods actualizados, arranque de prueba y mundo con la marca");
 
     // Volver atrás.
-    vc::rollback(&mgr, &cfg.id).await.unwrap();
+    if let Err(e) = vc::rollback(&mgr, &cfg.id).await {
+        for l in rec.console.lock().unwrap().iter().filter(|l| l.starts_with("[939 Host]")) { println!("  consola: {l}"); }
+        panic!("volver atrás falló: {e:?}");
+    }
     let c3 = instance::load(&cfg.id).unwrap();
     assert_eq!(c3.mc_version, old);
     mgr.start(&probe, &c3).unwrap();
