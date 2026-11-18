@@ -59,6 +59,19 @@ permiso nuevo solo si se cumplen las tres condiciones:
 - **Nunca dos anfitrionas a la vez:** se mantiene el aislamiento automático de antes (una
   anfitriona que pierde a la mayoría se detiene).
 
+## Sincronización del mundo
+
+El anuncio de un punto de restauración (época y orden) y su índice los escribe la PC que los
+manda y no tienen firma. Por eso una PC copia un punto solo si:
+
+- viene de una PC que puede hostear según la lista firmada (nunca de una jugadora);
+- su época no es mayor que la del permiso que esta PC ya verificó;
+- si es de la época actual, viene de la anfitriona actual (la única que crea puntos en ella).
+
+Se verifica dos veces: al elegir de quién copiar y al bajar el índice. El origen del punto
+(qué PC lo creó) lo fija quien lo recibe con la identidad autenticada de quien lo mandó, no lo
+que dice el índice. Así los mods que trae cuentan como recibidos y pasan por la cuarentena.
+
 ## Lista de integrantes firmada
 
 - La firma la propietaria. Cada cambio sube la revisión, y se rechaza cualquier lista con revisión
@@ -96,6 +109,12 @@ permiso nuevo solo si se cumplen las tres condiciones:
   PCs solo conocen el relay de la PC privada.
 - **Con relays, nunca se comparten IPs** en códigos de invitación, respuestas `Info`, uniones ni
   `peers.json`. Las otras PCs se encuentran por su identidad.
+- **Al unirse, una jugadora solo recibe cómo llegar a la anfitriona** (antes recibía las
+  direcciones de todas las PCs; en modo directo, con sus IPs).
+- **Direcciones contadas por otra PC:** la dirección propia de una PC solo se acepta si es de
+  ella; las de terceros, solo de quien puede hostear, para integrantes, sin reemplazar lo que ya
+  se sabe (salvo la propietaria) y solo con relays de n0. Así nadie puede hacer que el resto
+  intente llegar a otra PC por un relay propio.
 - **UPnP/NAT-PMP desactivado:** 939 Host no abre puertos en el router.
 - **Minecraft escucha solo en 127.0.0.1.** Permitir la red local es una opción explícita.
 - Los informes de diagnóstico se limpian: sin IPs, sin el nombre de usuario de Windows en las
@@ -111,20 +130,37 @@ permiso nuevo solo si se cumplen las tres condiciones:
 - Con el servidor encendido, el mundo no se modifica, no se descarga y no se borra, sin importar
   cómo se escriba la ruta.
 - Una subida tiene como máximo 8 GB y tiene que dejar 2 GB libres. Las subidas cortadas no dejan
-  archivos parciales.
+  archivos parciales: al cancelar, la PC que sube espera la confirmación de la anfitriona.
+- **Desde otra PC no se toca lo que decide qué programa arranca:** `libraries/` (incluye los
+  argumentos de Java de Forge y NeoForge), `versions/`, `.fabric/`, `mods-cuarentena/`,
+  `server.jar`, el lanzador de Fabric y los archivos de arranque. No se pueden crear,
+  reemplazar, mover ni borrar con ninguna forma de escribir la ruta, y el intento queda
+  auditado. Desde la propia anfitriona sí (es su PC).
 - Los ids de servidor que llegan por la red se validan.
 
 ## Mods (código de terceros)
 
-- Un `.jar` recibido de otra PC (por sincronización o por el administrador remoto) **no se
-  carga** hasta que la propietaria apruebe su huella SHA-256. Si se reemplaza un mod aprobado,
-  vuelve a la cuarentena.
+- Un `.jar` o `.zip` recibido de otra PC (por sincronización o por el administrador remoto),
+  también en subcarpetas de `mods/` (Forge viejo carga `mods/<versión>/`), **no se carga**
+  hasta que la propietaria apruebe su huella SHA-256. Si se reemplaza un mod aprobado, vuelve a
+  la cuarentena.
 - **No es un aislamiento.** Un mod aprobado puede hacer lo mismo que cualquier programa del
   usuario.
 - El proceso de Minecraft corre en un Job Object sin acceso al portapapeles, al escritorio ni a
   los ajustes del sistema. Es endurecimiento parcial, **no una sandbox**.
 - Se evaluaron cuentas separadas de Windows y AppContainer. No se implementaron: exigen permisos
   de administrador o rompen Java y los mods.
+
+## Límites de pedidos
+
+| Canal | Límite por PC | Uso normal |
+|---|---|---|
+| Unión con código | 5 intentos por minuto | 1 |
+| Control (consultas, permisos, votos) | 600 por minuto | menos de 100 por servidor |
+| «Sincronizá ya» | 12 por minuto | pocos |
+| Sincronización y archivos | 3000 por minuto | unos 260 para copiar 2 GB |
+
+Pasado el límite, esa PC recibe «demasiados pedidos» y las demás siguen atendidas.
 
 ## Descargas y compilación
 
@@ -145,7 +181,9 @@ Además:
 - Las acciones de GitHub están fijadas por commit, con permisos mínimos.
 - Ninguna clave va al ejecutable. `scripts/verificar-secretos.sh` lo comprueba en cada release.
 - Los ganchos de prueba y el puerto de depuración de WebView2 solo existen con la característica
-  `pruebas` (compilaciones de CI).
+  `pruebas`. La compilación de prueba de la CI (`939Host-windows-prueba`) la lleva para la prueba
+  de interfaz: abre el puerto de depuración solo si existe la variable `H939_E2E_DEVTOOLS_PORT`.
+  Los releases se compilan sin ella.
 - **CurseForge:** no hay una forma permitida de usar su API sin una clave. 939 Host no incluye
   ninguna. Cada persona puede cargar la suya, que se guarda con DPAPI. Sin clave, se importan los
   modpacks descargados a mano desde la web de CurseForge.
@@ -156,8 +194,8 @@ Además:
 |---|---|---|
 | Externo de internet sin invitación | Conectarse al nodo si conoce su identidad, mandar pedidos y forzar trabajo | Toda operación exige ser del grupo; límite de pedidos y tamaño; secreto de 128 bits |
 | Invitación filtrada | Unirse como el rol de la invitación si llega primero | Un solo uso, vence en 24 h, revocación, aviso a la propietaria, quitar PC |
-| Jugadora maliciosa | Jugar, ver quién aloja y cuándo, ver la lista de integrantes | Sin mundo, sin archivos, sin direcciones ni hardware; no vota por otra, no emite permisos |
-| Coanfitriona maliciosa | Recibe el mundo (lo necesita para alojarlo); puede apagar a la anfitriona con «Recuperar aquí» **solo en grupos de 2 PCs** | Permisos firmados; mods en cuarentena; no puede cambiar roles ni aprobar mods |
+| Jugadora maliciosa | Jugar, ver quién aloja y cuándo, ver la lista de integrantes | Sin mundo, sin archivos, sin direcciones ni hardware; no vota por otra, no emite permisos; no es fuente de sincronización; sus anuncios de direcciones se ignoran; límite de pedidos |
+| Coanfitriona maliciosa | Recibe el mundo (lo necesita para alojarlo); puede apagar a la anfitriona con «Recuperar aquí» **solo en grupos de 2 PCs** | Permisos firmados; mods en cuarentena (también por sincronización); no toca lo que define qué programa arranca; no puede cambiar roles ni aprobar mods |
 | PC del grupo comprometida | Lo mismo que su rol, con sus claves | Quitarla del grupo; recuperación con código si era la propietaria |
 | Propietaria comprometida | Control total del grupo | Código de recuperación (gana sobre su clave); cambiar el código exige espera visible |
 | Relay comprometido | Ver IPs, horarios y volumen | Cifrado de punta a punta; no puede leer ni modificar |
@@ -185,3 +223,13 @@ Además:
 9. **El ejecutable no está firmado digitalmente** (la firma depende de SignPath).
 10. **Todas las PCs del grupo tienen que tener esta versión:** los permisos sin firma de versiones
     anteriores se rechazan.
+11. **El nombre de un mod pendiente lo elige quien lo subió.** La propietaria aprueba una huella;
+    un mod malicioso puede llamarse como uno conocido. Aprobar es confiar en el origen.
+12. **Una coanfitriona elige qué anuncia de sí misma** (frescura de su copia, puntaje): puede
+    quedar primera para alojar si la anfitriona se cae. Puede alojar igual por su rol.
+13. **Configuración de mods aprobados:** algunos mods ejecutan scripts desde `config/` (por
+    ejemplo, KubeJS). Si la propietaria aprueba un mod así, una coanfitriona puede cambiar lo que
+    hace subiendo archivos de configuración.
+14. **Una coanfitriona puede ofrecer un punto falso de una época anterior.** No gana mientras la
+    anfitriona cree puntos en la época actual (con el servidor encendido, cada 15 minutos por
+    defecto, y siempre antes de un traspaso).
