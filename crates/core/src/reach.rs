@@ -240,17 +240,17 @@ mod tests {
     use super::*;
     #[test]
     fn explains_client_side_rejection_from_real_log() {
-        // Líneas reales del servidor «Eventos» (Fabric 26.2 sin mods) con un cliente con modpack.
+        // Formato de un log real de Fabric 26.2 sin mods con un cliente con modpack (nombre y UUID ficticios).
         let mut w = JoinWatch::default();
-        assert!(w.line("[20:55:35] [User Authenticator #1/INFO]: UUID of player Bouthex is 56ab2cb1-b96e-4f09-a519-a10dfe4a883b", "26.2", "fabric", 0).is_none());
-        let i = w.line("[20:55:37] [Server thread/INFO]: Bouthex (56ab2cb1-b96e-4f09-a519-a10dfe4a883b) lost connection: Disconnected", "26.2", "fabric", 0).expect("debería explicar");
+        assert!(w.line("[20:55:35] [User Authenticator #1/INFO]: UUID of player Jugadora1 is 00000000-0000-4000-8000-000000000939", "26.2", "fabric", 0).is_none());
+        let i = w.line("[20:55:37] [Server thread/INFO]: Jugadora1 (00000000-0000-4000-8000-000000000939) lost connection: Disconnected", "26.2", "fabric", 0).expect("debería explicar");
         assert_eq!(i.kind, "client_rejected");
         assert!(i.detail.contains("Error de protocolo de red"));
     }
     #[test]
     fn normal_leave_is_not_an_issue() {
         let mut w = JoinWatch::default();
-        w.line("[x] [User Authenticator #1/INFO]: UUID of player Ana is 56ab2cb1-b96e-4f09-a519-a10dfe4a883b", "26.2", "vanilla", 0);
+        w.line("[x] [User Authenticator #1/INFO]: UUID of player Ana is 00000000-0000-4000-8000-000000000939", "26.2", "vanilla", 0);
         w.line("[x] [Server thread/INFO]: Ana joined the game", "26.2", "vanilla", 0);
         assert!(w.line("[x] [Server thread/INFO]: Ana lost connection: Disconnected", "26.2", "vanilla", 0).is_none());
     }
@@ -259,7 +259,7 @@ mod tests {
         let mut w = JoinWatch::default();
         let i = w.line("[x] [Server thread/INFO]: Disconnecting com.mojang.authlib.GameProfile@1[id=<null>,name=Leo,properties={}] (/127.0.0.1:5): Outdated client! Please use 26.2", "26.2", "vanilla", 0).unwrap();
         assert_eq!(i.kind, "outdated_client");
-        let i = w.line("[x] [Server thread/INFO]: Leo (56ab2cb1-b96e-4f09-a519-a10dfe4a883b) lost connection: You are not white-listed on this server!", "26.2", "vanilla", 0).unwrap();
+        let i = w.line("[x] [Server thread/INFO]: Leo (00000000-0000-4000-8000-000000000939) lost connection: You are not white-listed on this server!", "26.2", "vanilla", 0).unwrap();
         assert_eq!(i.kind, "whitelist");
     }
     #[test]

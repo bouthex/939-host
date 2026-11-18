@@ -198,9 +198,9 @@ mod tests {
 mod redact_tests {
     #[test]
     fn removes_ips_users_and_keeps_the_rest() {
-        let t = "[12:00:01] Steve[/203.0.113.9:51234] logged in; 192.168.0.12 y 10.0.0.1:25565; local 127.0.0.1:25565; ver 1.21.4; 2001:db8:85a3::8a2e:370:7334; ::1; C:\\Users\\Bout\\AppData\\Local\\939Host y /home/bout/x; 12:00:01";
+        let t = "[12:00:01] Steve[/203.0.113.9:51234] logged in; 192.168.0.12 y 10.0.0.1:25565; local 127.0.0.1:25565; ver 1.21.4; 2001:db8:85a3::8a2e:370:7334; ::1; C:\\Users\\Ana\\AppData\\Local\\939Host y /home/ana/x; 12:00:01";
         let r = super::redact(t);
-        for leak in ["203.0.113.9", "192.168.0.12", "10.0.0.1", "2001:db8", "Bout", "/home/bout"] { assert!(!r.contains(leak), "{leak} en {r}"); }
+        for leak in ["203.0.113.9", "192.168.0.12", "10.0.0.1", "2001:db8", "Ana", "/home/ana"] { assert!(!r.contains(leak), "{leak} en {r}"); }
         for keep in ["127.0.0.1:25565", "1.21.4", "12:00:01", "logged in", "::1", "AppData"] { assert!(r.contains(keep), "{keep} falta en {r}"); }
     }
 }
