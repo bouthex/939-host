@@ -80,6 +80,20 @@ async function boot() {
   window.__h939Ready = performance.timeOrigin + performance.now();
   setTimeout(() => $('#splash')?.remove(), 300);
   invoke('notify_ui_ready').catch(() => {});
+  invoke('last_close_notes').then((notes) => { for (const n of notes || []) showLastClose(n); }).catch(() => {});
+}
+
+/* Qué pasó con cada servidor la última vez que 939 Host se cerró de golpe o se apagó Windows. */
+function showLastClose(n) {
+  const name = `«${esc(n.name)}»`;
+  const why = n.cause === 'cierre-inesperado' ? `939 Host se cerró de forma inesperada mientras ${name} estaba encendido.`
+    : n.cause === 'cierre-de-sesion' ? `Se cerró la sesión de Windows mientras ${name} estaba encendido.`
+    : `Windows se apagó o se reinició mientras ${name} estaba encendido.`;
+  if (n.outcome === 'guardado') { toast(`${n.name}: guardado y detenido correctamente`, 'ok', why); return; }
+  const what = n.outcome === 'detenido'
+    ? 'El servidor se detuvo, pero el registro de Minecraft no confirmó el guardado. Revisá el mundo; si falta algo, en <b>Copias</b> podés volver a un punto de restauración.'
+    : 'El servidor no terminó de guardar a tiempo y se cerró. Puede faltar lo jugado desde el último guardado; en <b>Copias</b> podés volver a un punto de restauración.';
+  dialog({ title: 'Último cierre', body: `<p>${why}</p><p>${what}</p>`, buttons: [{ label: 'Entendido', value: 'ok', kind: 'pri' }] });
 }
 
 boot();

@@ -760,3 +760,13 @@ pub async fn storage_verify(app: AppHandle, id: String, key: String) -> AppResul
 /// Aplica el tope ahora (después de cambiarlo en Configuración).
 #[tauri::command]
 pub fn storage_enforce(id: String) -> AppResult<Vec<String>> { instance::load(&id)?; Ok(host939_core::storage::enforce_cap(&id, host939_core::storage::cap_bytes())) }
+
+/// Avisos de la última vez que 939 Host se cerró de forma no normal (cierre inesperado o apagado
+/// de Windows): qué pasó con cada servidor. Se muestran una vez.
+#[tauri::command]
+pub fn last_close_notes() -> Vec<serde_json::Value> {
+    host939_core::guardian::take_records().into_iter().map(|(id, r)| {
+        let name = instance::load(&id).map(|c| c.name).unwrap_or(id.clone());
+        serde_json::json!({ "id": id, "name": name, "cause": r.cause, "outcome": r.outcome, "seconds": r.seconds, "at": r.at })
+    }).collect()
+}

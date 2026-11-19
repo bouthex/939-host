@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod events;
 pub mod gameassets;
+pub mod guardian;
 pub mod curseforge;
 pub mod files;
 pub mod modguard;

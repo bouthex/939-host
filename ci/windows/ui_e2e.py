@@ -298,6 +298,9 @@ async def main():
                 await p.click('.dialog .btn.pri')
                 await asyncio.sleep(6)
                 procs = medir.processes()
+                metrics["bandeja_con_servidor"] = {**medir.memory(), "cpu_pct": medir.cpu(10), "guardian_mb": medir.memory_of("guardian"), "java_mb": medir.memory_of("java")}
+                if not procs.get("guardian"):
+                    raise RuntimeError("no hay guardián con el servidor encendido")
                 if not procs.get("939Host"):
                     raise RuntimeError("939 Host terminó al cerrar la ventana")
                 if not procs.get("java"):
@@ -333,6 +336,120 @@ async def main():
         if ok:
             await step("detener con confirmación y apagado limpio", stop())
         await shot("oscuro-detenido", 1000)
+
+        # ── Cierre inesperado y apagado de Windows con el servidor encendido (fase final §4–§5) ──
+        import subprocess, ctypes
+
+        def server_dir():
+            base = os.path.join(os.environ["LOCALAPPDATA"], "939Host", "servers")
+            return [os.path.join(base, d) for d in os.listdir(base) if os.path.isdir(os.path.join(base, d, "server"))][0]
+
+        def latest_log():
+            return os.path.join(server_dir(), "server", "logs", "latest.log")
+
+        def log_since(start):
+            with open(latest_log(), "rb") as f:
+                data = f.read()
+            return data[start:].decode("utf-8", "replace") if len(data) >= start else data.decode("utf-8", "replace")
+
+        async def wait_procs(cond, timeout, what):
+            end = time.time() + timeout
+            while time.time() < end:
+                if cond(medir.processes()):
+                    return
+                await asyncio.sleep(1)
+            raise TimeoutError(f"{what}: {medir.processes()}")
+
+        async def reopen_app():
+            nonlocal b, p
+            subprocess.Popen([os.path.join(os.environ["LOCALAPPDATA"], "Programs", "939 Host", "939Host.exe")])
+            b, p = await find_page(pw)
+            p.on("pageerror", lambda e: errors.append(str(e)))
+            await p.wait_for_selector(".nav-wrap", timeout=60000)
+
+        async def open_server():
+            await p.click('[data-a=nav][data-route=servers]')
+            await p.click('.li[data-id]')
+            await p.click('.tab[data-v=summary]')
+
+        def read_record():
+            path = os.path.join(server_dir(), "ultimo-cierre.json")
+            if not os.path.exists(path):
+                raise RuntimeError("no quedó anotado qué pasó (ultimo-cierre.json)")
+            return json.load(open(path, encoding="utf-8"))
+
+        def saved_in(text):
+            return any(k in text for k in ("All dimensions are saved", "All chunks are saved", "Saved the game"))
+
+        if ok:
+            async def crash():
+                await open_server()
+                await p.click('.ctl [data-a=start]')
+                await wait_state(["Listo para jugar"], 600)
+                start = os.path.getsize(latest_log())
+                if not medir.processes().get("guardian"):
+                    raise RuntimeError("no hay guardián con el servidor encendido")
+                main = medir.main_process()
+                t0 = time.time()
+                main.kill()  # TerminateProcess solo del proceso principal (como el Administrador de tareas)
+                await wait_procs(lambda pr: not pr.get("java"), 660, "Java sigue encendido")
+                secs = round(time.time() - t0, 1)
+                await wait_procs(lambda pr: not pr.get("guardian") and not pr.get("939Host"), 30, "quedó un proceso de 939 Host")
+                rec = read_record()
+                tail = log_since(start)
+                if "Stopping" not in tail or not saved_in(tail):
+                    raise RuntimeError("Minecraft no registró un guardado y detención limpios")
+                if rec.get("outcome") != "guardado" or rec.get("cause") != "cierre-inesperado":
+                    raise RuntimeError(f"registro inesperado: {rec}")
+                return f"Java guardó y se detuvo {secs} s después de matar 939 Host; no quedó ningún proceso"
+            crashed = await step("cierre inesperado de 939 Host: el guardián guarda y detiene el servidor", crash())
+            if crashed:
+                async def after_crash():
+                    await reopen_app()
+                    await p.wait_for_selector('.toast', timeout=20000)
+                    txt = (await (await p.query_selector('.toast')).inner_text()).strip().replace("\n", " ")
+                    await shot("aviso-ultimo-cierre", 200)
+                    if os.path.exists(os.path.join(server_dir(), "ultimo-cierre.json")):
+                        raise RuntimeError("el aviso no se mostró (sigue pendiente)")
+                    await open_server()
+                    await p.click('.ctl [data-a=start]')
+                    st = await wait_state(["Listo para jugar"], 600)
+                    return f"aviso «{txt[:90]}»; vuelve a encender: {st}"
+                again = await step("después del cierre inesperado: aviso y el servidor vuelve a encender", after_crash())
+                if again:
+                    async def session_end():
+                        start = os.path.getsize(latest_log())
+                        u = ctypes.windll.user32
+                        u.SendMessageW.restype = ctypes.c_ssize_t
+                        u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+                        hwnd = u.FindWindowW("939HostSesion", None)
+                        if not hwnd:
+                            raise RuntimeError("no está la ventana que recibe el aviso de apagado")
+                        # Lo que manda Windows antes de apagar o reiniciar.
+                        r = u.SendMessageW(hwnd, 0x0011, 0, 0)
+                        if r != 0:
+                            raise RuntimeError(f"no pidió tiempo para guardar (respondió {r})")
+                        t0 = time.time()
+                        await wait_procs(lambda pr: not pr.get("java") and not pr.get("939Host") and not pr.get("guardian"), 240, "no terminó el cierre ordenado")
+                        rec = read_record()
+                        if not saved_in(log_since(start)):
+                            raise RuntimeError("Minecraft no registró el guardado")
+                        if rec.get("cause") != "apagado-windows" or rec.get("outcome") != "guardado":
+                            raise RuntimeError(f"registro inesperado: {rec}")
+                        return f"pidió tiempo a Windows, guardó y terminó en {round(time.time() - t0, 1)} s"
+                    await step("apagado de Windows simulado: pide tiempo, guarda, detiene y termina", session_end())
+                    async def no_servers():
+                        await reopen_app()
+                        u = ctypes.windll.user32
+                        u.SendMessageW.restype = ctypes.c_ssize_t
+                        u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+                        await p.wait_for_timeout(2000)
+                        hwnd = u.FindWindowW("939HostSesion", None)
+                        r = u.SendMessageW(hwnd, 0x0011, 0, 0)
+                        if r != 1:
+                            raise RuntimeError(f"demoró el apagado sin servidores encendidos (respondió {r})")
+                        return "sin servidores encendidos no demora el apagado"
+                    await step("apagado de Windows sin servidores: no lo demora", no_servers())
 
         try:
             metrics["despues_de_usarla"] = {**medir.memory(), "cpu_pct": medir.cpu(10)}

@@ -5,12 +5,12 @@ import psutil
 
 
 def tree():
-    """939Host.exe y todos sus procesos hijos (WebView2)."""
-    roots = [p for p in psutil.process_iter(["name"]) if (p.info["name"] or "").lower() == "939host.exe"]
+    """939Host.exe y sus procesos hijos (WebView2 y el guardián), sin Java (se mide aparte)."""
+    roots = [p for p in psutil.process_iter(["name"]) if (p.info["name"] or "").lower() == "939host.exe" and not _is_guardian(p)]
     out = []
     for r in roots:
         out.append(r)
-        try: out += r.children(recursive=True)
+        try: out += [c for c in r.children(recursive=True) if (c.name() or "").lower() not in ("java.exe", "javaw.exe")]
         except psutil.Error: pass
     return out
 
@@ -42,14 +42,42 @@ def cpu(seconds=10):
     return round(used / seconds * 100, 2)
 
 
+def _is_guardian(p):
+    try: return "--guardian" in (p.cmdline() or [])
+    except psutil.Error: return False
+
+
 def processes():
-    """Cuántos procesos hay de 939 Host, Java y WebView2 (para el cierre de la ventana)."""
+    """Cuántos procesos hay de 939 Host (sin contar el guardián), del guardián, de Java y de WebView2."""
     out = {}
     for p in psutil.process_iter(["name"]):
         n = (p.info["name"] or "").lower().removesuffix(".exe")
         key = {"939host": "939Host", "java": "java", "javaw": "java", "msedgewebview2": "msedgewebview2"}.get(n)
+        if key == "939Host" and _is_guardian(p): key = "guardian"
         if key: out[key] = out.get(key, 0) + 1
     return out
+
+
+def main_process():
+    """El proceso principal de 939 Host (no el guardián)."""
+    for p in psutil.process_iter(["name"]):
+        if (p.info["name"] or "").lower() == "939host.exe" and not _is_guardian(p):
+            return p
+    return None
+
+
+def memory_of(kind):
+    """MB de memoria privada de un tipo de proceso: "guardian" | "java"."""
+    total = 0
+    for p in psutil.process_iter(["name"]):
+        n = (p.info["name"] or "").lower()
+        hit = (kind == "guardian" and n == "939host.exe" and _is_guardian(p)) or (kind == "java" and n in ("java.exe", "javaw.exe"))
+        if not hit: continue
+        try:
+            m = p.memory_full_info() if hasattr(p, "memory_full_info") else p.memory_info()
+            total += getattr(m, "private", getattr(m, "uss", 0))
+        except psutil.Error: pass
+    return round(total / 1048576, 1)
 
 
 def started_at():

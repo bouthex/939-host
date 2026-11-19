@@ -6,6 +6,7 @@ mod files;
 mod commands;
 mod network;
 mod ops;
+mod shutdown;
 mod v3;
 
 use host939_core::events::{Events, InstallProgress};
@@ -117,7 +118,12 @@ fn list_names(v: &[String]) -> String {
 /// Salida completa: pasa o guarda los servidores de forma ordenada y termina. La ventana se
 /// cierra enseguida (antes quedaba abierta y parecía colgada mientras se guardaba); el cierre
 /// sigue en segundo plano, con el estado en el ícono de la bandeja.
-pub fn begin_quit(app: &AppHandle) {
+pub fn begin_quit(app: &AppHandle) { quit_inner(app, None) }
+
+/// Windows se apaga, reinicia o cierra la sesión con servidores encendidos (ver `shutdown`).
+pub fn begin_quit_for_session(app: &AppHandle, cause: &'static str) { quit_inner(app, Some(cause)) }
+
+fn quit_inner(app: &AppHandle, session: Option<&'static str>) {
     if QUITTING.swap(true, Ordering::SeqCst) { return; }
     let _ = app.emit("app-quitting", ());
     if let Some(w) = app.get_webview_window("main") { let _ = w.destroy(); }
@@ -126,10 +132,21 @@ pub fn begin_quit(app: &AppHandle) {
     std::thread::spawn(move || {
         // Primero el grupo: cada servidor que hostea esta PC pasa a otra PC encendida o se
         // suelta con el último estado copiado. Después se detiene lo que quede.
+        let started = std::time::Instant::now();
+        let active: Vec<String> = app.state::<process::Manager>().active_ids();
         for line in network::quit_blocking(&app) {
             let _ = app.emit("group-note", serde_json::json!({ "id": "", "message": line }));
         }
         app.state::<process::Manager>().stop_all();
+        // Apagado de Windows: queda anotado qué pasó con cada servidor (se cuenta al volver a abrir).
+        if let Some(cause) = session {
+            let mgr = app.state::<process::Manager>();
+            for id in &active {
+                let outcome = if mgr.is_active(id) { "forzado" } else if mgr.last_stop_forced(id) { "forzado" } else { "guardado" };
+                host939_core::guardian::write_record(id, &host939_core::guardian::LastClose { at: chrono::Local::now().to_rfc3339(), cause: cause.into(), outcome: outcome.into(), seconds: started.elapsed().as_secs() });
+            }
+            shutdown::done();
+        }
         app.exit(0);
     });
 }
@@ -190,8 +207,9 @@ fn data_root() -> std::path::PathBuf {
 }
 
 fn main() {
-    // Ayudante con permisos de administrador para el archivo hosts: hace solo eso y termina,
-    // antes de abrir ventanas o de la comprobación de instancia única.
+    // Guardián de los servidores (ver host939_core::guardian): sin ventana, sin red, antes de la
+    // comprobación de instancia única.
+    if std::env::args().nth(1).as_deref() == Some("--guardian") { host939_core::guardian::run(); }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_dialog::init())
@@ -201,6 +219,10 @@ fn main() {
             let wcfg = app.config().app.windows.iter().find(|w| w.label == "main").cloned().expect("ventana main");
             tauri::WebviewWindowBuilder::from_config(app.handle(), &wcfg)?.additional_browser_args(&browser_args()).build()?;
             paths::init(data_root()).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            // Si 939 Host termina de golpe, el guardián detiene cada servidor guardando el mundo.
+            if let Ok(exe) = std::env::current_exe() { host939_core::guardian::configure(exe); }
+            // Apagado y cierre de sesión de Windows con servidores encendidos.
+            shutdown::start(app.handle().clone());
             // Papelera: lo que lleva más de 30 días se borra al abrir y después cada 6 horas.
             std::thread::spawn(|| loop {
                 let _ = host939_core::trash::purge_expired();
@@ -332,6 +354,7 @@ fn main() {
             commands::ops_running,
             commands::op_cancel,
             commands::play_start_sound,
+            commands::last_close_notes,
             v3::image_read,
             v3::profile_photo_get,
             v3::profile_photo_set,

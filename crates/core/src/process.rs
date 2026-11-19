@@ -138,6 +138,12 @@ impl Manager {
         self.runtimes.lock().unwrap().entry(id.to_string()).or_default().clone()
     }
 
+    /// ¿Este servidor está encendido, arrancando o deteniéndose?
+    pub fn is_active(&self, id: &str) -> bool { self.runtime(id).lock().unwrap().is_active() }
+
+    /// ¿La última detención tuvo que cerrar Java a la fuerza (no terminó de guardar a tiempo)?
+    pub fn last_stop_forced(&self, id: &str) -> bool { self.runtime(id).lock().unwrap().forced_stop }
+
     pub fn active_ids(&self) -> Vec<String> {
         self.runtimes.lock().unwrap().iter().filter(|(_, r)| r.lock().unwrap().is_active()).map(|(k, _)| k.clone()).collect()
     }
@@ -316,6 +322,8 @@ impl Manager {
         }
         let mut child = cmd.spawn().map_err(|e| AppError::io("No se pudo iniciar Java", e))?;
         job::assign(&child);
+        // Si 939 Host termina de golpe, el guardián detiene este Java con «stop» (guardando).
+        if let Some(si) = child.stdin.as_ref() { crate::guardian::watch(&cfg.id, &child, si); }
         let pid = child.id();
         let _ = std::fs::write(run_dir.join(".939host.lock"), pid.to_string());
 
@@ -367,6 +375,7 @@ impl Manager {
             let run_dir = run_dir.clone();
             std::thread::spawn(move || {
                 let status = child.wait();
+                crate::guardian::release(&id);
                 let _ = std::fs::remove_file(run_dir.join(".939host.lock"));
                 let mut r = rt.lock().unwrap();
                 r.stdin = None;
@@ -519,7 +528,9 @@ impl Manager {
         let rt = self.runtime(id);
         let mut r = rt.lock().unwrap();
         if r.is_active() { return false; }
-        std::mem::take(&mut r.exited_unsaved)
+        // También vale lo que dejó anotado el guardián tras un cierre inesperado de 939 Host.
+        let marked = std::fs::remove_file(exit_mark(id)).is_ok();
+        std::mem::take(&mut r.exited_unsaved) || marked
     }
 
     /// Vuelve a comprobar la conexión real de un servidor encendido.
@@ -790,11 +801,20 @@ pub fn stop_gives_up(elapsed: Duration, quiet: Duration) -> bool {
     elapsed >= Duration::from_secs(600) || (elapsed >= Duration::from_secs(90) && quiet >= Duration::from_secs(60))
 }
 
+fn exit_mark(id: &str) -> std::path::PathBuf { paths::server_dir(id).join("pendiente-publicar") }
+
+/// El servidor se detuvo sin que 939 Host publicara su estado final (lo usa el guardián): la
+/// próxima vez que 939 Host lo vea, lo trata como una salida sin publicar.
+pub fn mark_exit_unsaved(id: &str) { let _ = std::fs::write(exit_mark(id), b"1"); }
+
 fn check_lock(probe: &Probe, run_dir: &std::path::Path) -> AppResult<()> {
     let lock = run_dir.join(".939host.lock");
     if let Ok(text) = std::fs::read_to_string(&lock) {
         if let Ok(pid) = text.trim().parse::<u32>() {
             if crate::hardware::process_alive(probe, pid) {
+                if run_dir.parent().and_then(|d| d.file_name()).map(|n| crate::guardian::recovering(&n.to_string_lossy())).unwrap_or(false) {
+                    return Err(AppError::busy("939 Host se cerró de golpe y este servidor se está guardando y deteniendo. Esperá unos segundos y probá de nuevo."));
+                }
                 return Err(AppError::busy("Este mundo ya está siendo ejecutado por otro proceso en esta PC. Para protegerlo, no se inicia dos veces."));
             }
         }
@@ -856,7 +876,13 @@ mod job {
             unsafe { AssignProcessToJobObject(h as _, child.as_raw_handle() as _); }
         }
     }
+
+    pub fn handle() -> Option<usize> { job() }
 }
+
+/// Job Object de los servidores (para que el guardián lo mantenga abierto).
+#[cfg(windows)]
+pub fn job_handle() -> Option<usize> { job::handle() }
 
 #[cfg(not(windows))]
 mod job {

@@ -34,6 +34,8 @@ sysinfo = "0.33"
 # Misma versión que usa Tauri (wry): para bajar la memoria de WebView2 con la ventana minimizada.
 webview2-com = "0.39"
 windows-core = "0.62"
+# Apagado de Windows (WM_QUERYENDSESSION + ShutdownBlockReasonCreate). Misma versión que el núcleo.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Shutdown", "Win32_System_Threading", "Win32_System_LibraryLoader"] }
 
 [features]
 # Compilación de prueba de la CI (puerto de depuración para la prueba de interfaz). Nunca en releases.
