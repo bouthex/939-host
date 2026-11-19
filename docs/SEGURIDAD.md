@@ -192,6 +192,52 @@ Además:
   ninguna. Cada persona puede cargar la suya, que se guarda con DPAPI. Sin clave, se importan los
   modpacks descargados a mano desde la web de CurseForge.
 
+## Qué corre y qué queda expuesto
+
+| Situación | Procesos | Puertos | Qué se puede alcanzar desde afuera |
+|---|---|---|---|
+| App cerrada desde la bandeja (o sin abrir) | Ninguno de 939 Host. Si «Iniciar con Windows» está activo, se abre al iniciar sesión y vuelve a la fila de abajo | Ninguno | Nada: no hay servicio de Windows, tarea programada ni proceso residente |
+| App abierta, sin servidores | `939 Host.exe` (interfaz y nodo P2P) | Un socket UDP de iroh (QUIC) en un puerto alto aleatorio | Solo el nodo iroh: cada conexión se autentica con la clave de la PC remota y cada ALPN exige ser del grupo o amigo |
+| Ventana cerrada con un servidor encendido | `939 Host.exe` en la bandeja + `java.exe` dentro de un Job Object | Minecraft escucha en `127.0.0.1` (o en la dirección `.939host` de loopback); la voz, en esa misma dirección por UDP. Con «Acceso por LAN» activado, también en la red local | Lo mismo que arriba. Nada de Minecraft queda en internet salvo que la persona configure una dirección pública propia (playit.gg, router) |
+| Cerrar 939 Host mientras aloja | Primero traspasa o suelta cada servidor con el último estado guardado, después detiene Java | Se cierran todos | Nada |
+
+Datos locales (todos dentro de `%LOCALAPPDATA%\939Host`):
+
+- Clave del nodo protegida con DPAPI; configuración, integrantes firmados, historial de permisos.
+- Mundos, puntos de restauración y copias (con tope configurable de espacio).
+- Amigos: lista, solicitudes, bloqueados y chats (como mucho 500 mensajes por chat). Sin cifrado
+  propio en disco: se protege con los permisos de la cuenta de Windows.
+- Fotos de perfil propias y de otras PCs (caché por huella SHA-256, 100 KB como máximo cada una).
+- El desinstalador pregunta dos veces antes de borrar estos datos; por defecto los conserva.
+
+Qué ve un relay de iroh: la IP pública de cada PC, cuándo se conecta y cuánto tráfico pasa. No
+puede leer ni modificar nada (QUIC con TLS 1.3 de punta a punta, autenticado con las claves de
+cada PC).
+
+## Superficies nuevas de esta fase
+
+- **Amigos (`939host/friend/1`).** Cualquier PC de internet que conozca la identidad del nodo
+  puede abrir este canal. Sin código de invitación válido (un solo uso, vence) solo recibe
+  «No son amigos». Límites: comparte el tope de pedidos del grupo por PC remota, tramas de 16 KB como máximo con
+  10 s de espera, 20 solicitudes pendientes, 200 amigos, 20 mensajes por minuto, 500 caracteres
+  sin caracteres de control. «Aceptó» solo vale si esta PC envió la solicitud. Las direcciones que
+  anuncia otra PC solo se aceptan si son suyas. Prueba: `amigos_resisten_a_una_pc_desconocida`.
+- **Presencia.** A cada amigo se le cuenta: nombre, si está disponible, huella de la foto y el
+  nombre del servidor que se está jugando. No se cuenta IP ni hardware (la conexión directa sí
+  revela la IP, igual que en el grupo). Se puede marcar «No disponible».
+- **Voz (`939host/voice/1`).** Solo integrantes del grupo. Como mucho 4 canales por PC y 64 en
+  total. El puerto UDP local escucha en la dirección `.939host` de loopback; no abre puertos del
+  router ni usa UPnP.
+- **Fotos de perfil.** Solo para integrantes del grupo y solo la huella pedida; quien la recibe
+  comprueba la huella y el tamaño antes de guardarla.
+- **Lectura de imágenes (`image_read`).** Comando local de la interfaz para arrastrar archivos:
+  lee como mucho 20 MB y solo si el contenido es PNG, JPG, WebP o GIF por sus primeros bytes.
+  No es alcanzable desde la red.
+- **Estado compartido y OP de Minecraft.** El estado del servidor que muestran las otras PCs lo
+  anuncia la anfitriona y se muestra como tal. Los OP para coanfitrionas viajan en la
+  configuración firmada por la propietaria: una coanfitriona no puede darse OP a sí misma.
+- **Indicadores de operaciones.** Solo locales; nunca inventan porcentajes.
+
 ## Modelo de amenazas (resumen STRIDE)
 
 | Atacante | Qué puede lograr hoy | Qué lo impide |
@@ -206,6 +252,9 @@ Además:
 | Misma Wi-Fi | Antes: entrar directo al puerto de Minecraft. Ahora no (solo 127.0.0.1) | Escucha local; sin UPnP |
 | Mod o archivo malicioso | Si se aprueba, todo lo que puede el usuario de Windows | Cuarentena por huella; aprobación explícita; Job Object |
 | Robo de archivos locales | La clave del nodo está con DPAPI (otro usuario no la lee; con la sesión del usuario, sí) | DPAPI; quitar la PC y regenerar la identidad |
+| Desconocido con la identidad del nodo (amigos) | Mandar pedidos al canal de amigos | Sin código válido no pasa de «No son amigos»; límites por PC, tamaño y tiempo |
+| Amigo malicioso | Mandar mensajes molestos; ver presencia y qué servidor se juega | 20 mensajes por minuto, 500 caracteres; quitar o bloquear; «No disponible» |
+| Malware local con la sesión del usuario | Todo lo que puede el usuario: leer la clave del nodo, chats y mundos | Fuera del alcance de una app sin privilegios; Defender, cuentas separadas |
 
 ## Riesgos residuales
 
@@ -237,3 +286,18 @@ Además:
 14. **Una coanfitriona puede ofrecer un punto falso de una época anterior.** No gana mientras la
     anfitriona cree puntos en la época actual (con el servidor encendido, cada 15 minutos por
     defecto, y siempre antes de un traspaso).
+15. **Traspaso automático con el servidor detenido.** Si la PC que tiene el permiso no está
+    alojando, acepta sola un pedido de otra PC con permiso para alojar. Con el servidor
+    encendido, siempre pregunta.
+16. **La anfitriona controla su Minecraft mientras aloja.** Desde la consola puede dar OP a
+    cualquiera en esa sesión; la lista firmada se vuelve a comparar con `ops.json` en cada vuelta de control mientras aloja; un OP agregado a mano fuera de esa lista no se quita solo.
+17. **La voz solo funciona por la dirección `.939host`.** Quien entra por una dirección pública
+    propia (playit.gg, router) necesita además el puerto UDP de Simple Voice Chat abierto ahí.
+18. **Si el proceso de 939 Host muere de golpe** (Administrador de tareas, corte de luz), el Job
+    Object cierra Java sin guardar: se pierde lo jugado desde el último guardado de Minecraft o el
+    último punto (cada 15 minutos por defecto).
+19. **Apagar Windows con un servidor encendido** da poco tiempo: Windows puede cortar antes de que
+    termine el guardado. Conviene detener el servidor antes.
+20. **Los chats de amigos se guardan sin cifrado propio** en la carpeta del usuario.
+21. **Los límites contra abuso frenan el volumen, no la existencia de pedidos:** una PC que conoce
+    la identidad del nodo puede seguir abriendo conexiones (cada una cuesta un saludo TLS).
