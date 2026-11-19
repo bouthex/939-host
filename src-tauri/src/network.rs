@@ -627,13 +627,13 @@ fn ferr(e: anyhow::Error) -> AppError { AppError::invalid(e.to_string()) }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FriendsView { friends: Vec<host939_cluster::friends::FriendView>, requests: Vec<host939_cluster::friends::FriendRequest>, blocked: usize, available: bool }
+pub struct FriendsView { friends: Vec<host939_cluster::friends::FriendView>, requests: Vec<host939_cluster::friends::FriendRequest>, blocked: usize, available: bool, notices: Vec<String> }
 
 #[tauri::command]
 pub async fn friends_view(cluster: State<'_, Cluster>) -> AppResult<FriendsView> {
     let n = cluster.node().await?;
     let s = host939_cluster::friends::load();
-    Ok(FriendsView { friends: n.friends(), requests: n.friend_requests(), blocked: s.blocked.len(), available: s.available })
+    Ok(FriendsView { friends: n.friends(), requests: n.friend_requests(), blocked: s.blocked.len(), available: s.available, notices: host939_cluster::friends::take_unreadable() })
 }
 #[tauri::command]
 pub async fn friend_invite(cluster: State<'_, Cluster>) -> AppResult<String> { cluster.node().await?.friend_invite().map_err(ferr) }

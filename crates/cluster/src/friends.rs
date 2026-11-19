@@ -69,9 +69,22 @@ pub struct Message { pub from_me: bool, pub text: String, pub at: String, #[serd
 fn store_path() -> std::path::PathBuf { paths::root().join("amigos.bin") }
 fn store_legacy() -> std::path::PathBuf { paths::root().join("amigos.json") }
 fn chat_file(node: &str, ext: &str) -> std::path::PathBuf { paths::root().join("mensajes").join(format!("{}.{ext}", &node[..node.len().min(64)])) }
-pub fn load() -> Store { sealed::read(&store_path(), Some(&store_legacy())).or_default() }
+pub fn load() -> Store { unsealed(sealed::read(&store_path(), Some(&store_legacy())), "la lista de amigos") }
 fn save(s: &Store) -> Result<()> { sealed::write(&store_path(), s).map_err(|e| anyhow!(e.message)) }
-pub fn chat(node: &str) -> Vec<Message> { if valid_node(node) { sealed::read(&chat_file(node, "bin"), Some(&chat_file(node, "json"))).or_default() } else { vec![] } }
+pub fn chat(node: &str) -> Vec<Message> { if valid_node(node) { unsealed(sealed::read(&chat_file(node, "bin"), Some(&chat_file(node, "json"))), "un chat") } else { vec![] } }
+
+/// Lo que no se pudo descifrar (otra cuenta de Windows, Windows reinstalado, archivo dañado) se
+/// apartó sin borrarlo; acá queda el aviso para mostrarlo una vez en Amigos.
+static UNREADABLE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+fn unsealed<T: Default>(r: sealed::Read<T>, what: &str) -> T {
+    if let sealed::Read::Unreadable(p) = &r {
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        UNREADABLE.lock().unwrap().push(format!("No se pudo descifrar {what} (pasa si cambió la cuenta de Windows o se reinstaló Windows). El archivo se guardó aparte como «{name}», sin borrarlo."));
+    }
+    r.or_default()
+}
+/// Avisos pendientes de archivos que no se pudieron descifrar (se devuelven una sola vez).
+pub fn take_unreadable() -> Vec<String> { std::mem::take(&mut *UNREADABLE.lock().unwrap()) }
 fn save_chat(node: &str, m: &[Message]) { let _ = sealed::write(&chat_file(node, "bin"), &m); }
 fn valid_node(n: &str) -> bool { n.len() == 64 && n.bytes().all(|b| b.is_ascii_hexdigit()) }
 
@@ -389,5 +402,26 @@ mod tests {
         assert_eq!(super::clean_text("   "), None);
         assert_eq!(super::clean_text(&"a".repeat(900)).unwrap().len(), super::MAX_TEXT);
         assert_eq!(super::clean_text("línea 1\nlínea 2").unwrap(), "línea 1\nlínea 2");
+    }
+
+    #[test]
+    fn amigos_ilegibles_se_apartan_con_aviso() {
+        let _ = host939_core::paths::init(std::env::temp_dir().join(format!("939host-amigos-{}", std::process::id())));
+        let root = host939_core::paths::root().to_path_buf();
+        std::fs::create_dir_all(&root).unwrap();
+        // Lista vieja en texto plano: se migra a cifrado y se puede volver a leer.
+        let _ = std::fs::remove_file(root.join("amigos.bin"));
+        std::fs::write(root.join("amigos.json"), br#"{"friends":[],"requests":[],"blocked":[],"invites":[],"available":true,"sent":[]}"#).unwrap();
+        assert!(super::load().available);
+        assert!(!root.join("amigos.json").exists() && root.join("amigos.bin").exists());
+        assert!(super::take_unreadable().is_empty());
+        // Archivo que no se puede descifrar: lista vacía, archivo apartado y un aviso (una vez).
+        std::fs::write(root.join("amigos.bin"), b"no es de esta cuenta").unwrap();
+        assert!(!super::load().available);
+        let n = super::take_unreadable();
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert!(n[0].contains("ilegible"));
+        assert!(super::take_unreadable().is_empty(), "el aviso se muestra una sola vez");
+        assert!(std::fs::read_dir(&root).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("ilegible")));
     }
 }

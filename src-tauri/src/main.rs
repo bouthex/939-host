@@ -482,8 +482,12 @@ fn main() {
 
     app.run(|_app, event| {
         if let RunEvent::ExitRequested { api, code, .. } = event {
-            // Cerrar la última ventana no termina la app: queda en la bandeja.
-            if code.is_none() && !QUITTING.load(Ordering::SeqCst) {
+            // Cerrar la última ventana nunca termina la app: queda en la bandeja. Tampoco durante
+            // «Salir» o el apagado de Windows: ahí la ventana se cierra al instante pero el proceso
+            // tiene que seguir hasta que el cierre ordenado termine y llame a `app.exit(0)` (que
+            // trae código). Antes se dejaba salir y el proceso moría a mitad del guardado (lo
+            // detectó la prueba de apagado simulado: tuvo que rematarlo el guardián).
+            if code.is_none() {
                 api.prevent_exit();
             }
         }

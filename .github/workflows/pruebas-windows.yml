@@ -221,7 +221,11 @@ jobs:
           Check-Clean "conservando datos"
           # Los servidores, mundos e identidad del usuario no se borran sin su consentimiento.
           if (!(Test-Path "$env:LOCALAPPDATA\939Host")) { throw "La desinstalación borró la carpeta de datos del usuario" }
-          Write-Output "1) Desinstalado conservando datos: programa, procesos, registro, accesos, caché y hosts limpios; datos intactos."
+          $srv = Get-ChildItem "$env:LOCALAPPDATA\939Host\servers" -Directory | Select-Object -First 1
+          if (!$srv -or !(Test-Path (Join-Path $srv.FullName "server\world\level.dat"))) { throw "Conservando datos: no quedó el mundo (level.dat)" }
+          if (!(Get-ChildItem (Join-Path $srv.FullName "backups") -Filter *.zip -ErrorAction SilentlyContinue)) { throw "Conservando datos: no quedaron las copias de seguridad" }
+          if (!(Get-ChildItem (Join-Path $srv.FullName "restore") -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) { throw "Conservando datos: no quedaron los puntos de restauración" }
+          Write-Output "1) Desinstalado conservando datos: programa, procesos, registro, accesos, caché y hosts limpios; mundo, copias y puntos intactos."
           # 2) Reinstalar y desinstalar pidiendo explícitamente borrar los datos.
           $inst = Get-ChildItem dist\*-instalador.exe | Select-Object -First 1
           Start-Process $inst.FullName -ArgumentList '/S' -Wait

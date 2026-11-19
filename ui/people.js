@@ -4,10 +4,11 @@
    servidor: los grupos y sus permisos son aparte. Los mensajes viajan cifrados entre las PCs y
    quedan solo en cada una. */
 
-const ppl = { view: null, open: null, chat: [], timer: null };
+const ppl = { view: null, open: null, chat: [], timer: null, notices: [] };
 
 async function loadPeople() {
   try { ppl.view = await invoke('friends_view'); } catch (e) { ppl.view = { error: errMsg(e), friends: [], requests: [] }; }
+  for (const n of ppl.view.notices || []) if (!ppl.notices.includes(n)) ppl.notices.push(n);
   const unread = (ppl.view.friends || []).reduce((n, f) => n + f.unread, 0) + (ppl.view.requests || []).length;
   if (unread !== state.peopleBadge) { state.peopleBadge = unread; paintNav(); }
 }
@@ -34,6 +35,7 @@ function paintPeople(soft = false) {
     <div class="head"><div><h1>Amigos</h1><p class="sub">Invitá a quien quieras, mirá quién está conectado y mandá mensajes. Ser amigos no da acceso a tus servidores.</p></div>
       <div class="btns"><button class="btn" data-a="ppl-add">${icon('link', 16)}Usar un código</button><button class="btn pri" data-a="ppl-invite">${icon('plus', 16)}Invitar</button></div></div>
     ${v.error ? `<div class="note">${icon('alert')}<div class="grow sm">${esc(v.error)}</div></div>` : ''}
+    ${ppl.notices.map((n) => `<div class="note">${icon('alert')}<div class="grow sm">${esc(n)}</div></div>`).join('')}
     ${(v.requests || []).map((r) => `<div class="note strong">${pcAvatar('', 32)}<div class="grow"><b>${esc(r.name)} quiere ser tu amigo</b><span class="sm t2">Si aceptás, se ven conectados y pueden mandarse mensajes. No le da acceso a ningún servidor.</span></div><div class="btns"><button class="btn s" data-a="ppl-answer" data-node="${esc(r.node)}" data-v="no">Rechazar</button><button class="btn s pri" data-a="ppl-answer" data-node="${esc(r.node)}" data-v="si">Aceptar</button></div></div>`).join('')}
     <div class="grid2" style="grid-template-columns:minmax(260px,0.8fr) minmax(0,1.6fr);margin-top:12px">
       <div class="stack" style="gap:12px">

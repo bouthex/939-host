@@ -430,17 +430,35 @@ async def main():
                         if not hwnd:
                             raise RuntimeError("no está la ventana que recibe el aviso de apagado")
                         # Lo que manda Windows antes de apagar o reiniciar.
+                        t0 = time.time()
                         r = u.SendMessageW(hwnd, 0x0011, 0, 0)
                         if r != 0:
                             raise RuntimeError(f"no pidió tiempo para guardar (respondió {r})")
-                        t0 = time.time()
+                        # Windows tiene registrado el motivo que muestra en la pantalla de apagado.
+                        size = ctypes.c_uint32(0)
+                        u.ShutdownBlockReasonQuery.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32)]
+                        has_reason = bool(u.ShutdownBlockReasonQuery(hwnd, None, ctypes.byref(size)))
+                        reason = ""
+                        if has_reason and size.value:
+                            buf = ctypes.create_unicode_buffer(size.value + 1)
+                            u.ShutdownBlockReasonQuery(hwnd, buf, ctypes.byref(size))
+                            reason = buf.value
+                        if "Guardando" not in reason:
+                            raise RuntimeError(f"Windows no tiene el motivo de espera registrado ({reason!r})")
+                        # El proceso principal sigue vivo hasta terminar de guardar (no lo remata el guardián).
+                        await asyncio.sleep(0.5)
+                        if not medir.processes().get("939Host"):
+                            raise RuntimeError("939 Host terminó antes de completar el cierre ordenado")
                         await wait_procs(lambda pr: not pr.get("java") and not pr.get("939Host") and not pr.get("guardian"), 240, "no terminó el cierre ordenado")
+                        secs = round(time.time() - t0, 1)
+                        if secs > 180:
+                            raise RuntimeError(f"demoró el apagado {secs} s (tope: 180 s)")
                         rec = read_record()
                         if not saved_in(log_since(start)):
                             raise RuntimeError("Minecraft no registró el guardado")
                         if rec.get("cause") != "apagado-windows" or rec.get("outcome") != "guardado":
-                            raise RuntimeError(f"registro inesperado: {rec}")
-                        return f"pidió tiempo a Windows, guardó y terminó en {round(time.time() - t0, 1)} s"
+                            raise RuntimeError(f"registro inesperado (¿lo terminó el guardián?): {rec}")
+                        return f"motivo visible «{reason[:50]}»; guardó, detuvo Java y terminó solo en {secs} s"
                     await step("apagado de Windows simulado: pide tiempo, guarda, detiene y termina", session_end())
                     async def no_servers():
                         await reopen_app()
