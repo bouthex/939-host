@@ -753,14 +753,25 @@ pub fn launch_target(cfg: &ServerConfig) -> Option<Launch> {
     }
 }
 
-/// Argumentos de la JVM según el perfil. Xms = Xmx para evitar que el heap crezca a saltos.
+/// Memoria inicial del perfil equilibrado: un cuarto del máximo (al menos 1 GB). El máximo es el
+/// que eligió la persona; el heap crece cuando hace falta.
+///
+/// Antes era Xms = Xmx con `AlwaysPreTouch` (como en un servidor dedicado): Windows reservaba y
+/// tocaba todo el máximo al arrancar. En la CI, un mundo vacío con 6 GB ocupaba 6,5 GB de memoria
+/// privada desde el primer segundo, en una PC donde la misma persona también juega.
+pub fn initial_heap_mb(max_mb: u32) -> u32 { (max_mb / 4).max(1024).min(max_mb) }
+
+/// Argumentos de la JVM según el perfil.
+/// - Equilibrado (por defecto): heap inicial chico que crece (ver `initial_heap_mb`).
+/// - Baja latencia (ZGC, elegido a propósito): Xms = Xmx y memoria reservada desde el inicio.
 pub fn jvm_args(cfg: &ServerConfig) -> Vec<String> {
-    let mut args = vec![format!("-Xms{}M", cfg.memory_mb), format!("-Xmx{}M", cfg.memory_mb)];
+    let xms = if cfg.jvm_profile == JvmProfile::Balanced { initial_heap_mb(cfg.memory_mb) } else { cfg.memory_mb };
+    let mut args = vec![format!("-Xms{xms}M"), format!("-Xmx{}M", cfg.memory_mb)];
     match cfg.jvm_profile {
         JvmProfile::Balanced => {
             args.extend([
                 "-XX:+UseG1GC", "-XX:+ParallelRefProcEnabled", "-XX:MaxGCPauseMillis=200", "-XX:+UnlockExperimentalVMOptions",
-                "-XX:+DisableExplicitGC", "-XX:+AlwaysPreTouch", "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40",
+                "-XX:+DisableExplicitGC", "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40",
                 "-XX:G1HeapRegionSize=8M", "-XX:G1ReservePercent=20", "-XX:G1HeapWastePercent=5", "-XX:G1MixedGCCountTarget=4",
                 "-XX:InitiatingHeapOccupancyPercent=15", "-XX:G1MixedGCLiveThresholdPercent=90", "-XX:G1RSetUpdatingPauseTimePercent=5",
                 "-XX:SurvivorRatio=32", "-XX:+PerfDisableSharedMem", "-XX:MaxTenuringThreshold=1",
@@ -921,6 +932,18 @@ mod launch_tests {
         assert!(!stop_gives_up(s(200), s(5)), "a los 200 s sigue escribiendo: se espera");
         assert!(stop_gives_up(s(95), s(61)), "a los 95 s y un minuto en silencio: se corta");
         assert!(stop_gives_up(s(600), s(0)), "tope absoluto de 10 minutos");
+    }
+
+    #[test]
+    fn memoria_inicial_chica_y_maximo_intacto() {
+        assert_eq!(initial_heap_mb(6144), 1536);
+        assert_eq!(initial_heap_mb(2048), 1024);
+        assert_eq!(initial_heap_mb(768), 768, "nunca más que el máximo");
+        let mut c = cfg(Loader::Vanilla, None);
+        c.memory_mb = 6144;
+        let a = jvm_args(&c);
+        assert!(a.contains(&"-Xms1536M".to_string()) && a.contains(&"-Xmx6144M".to_string()));
+        assert!(!a.iter().any(|x| x == "-XX:+AlwaysPreTouch"), "el perfil equilibrado no reserva todo al arrancar");
     }
 
     #[test]
