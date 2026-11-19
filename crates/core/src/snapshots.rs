@@ -125,14 +125,36 @@ fn read_snapshot(id: &str, snap: &str) -> AppResult<Snapshot> {
     Ok(serde_json::from_slice(&json)?)
 }
 
+/// Datos de cada índice ya leído, por ruta, tamaño y fecha de modificación. `list` se llama en cada
+/// vuelta del grupo (cada pocos segundos, por cada PC): sin esto se descomprimía el índice completo
+/// de todos los puntos cada vez, que en un mundo grande son muchos megabytes. Los índices se
+/// escriben de forma atómica (archivo nuevo + renombrar), así que cualquier cambio cambia la fecha
+/// y el tamaño y se vuelve a leer.
+static INFO_CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (u64, i64, SnapshotInfo)>>> = std::sync::Mutex::new(None);
+
 pub fn list(id: &str) -> Vec<SnapshotInfo> {
-    let mut out: Vec<SnapshotInfo> = std::fs::read_dir(snaps_dir(id))
+    let dir = snaps_dir(id);
+    let mut seen: Vec<PathBuf> = vec![];
+    let mut out: Vec<SnapshotInfo> = std::fs::read_dir(&dir)
         .map(|rd| rd.flatten().filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             let snap = name.strip_suffix(".json.gz")?;
-            read_snapshot(id, snap).ok().map(|s| s.info)
+            let path = e.path();
+            let meta = e.metadata().ok()?;
+            let (len, mt) = (meta.len(), mtime_ms(&meta));
+            seen.push(path.clone());
+            if let Some((l, m, info)) = INFO_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.get(&path)) {
+                if *l == len && *m == mt { return Some(info.clone()); }
+            }
+            let info = read_snapshot(id, snap).ok()?.info;
+            INFO_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(path, (len, mt, info.clone()));
+            Some(info)
         }).collect())
         .unwrap_or_default();
+    // Lo borrado de esta carpeta deja de ocupar la caché.
+    if let Some(c) = INFO_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        c.retain(|p, _| p.parent() != Some(dir.as_path()) || seen.contains(p));
+    }
     out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     out
 }
@@ -787,4 +809,29 @@ mod tests {
         assert_eq!(s2.seq, u64::MAX);
     }
 
+    #[test]
+    fn la_lista_de_puntos_usa_cache_y_sigue_los_cambios() {
+        let id = setup();
+        let run = paths::server_run_dir(&id);
+        let a = capture(&id, "uno", "auto", "26.2").unwrap();
+        assert_eq!(list(&id).len(), 1);
+        // Un punto nuevo aparece.
+        std::fs::write(run.join("world/level.dat"), b"level-2").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let b = capture(&id, "dos", "auto", "26.2").unwrap();
+        assert_eq!(list(&id).len(), 2);
+        // Un índice que cambia (otra etiqueta) se vuelve a leer.
+        std::thread::sleep(Duration::from_millis(20));
+        let mut snap = read_snapshot(&id, &a.id).unwrap();
+        snap.info.label = "cambiado".into();
+        write_snapshot(&id, &snap).unwrap();
+        assert_eq!(list(&id).iter().find(|s| s.id == a.id).unwrap().label, "cambiado");
+        // Uno borrado desaparece.
+        std::fs::remove_file(snap_path(&id, &b.id)).unwrap();
+        assert_eq!(list(&id).iter().map(|s| s.id.clone()).collect::<Vec<_>>(), vec![a.id.clone()]);
+        // Con la caché, muchas vueltas seguidas no vuelven a descomprimir los índices.
+        let t = std::time::Instant::now();
+        for _ in 0..200 { let _ = list(&id); }
+        assert!(t.elapsed() < Duration::from_secs(2), "200 listas en {:?}", t.elapsed());
+    }
 }

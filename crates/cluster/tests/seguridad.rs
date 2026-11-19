@@ -357,6 +357,11 @@ fn mensajes_malformados_y_enormes() {
     let r2 = c.ok(&format!(r#"rawflood {ia} ctrl {{"t":"info","server":"{sid}"}} 700"#));
     println!("    inundación: {r} {r2}");
     assert!(r2["limited"].as_u64().unwrap() > 0, "sin límite de pedidos: {r2}");
+    // Regresión: una conexión nueva de una PC ya conocida no hace que se cierre la que estaba en
+    // uso si sigue viva (antes se cerraba y los pedidos en curso se perdían; si las dos PCs se
+    // conectaban a la vez, se cerraban mutuamente una y otra vez).
+    assert_eq!(r["answered"], 200, "se perdieron pedidos porque se cerró la conexión en uso: {r}");
+    assert!(r["stop"].is_null() && r2["stop"].is_null(), "la conexión se cortó a mitad de camino: {r} {r2}");
     assert!(a.ok(&format!("running {sid}")).as_bool().unwrap());
     let before = b.status(&sid)["members"].as_array().unwrap().len();
     assert_eq!(before, 3);

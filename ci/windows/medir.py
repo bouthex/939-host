@@ -42,6 +42,49 @@ def cpu(seconds=10):
     return round(used / seconds * 100, 2)
 
 
+def cpu_by_role(seconds=60):
+    """% de un núcleo durante `seconds`, por proceso: app principal, guardián, WebView2 y Java.
+
+    Windows cuenta el tiempo de CPU de a 15,6 ms: en una muestra de 10 s eso es ±0,16 % por
+    proceso. Por eso las mediciones de reposo usan muestras de 60 s o más.
+    """
+    def role(p):
+        try:
+            n = (p.name() or "").lower()
+            if n == "939host.exe": return "guardian" if _is_guardian(p) else "app"
+            if n == "msedgewebview2.exe": return "webview"
+            if n in ("java.exe", "javaw.exe"): return "java"
+        except psutil.Error: pass
+        return None
+    ps = [p for p in psutil.process_iter() if role(p)]
+    t0 = {}
+    for p in ps:
+        try: c = p.cpu_times(); t0[p.pid] = (role(p), c.user + c.system)
+        except psutil.Error: pass
+    time.sleep(seconds)
+    out = {"app": 0.0, "guardian": 0.0, "webview": 0.0, "java": 0.0}
+    for p in ps:
+        if p.pid not in t0: continue
+        r, before = t0[p.pid]
+        try: c = p.cpu_times(); out[r] += (c.user + c.system) - before
+        except psutil.Error: pass
+    return {k: round(v / seconds * 100, 3) for k, v in out.items()}
+
+
+def private_mb(kind):
+    """MB de memoria privada: "app" (proceso principal) | "guardian" | "java"."""
+    total = 0
+    for p in psutil.process_iter(["name"]):
+        n = (p.info["name"] or "").lower()
+        hit = (kind == "app" and n == "939host.exe" and not _is_guardian(p)) or (kind == "guardian" and n == "939host.exe" and _is_guardian(p)) or (kind == "java" and n in ("java.exe", "javaw.exe"))
+        if not hit: continue
+        try:
+            m = p.memory_full_info() if hasattr(p, "memory_full_info") else p.memory_info()
+            total += getattr(m, "private", getattr(m, "uss", 0))
+        except psutil.Error: pass
+    return round(total / 1048576, 1)
+
+
 def _is_guardian(p):
     try: return "--guardian" in (p.cmdline() or [])
     except psutil.Error: return False

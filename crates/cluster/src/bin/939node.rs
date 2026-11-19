@@ -166,17 +166,19 @@ mod redteam {
         let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
         let id: EndpointId = node.parse().map_err(|_| "id inválido".to_string())?;
         let c = tokio::time::timeout(Duration::from_secs(10), ep.connect(addr_of(id), alpn(a))).await.map_err(|_| "sin respuesta".to_string())?.map_err(|e| format!("conexión rechazada: {e}"))?;
-        let (mut limited, mut answered) = (0usize, 0usize);
+        let (mut limited, mut answered, mut stop, mut first_err) = (0usize, 0usize, None::<String>, None::<String>);
         for _ in 0..n {
-            let Ok((mut s, mut r)) = c.open_bi().await else { break };
-            if wire::write_msg(&mut s, &v).await.is_err() { break; }
+            let (mut s, mut r) = match c.open_bi().await { Ok(x) => x, Err(e) => { stop = Some(format!("abrir: {e}")); break } };
+            if let Err(e) = wire::write_msg(&mut s, &v).await { stop = Some(format!("escribir: {e}")); break; }
             let _ = s.finish();
-            if let Ok(Ok(resp)) = tokio::time::timeout(Duration::from_secs(5), wire::read_msg::<_, Value>(&mut r)).await {
+            let got = tokio::time::timeout(Duration::from_secs(5), wire::read_msg::<_, Value>(&mut r)).await;
+            if let Ok(Err(e)) = &got { if first_err.is_none() { first_err = Some(e.to_string()); } }
+            if let Ok(Ok(resp)) = got {
                 answered += 1;
                 if resp["msg"].as_str().unwrap_or("").contains("Demasiados pedidos") { limited += 1; }
             }
         }
-        Ok(json!({ "answered": answered, "limited": limited }))
+        Ok(json!({ "answered": answered, "limited": limited, "stop": stop, "error": first_err }))
     }
     pub async fn raw(ep: &Endpoint, node: &str, a: &str, body: &str) -> Result<Value, String> {
         let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
@@ -258,7 +260,9 @@ async fn main() {
     let node_id = identity::load_or_create_node().expect("identidad");
     let secret = identity::node_secret().unwrap();
     let local = Arc::new(Local { mgr: Manager::new(Arc::new(NoEvents)), probe: Probe::new(), fake, name: name.clone(), fakes: Default::default(), exited: Default::default(), rt: tokio::runtime::Handle::current() });
-    let timing = if std::env::var("H939_FAST").is_ok() {
+    // H939_FAST acelera los tiempos para las pruebas; H939_REAL_TIMING usa los del producto (para
+    // medir consumo en reposo).
+    let timing = if std::env::var("H939_FAST").is_ok() && std::env::var("H939_REAL_TIMING").is_err() {
         Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15), request_ttl: Duration::from_secs(std::env::var("H939_REQUEST_TTL").ok().and_then(|v| v.parse().ok()).unwrap_or(120)), ownership_wait: Duration::from_secs(std::env::var("H939_OWNERSHIP_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(20)) }
     } else { Timing::default() };
     // --relays: igual que la app (conexión directa y relays públicos solo como último recurso).

@@ -809,3 +809,53 @@ fn voz_por_udp_llega_a_la_anfitriona() {
     }
     println!("✔ una PC fuera del grupo no puede usar la voz");
 }
+
+/// Medición repetible del consumo en reposo de tres PCs (grupo de tres y amigos entre todas), con
+/// los tiempos reales del producto (no los acelerados de las pruebas). Solo Linux (lee /proc).
+/// Se corre a mano: `cargo test -p host939-cluster --features pruebas --test multi_node
+/// consumo_en_reposo -- --ignored --nocapture` (con RUST_BACKTRACE=0: si está activo, cada error
+/// esperable captura un backtrace y la medición sale inflada).
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn consumo_en_reposo() {
+    fn cpu_ticks(pid: u32) -> u64 {
+        let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let f: Vec<&str> = s.rsplit(')').next().unwrap().split_whitespace().collect();
+        f[11].parse::<u64>().unwrap() + f[12].parse::<u64>().unwrap()
+    }
+    fn rss_mb(pid: u32) -> u64 {
+        let s = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        s.lines().find(|l| l.starts_with("VmRSS")).unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap() / 1024
+    }
+    fn medir(nombre: &str, nodos: &[(&str, u32)], segs: u64) {
+        let t0: Vec<u64> = nodos.iter().map(|(_, p)| cpu_ticks(*p)).collect();
+        std::thread::sleep(Duration::from_secs(segs));
+        for (i, (n, p)) in nodos.iter().enumerate() {
+            let d = cpu_ticks(*p) - t0[i];
+            println!("MEDICION {nombre} {n}: CPU {:.2} % de un núcleo ({d} ticks en {segs} s), RSS {} MB", d as f64 / segs as f64, rss_mb(*p));
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let env = [("H939_REAL_TIMING", "1")];
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &env);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &env);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &env);
+    let ps = [("A", a.pid()), ("B", b.pid()), ("C", c.pid())];
+    medir("solo", &ps, 60);
+    let sid = a.ok("create Consumo 25971").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t1 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    let t2 = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t1}"));
+    c.ok(&format!("join {t2}"));
+    for (x, y) in [(0usize, 1usize), (0, 2), (1, 2)] {
+        let code = [&mut a, &mut b, &mut c][x].ok("finvite").as_str().unwrap().to_string();
+        let _ = [&mut a, &mut b, &mut c][y].cmd(&format!("fadd {code}"));
+    }
+    std::thread::sleep(Duration::from_secs(20));
+    medir("grupo y amigos, apagado", &ps, 120);
+    a.ok(&format!("start {sid}"));
+    std::thread::sleep(Duration::from_secs(10));
+    medir("grupo y amigos, servidor encendido", &ps, 120);
+}

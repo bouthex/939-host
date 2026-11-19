@@ -10,6 +10,13 @@ check() { if LC_ALL=C grep -a -E -q -e "$1" "$exe"; then echo "✘ $2"; fail=1; 
 check '\$2[aby]\$1[0-9]\$[./A-Za-z0-9]{53}' "claves con forma de clave de API de CurseForge"
 check '-----BEGIN ([A-Z ]+ )?PRIVATE KEY-----' "claves privadas PEM"
 check 'ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}' "tokens de GitHub"
+check 'AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]{10,}|sk-[A-Za-z0-9]{32,}' "claves de AWS, Slack u OpenAI"
+# Privacidad: rutas de carpetas personales de quien compiló (las del runner de GitHub no cuentan).
+checkp() { if LC_ALL=C grep -a -P -q -e "$1" "$exe"; then echo "✘ $2:"; LC_ALL=C grep -a -P -o -e "$1" "$exe" | sort -u | head -5 | sed 's/^/    /'; fail=1; else echo "✔ sin $2"; fi; }
+checkp '/home/(?!runner/)[a-z][a-z0-9._-]{1,30}/|/Users/(?!runner/)[A-Z][A-Za-z0-9._-]{1,30}/|C:\\Users\\(?!runneradmin|Public|Default)[A-Za-z][A-Za-z0-9._-]{1,30}\\' "rutas de carpetas personales"
+# IPs literales: se listan para revisarlas (las de ejemplo de los avisos y de loopback son normales).
+ips=$(LC_ALL=C grep -a -o -E '\b(10\.[0-9]{1,3}|192\.168|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}\b' "$exe" | sort -u | tr '\n' ' ')
+echo "ℹ IPs privadas literales en el ejecutable: ${ips:-ninguna}"
 if [ "$mode" = "--release" ]; then
   check 'H939_E2E_DEVTOOLS_PORT|remote-debugging-port' "puerto de depuración de WebView2"
   check 'H939_TEST_(SLOW|FAIL)' "ganchos de prueba"

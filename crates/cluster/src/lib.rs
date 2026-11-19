@@ -2602,30 +2602,58 @@ async fn serve_ctrl(inner: Arc<Inner>, conn: Connection) {
             }
             if learn && inner.is_member(req.server(), &remote) {
                 inner.learn_from(rid).await;
-                let mut conns = inner.conns.lock().await;
                 let key = (remote.clone(), ALPN_CTRL);
-                let same = conns.get(&key).map(|c| c.stable_id() == conn2.stable_id()).unwrap_or(false);
-                if !same {
-                    // Conexión nueva de esa PC (por ejemplo, se reinició): las que esta PC tenía
-                    // guardadas con ella son de antes. Se cierran (no solo se olvidan) para que el
-                    // transporte deje de usar el camino viejo y las próximas se abran de cero.
-                    let stale: Vec<Connection> = conns.iter().filter(|((n, _), c)| n == &remote && c.stable_id() != conn2.stable_id()).map(|(_, c)| c.clone()).collect();
-                    conns.retain(|(n, _), _| n != &remote);
-                    conns.insert(key, conn2.clone());
-                    drop(conns);
-                    let had_stale = !stale.is_empty();
-                    for c in stale { c.close(0u32.into(), b"reemplazada"); }
-                    // Con iroh 1.4, si la otra PC se reinició rápido, el transporte puede quedar
-                    // usando el camino viejo para las conexiones nuevas (lo elige mientras la
-                    // conexión vieja todavía figura viva y no lo vuelve a revisar). Cerradas las
-                    // viejas, se le pide que abra una conexión nueva: eso hace que se vuelva a
-                    // elegir el camino, ya sin el viejo.
-                    if had_stale {
-                        let (inner, remote, server) = (inner.clone(), remote.clone(), req.server().to_string());
-                        tokio::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(300)).await;
-                            let _ = inner.rpc_timeout(&remote, &Req::Nudge { server }, Duration::from_secs(8)).await;
-                        });
+                let (old, others) = {
+                    let c = inner.conns.lock().await;
+                    (c.get(&key).cloned(), c.iter().any(|((n, _), x)| n == &remote && x.stable_id() != conn2.stable_id()))
+                };
+                match old {
+                    Some(old) if old.stable_id() == conn2.stable_id() => {}
+                    None if !others => { inner.conns.lock().await.insert(key, conn2.clone()); }
+                    old => {
+                        // Las conexiones nuevas usan desde ya la recién llegada (si la otra PC se
+                        // reinició, es la única que anda); la guardada no se cierra hasta saber si
+                        // sigue viva.
+                        inner.conns.lock().await.insert(key, conn2.clone());
+                        // Conexión nueva de una PC con la que esta ya tenía una guardada. Puede ser
+                        // normal (las dos se conectaron a la vez, o la otra abrió una aparte) o que
+                        // la otra se haya reiniciado y la guardada sea de antes. Se prueba la
+                        // guardada con un pedido corto: si responde, no se cierra nada (cerrarla
+                        // cortaría pedidos en curso y, si las dos PCs hicieran lo mismo a la vez, se
+                        // cerrarían mutuamente las conexiones una y otra vez). Si no responde, es de
+                        // antes: se cierran las viejas (no solo se olvidan) para que el transporte
+                        // deje de usar el camino viejo, y se le pide a la otra una conexión nueva:
+                        // con iroh 1.4, si la otra PC se reinició rápido, el transporte puede quedar
+                        // usando el camino viejo mientras la conexión vieja figura viva.
+                        // Se resuelve antes de atender el pedido: si la otra PC se reinició, lo que
+                        // pida (por ejemplo, que se le copie su estado final) tiene que encontrar
+                        // ya cerradas las conexiones viejas, o se intentaría por ellas.
+                        let (inner, remote, server, conn2) = (inner.clone(), remote.clone(), req.server().to_string(), conn2.clone());
+                        {
+                            // Sin conexión de control guardada pero con otras (sincronización,
+                            // archivos): la de control ya se descartó por fallar, así que las demás
+                            // también se consideran de antes.
+                            let alive = match &old { None => false, Some(old) => { let probe = Req::Info { server: server.clone() }; tokio::time::timeout(Duration::from_secs(3), async {
+                                let (mut s, mut r) = old.open_bi().await?;
+                                wire::write_msg(&mut s, &probe).await?;
+                                s.finish()?;
+                                wire::read_msg::<_, Resp>(&mut r).await
+                            }).await.map(|r| r.is_ok()).unwrap_or(false) } };
+                            debug(&format!("conexión nueva de {}: la guardada {}", &remote[..4.min(remote.len())], if alive { "responde, no se cierra" } else { "no responde, se cierran las viejas" }));
+                            if !alive {
+                                let mut conns = inner.conns.lock().await;
+                                // La guardada ya no está en la lista (se reemplazó arriba): se suma aparte.
+                                let stale: Vec<Connection> = conns.iter().filter(|((n, _), c)| n == &remote && c.stable_id() != conn2.stable_id()).map(|(_, c)| c.clone()).chain(old).collect();
+                                conns.retain(|(n, _), _| n != &remote);
+                                conns.insert((remote.clone(), ALPN_CTRL), conn2);
+                                drop(conns);
+                                for c in stale { c.close(0u32.into(), b"reemplazada"); }
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_millis(300)).await;
+                                    let _ = inner.rpc_timeout(&remote, &Req::Nudge { server }, Duration::from_secs(8)).await;
+                                });
+                            }
+                        }
                     }
                 }
             }

@@ -402,14 +402,15 @@ impl Manager {
             });
         }
 
-        // Métricas: `tick query` cada 20 s mientras está encendido (salida oculta de la consola).
+        // Métricas: `tick query` cada 20 s mientras está encendido y la ventana está abierta (solo
+        // las usa la interfaz; con 939 Host en la bandeja no se le pide trabajo extra a Minecraft).
         {
             let rt = rt_arc.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(20));
                 let mut r = rt.lock().unwrap();
                 match r.status() {
-                    RunStatus::Running if r.metrics_supported => {
+                    RunStatus::Running if r.metrics_supported && METRICS_WANTED.load(std::sync::atomic::Ordering::Relaxed) => {
                         if let Some(stdin) = r.stdin.as_mut() {
                             if writeln!(stdin, "tick query").and_then(|_| stdin.flush()).is_ok() {
                                 r.suppress_until = Some(Instant::now() + Duration::from_secs(3));
@@ -814,6 +815,12 @@ fn split_args(s: &str) -> Vec<String> {
 pub fn stop_gives_up(elapsed: Duration, quiet: Duration) -> bool {
     elapsed >= Duration::from_secs(600) || (elapsed >= Duration::from_secs(90) && quiet >= Duration::from_secs(60))
 }
+
+static METRICS_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// La interfaz está abierta (true) o 939 Host quedó solo en la bandeja (false): sin ventana no se
+/// piden métricas de rendimiento a los servidores.
+pub fn set_metrics_wanted(on: bool) { METRICS_WANTED.store(on, std::sync::atomic::Ordering::Relaxed); }
 
 fn exit_mark(id: &str) -> std::path::PathBuf { paths::server_dir(id).join("pendiente-publicar") }
 

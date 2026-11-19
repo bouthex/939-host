@@ -91,6 +91,7 @@ pub fn show_main(app: &AppHandle) {
         let _ = w.set_focus();
         return;
     }
+    process::set_metrics_wanted(true);
     let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .additional_browser_args(&browser_args())
         .title("939 Host")
@@ -181,17 +182,20 @@ fn tray_quit(app: &AppHandle) {
 fn start_background_watch(app: AppHandle) {
     std::thread::spawn(move || {
         let mut awake = None;
+        let mut last_tip = String::new();
         loop {
-            let active = active_servers(&app);
-            let want = !active.is_empty() && settings::load().keep_awake_while_hosting;
+            // Solo lo que está en memoria; los ajustes se leen únicamente con servidores encendidos.
+            let ids = app.state::<process::Manager>().active_ids();
+            let want = !ids.is_empty() && settings::load().keep_awake_while_hosting;
             if awake != Some(want) { hardware::keep_awake(want); awake = Some(want); }
             if !QUITTING.load(Ordering::SeqCst) {
-                let tip = match active.len() {
+                let tip = match ids.len() {
                     0 => "939 Host".to_string(),
-                    1 => format!("939 Host — {} encendido", active[0]),
+                    1 => format!("939 Host — {} encendido", active_servers(&app).first().cloned().unwrap_or_default()),
                     n => format!("939 Host — {n} servidores encendidos"),
                 };
-                tray_tooltip(&app, &tip);
+                // El ícono se actualiza solo si el texto cambió (no una llamada al Explorador cada 10 s).
+                if tip != last_tip { tray_tooltip(&app, &tip); last_tip = tip; }
             }
             std::thread::sleep(std::time::Duration::from_secs(10));
         }
@@ -280,6 +284,9 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::Resized(_) = event { webview_memory(window); }
+            if let WindowEvent::Destroyed = event {
+                if window.label() == "main" { process::set_metrics_wanted(false); }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if QUITTING.load(Ordering::SeqCst) { return; }
                 // Cerrar la ventana nunca detiene un servidor encendido: la ventana se destruye

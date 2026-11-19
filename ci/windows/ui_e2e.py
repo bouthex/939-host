@@ -68,10 +68,12 @@ async def main():
             metrics["arranque_error"] = str(e)
         await p.wait_for_timeout(8000)
         metrics["reposo"] = {**medir.memory(), "cpu_pct": medir.cpu(10)}
+        metrics["reposo_cpu_60s"] = [medir.cpu_by_role(60) for _ in range(2)]
         try:
             await p.evaluate("window.__TAURI__.window.getCurrentWindow().minimize()")
             await asyncio.sleep(12)
             metrics["minimizado"] = {**medir.memory(), "cpu_pct": medir.cpu(10)}
+            metrics["minimizado_cpu_60s"] = [medir.cpu_by_role(60) for _ in range(2)]
             await p.evaluate("(async () => { const w = window.__TAURI__.window.getCurrentWindow(); await w.unminimize(); await w.setFocus(); })()")
             await p.wait_for_timeout(1500)
         except Exception as e:
@@ -302,6 +304,17 @@ async def main():
                 await asyncio.sleep(6)
                 procs = medir.processes()
                 metrics["bandeja_con_servidor"] = {**medir.memory(), "cpu_pct": medir.cpu(10), "guardian_mb": medir.memory_of("guardian"), "java_mb": medir.memory_of("java")}
+                # Medición repetible de la bandeja: 30 s para que termine de cerrarse la interfaz,
+                # tres muestras de 60 s por proceso y 10 minutos para ver si la memoria crece.
+                await asyncio.sleep(30)
+                metrics["bandeja_cpu_60s"] = [medir.cpu_by_role(60) for _ in range(3)]
+                soak = []
+                for minute in range(10):
+                    soak.append({"min": minute, "app_mb": medir.private_mb("app"), "guardian_mb": medir.private_mb("guardian"), "java_mb": medir.private_mb("java"), "cpu": medir.cpu_by_role(55)})
+                metrics["bandeja_10_min"] = soak
+                grow = soak[-1]["app_mb"] - soak[0]["app_mb"]
+                if grow > 20:
+                    raise RuntimeError(f"la memoria de 939 Host en la bandeja creció {grow:.1f} MB en 10 minutos")
                 if not procs.get("guardian"):
                     raise RuntimeError("no hay guardián con el servidor encendido")
                 if not procs.get("939Host"):
