@@ -3,6 +3,7 @@ Unicode true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "StrFunc.nsh"
+!include "FileFunc.nsh"
 ${StrStr}
 ${UnStrStr}
 
@@ -99,8 +100,18 @@ Function un.onInit
     MessageBox MB_OK|MB_ICONEXCLAMATION "939 Host está abierto (puede estar en la bandeja, junto al reloj). Cerralo con «Salir de 939 Host…» para que guarde los servidores y volvé a desinstalar." /SD IDOK
     Abort
   ${EndIf}
-  ; Por defecto (y siempre en modo silencioso) se conservan servidores, mundos y copias.
+  ; Por defecto (y en modo silencioso) se conservan servidores, mundos y copias. Para borrarlos
+  ; sin preguntas hay que pedirlo de forma explícita: Desinstalar.exe /S /BORRARDATOS
   StrCpy $DeleteData "0"
+  ${If} ${Silent}
+    ${un.GetParameters} $R0
+    ClearErrors
+    ${un.GetOptions} $R0 "/BORRARDATOS" $R1
+    ${IfNot} ${Errors}
+      StrCpy $DeleteData "1"
+    ${EndIf}
+    Goto keep
+  ${EndIf}
   MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "¿Querés borrar también los datos de 939 Host?$\r$\n$\r$\nNO (recomendado): se quita solo el programa. Tus servidores, mundos, copias de seguridad y configuración quedan en $LOCALAPPDATA\939Host.$\r$\n$\r$\nSÍ: se borran también esos datos." /SD IDNO IDNO keep
     MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "Se va a borrar para siempre la carpeta $LOCALAPPDATA\939Host, que contiene:$\r$\n$\r$\n• todos tus servidores y sus MUNDOS$\r$\n• las copias de seguridad y los puntos de restauración$\r$\n• la Papelera de 939 Host$\r$\n• la identidad de esta PC en los grupos, amigos y mensajes$\r$\n• la configuración, Java descargado por 939 Host y las cachés$\r$\n$\r$\nNo se puede deshacer. ¿Borrar todo?" /SD IDNO IDNO keep
       StrCpy $DeleteData "1"

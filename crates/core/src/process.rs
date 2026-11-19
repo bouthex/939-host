@@ -594,7 +594,10 @@ fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: S
         }
         if line.contains("The game is frozen") { if !r.paused { r.paused = true; changed = true; } }
         if line.contains("The game is running normally") || line.contains("The game is not frozen") { if r.paused { r.paused = false; changed = true; } }
-        if line.contains("Saving the game") || line.contains("Saving chunks for level") || line.contains("Saving worlds") {
+        // Solo «Saving the game» (save-all) tiene un final seguro («Saved the game»). Desde 26.3,
+        // Minecraft escribe «Saving chunks for level…» al terminar de arrancar sin ningún mensaje
+        // de cierre: tomarlo como guardado dejaba el estado en «Guardando» para siempre.
+        if line.contains("Saving the game") {
             if !r.saving { r.saving = true; changed = true; }
         }
         if line.contains("Saved the game") || line.contains("All dimensions are saved") || line.contains("All chunks are saved") {

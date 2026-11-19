@@ -60,11 +60,15 @@ pub fn recovering(id: &str) -> bool {
         .and_then(|t| t.elapsed().ok()).map(|e| e.as_secs() < 660).unwrap_or(false)
 }
 
-/// Resultado según lo que Minecraft escribió en `logs/latest.log` desde que se le pidió `stop`.
-pub fn outcome_from_log(appended: &str, exited: bool) -> &'static str {
+/// Resultado de detener un servidor con `stop`: lo que Minecraft escribió en `logs/latest.log`
+/// desde entonces y su código de salida. Una salida con código 0 después de `stop` significa que
+/// Minecraft terminó su secuencia normal de cierre, que siempre guarda jugadores y mundos (desde
+/// 26.3 ya no escribe «All dimensions are saved», así que el código de salida es la señal fiable).
+pub fn outcome_from_log(appended: &str, exited: bool, exit_code: Option<u32>) -> &'static str {
     if !exited { return "forzado"; }
-    let saved = ["All dimensions are saved", "All chunks are saved", "Saved the game", "ThreadedAnvilChunkStorage: All dimensions are saved"].iter().any(|k| appended.contains(k));
-    if saved { "guardado" } else { "detenido" }
+    let saved_msg = ["All dimensions are saved", "All chunks are saved", "Saved the game"].iter().any(|k| appended.contains(k));
+    let clean_stop = exit_code == Some(0) && appended.contains("Stopping");
+    if saved_msg || clean_stop { "guardado" } else { "detenido" }
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -162,7 +166,7 @@ pub fn run() -> ! {
     use std::os::windows::io::FromRawHandle;
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, TerminateProcess, WaitForSingleObject};
 
     struct Srv { id: String, proc_h: usize, stdin_h: usize }
     let mut servers: Vec<Srv> = vec![];
@@ -207,7 +211,9 @@ pub fn run() -> ! {
             let give_up = !exited && crate::process::stop_gives_up(started.elapsed(), last_change.elapsed());
             if exited || give_up {
                 if give_up { unsafe { TerminateProcess(s.proc_h as HANDLE, 1); } }
-                let outcome = outcome_from_log(&log_since(run_dir, *from), exited);
+                let mut code: u32 = 1;
+                let code = (exited && unsafe { GetExitCodeProcess(s.proc_h as HANDLE, &mut code) } != 0).then_some(code);
+                let outcome = outcome_from_log(&log_since(run_dir, *from), exited, code);
                 write_record(&s.id, &LastClose { at: chrono::Local::now().to_rfc3339(), cause: "cierre-inesperado".into(), outcome: outcome.into(), seconds: started.elapsed().as_secs() });
                 // El estado final se publica al grupo la próxima vez que se abre 939 Host.
                 if outcome != "forzado" { crate::process::mark_exit_unsaved(&s.id); }
@@ -234,10 +240,14 @@ mod tests {
 
     #[test]
     fn resultado_segun_el_registro() {
-        let saved = "[Server thread/INFO]: Stopping the server\n[Server thread/INFO]: Saving worlds\n[Server thread/INFO]: ThreadedAnvilChunkStorage: All dimensions are saved\n";
-        assert_eq!(outcome_from_log(saved, true), "guardado");
-        assert_eq!(outcome_from_log("[Server thread/INFO]: Stopping the server\n", true), "detenido");
-        assert_eq!(outcome_from_log(saved, false), "forzado");
+        let old = "[Server thread/INFO]: Stopping the server\n[Server thread/INFO]: Saving worlds\n[Server thread/INFO]: ThreadedAnvilChunkStorage: All dimensions are saved\n";
+        assert_eq!(outcome_from_log(old, true, Some(1)), "guardado", "versiones viejas: el mensaje alcanza");
+        // 26.3: sin «All dimensions are saved»; vale la salida normal (código 0) tras «Stopping».
+        let new = "[Server thread/INFO]: Stopping server\n[Server thread/INFO]: Saving players\n[Server thread/INFO]: Saving worlds\n[Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:overworld\n";
+        assert_eq!(outcome_from_log(new, true, Some(0)), "guardado");
+        assert_eq!(outcome_from_log(new, true, Some(1)), "detenido", "salida con error: sin confirmación");
+        assert_eq!(outcome_from_log("", true, Some(0)), "detenido", "sin «Stopping» no se da por guardado");
+        assert_eq!(outcome_from_log(old, false, None), "forzado");
     }
 
     #[test]

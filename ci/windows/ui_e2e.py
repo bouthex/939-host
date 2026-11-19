@@ -379,7 +379,8 @@ async def main():
             return json.load(open(path, encoding="utf-8"))
 
         def saved_in(text):
-            return any(k in text for k in ("All dimensions are saved", "All chunks are saved", "Saved the game"))
+            # 26.3 ya no escribe «All dimensions are saved»: la secuencia de cierre es Saving players → Saving worlds.
+            return any(k in text for k in ("All dimensions are saved", "All chunks are saved", "Saved the game")) or ("Saving players" in text and "Saving worlds" in text)
 
         if ok:
             async def crash():

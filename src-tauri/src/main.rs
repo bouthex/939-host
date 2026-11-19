@@ -142,7 +142,7 @@ fn quit_inner(app: &AppHandle, session: Option<&'static str>) {
         if let Some(cause) = session {
             let mgr = app.state::<process::Manager>();
             for id in &active {
-                let outcome = if mgr.is_active(id) { "forzado" } else if mgr.last_stop_forced(id) { "forzado" } else { "guardado" };
+                let outcome = if mgr.is_active(id) || mgr.last_stop_forced(id) { "forzado" } else { "guardado" };
                 host939_core::guardian::write_record(id, &host939_core::guardian::LastClose { at: chrono::Local::now().to_rfc3339(), cause: cause.into(), outcome: outcome.into(), seconds: started.elapsed().as_secs() });
             }
             shutdown::done();
@@ -224,8 +224,10 @@ fn main() {
             // Apagado y cierre de sesión de Windows con servidores encendidos.
             shutdown::start(app.handle().clone());
             // Papelera: lo que lleva más de 30 días se borra al abrir y después cada 6 horas.
+            // También los temporales de operaciones cortadas (solo los de más de 6 horas).
             std::thread::spawn(|| loop {
                 let _ = host939_core::trash::purge_expired();
+                let _ = host939_core::storage::clean_temps();
                 std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
             });
             let node = identity::load_or_create_node().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;

@@ -206,10 +206,30 @@ jobs:
           $u = "$env:LOCALAPPDATA\Programs\939 Host\Desinstalar 939 Host.exe"
           if (!(Test-Path $u)) { $u = Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host\*.exe" | Where-Object Name -match 'esinst|uninst' | Select-Object -First 1 -ExpandProperty FullName }
           if ($u) { Start-Process $u -ArgumentList '/S' -Wait; Start-Sleep 5 }
-          if (Test-Path "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe") { throw "No se desinstaló" }
+          function Check-Clean($what) {
+            if (Test-Path "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe") { throw "${what}: no se quitó el programa" }
+            if (Get-Process 939Host, java -ErrorAction SilentlyContinue) { throw "${what}: quedaron procesos de 939 Host o Java" }
+            if (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "939 Host" -ErrorAction SilentlyContinue) { throw "${what}: quedó el inicio con Windows" }
+            if (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\939Host") { throw "${what}: quedó la entrada de Programas instalados" }
+            if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\939 Host") { throw "${what}: quedó el acceso del menú Inicio" }
+            if (Test-Path "$env:LOCALAPPDATA\ar.host939.app") { throw "${what}: quedó la caché de la interfaz" }
+            if (Select-String -Path "$env:WINDIR\System32\drivers\etc\hosts" -Pattern "# >>> 939 Host" -Quiet) { throw "${what}: quedó el bloque de 939 Host en hosts" }
+            if (Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object TaskName -match '939') { throw "${what}: quedó una tarea programada" }
+            if (Get-Service -ErrorAction SilentlyContinue | Where-Object Name -match '939') { throw "${what}: quedó un servicio" }
+            if (Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object DisplayName -match '939') { throw "${what}: quedó una regla de Firewall" }
+          }
+          Check-Clean "conservando datos"
           # Los servidores, mundos e identidad del usuario no se borran sin su consentimiento.
           if (!(Test-Path "$env:LOCALAPPDATA\939Host")) { throw "La desinstalación borró la carpeta de datos del usuario" }
-          Write-Output "Desinstalado; la carpeta de datos del usuario se conserva."
+          Write-Output "1) Desinstalado conservando datos: programa, procesos, registro, accesos, caché y hosts limpios; datos intactos."
+          # 2) Reinstalar y desinstalar pidiendo explícitamente borrar los datos.
+          $inst = Get-ChildItem dist\*-instalador.exe | Select-Object -First 1
+          Start-Process $inst.FullName -ArgumentList '/S' -Wait
+          $u = Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host\*.exe" | Where-Object Name -match 'esinst|uninst' | Select-Object -First 1 -ExpandProperty FullName
+          Start-Process $u -ArgumentList '/S', '/BORRARDATOS' -Wait; Start-Sleep 5
+          Check-Clean "borrando datos"
+          if (Test-Path "$env:LOCALAPPDATA\939Host") { throw "Con /BORRARDATOS no se borró la carpeta de datos" }
+          Write-Output "2) Desinstalado borrando datos (pedido explícito): no quedó nada de 939 Host."
       - name: Estado de Windows Defender y Firewall (y detecciones durante las pruebas)
         if: always()
         timeout-minutes: 5

@@ -198,15 +198,21 @@ Además:
 |---|---|---|---|
 | App cerrada desde la bandeja (o sin abrir) | Ninguno de 939 Host. Si «Iniciar con Windows» está activo, se abre al iniciar sesión y vuelve a la fila de abajo | Ninguno | Nada: no hay servicio de Windows, tarea programada ni proceso residente |
 | App abierta, sin servidores | `939 Host.exe` (interfaz y nodo P2P) | Un socket UDP de iroh (QUIC) en un puerto alto aleatorio | Solo el nodo iroh: cada conexión se autentica con la clave de la PC remota y cada ALPN exige ser del grupo o amigo |
-| Ventana cerrada con un servidor encendido | `939 Host.exe` en la bandeja + `java.exe` dentro de un Job Object | Minecraft escucha en `127.0.0.1` (o en la dirección `.939host` de loopback); la voz, en esa misma dirección por UDP. Con «Acceso por LAN» activado, también en la red local | Lo mismo que arriba. Nada de Minecraft queda en internet salvo que la persona configure una dirección pública propia (playit.gg, router) |
-| Cerrar 939 Host mientras aloja | Primero traspasa o suelta cada servidor con el último estado guardado, después detiene Java | Se cierran todos | Nada |
+| Ventana cerrada con un servidor encendido | `939 Host.exe` en la bandeja + el guardián (`939 Host.exe --guardian`, sin ventana ni red) + `java.exe` dentro de un Job Object | Minecraft escucha en `127.0.0.1` (o en la dirección `.939host` de loopback); la voz, en esa misma dirección por UDP. Con «Acceso por LAN» activado, también en la red local | Lo mismo que arriba. Nada de Minecraft queda en internet salvo que la persona configure una dirección pública propia (playit.gg, router) |
+| Salir desde la bandeja con servidores encendidos | Pregunta; pasa o suelta los servidores compartidos y detiene cada uno con `stop` (guardando); después termina todo, el guardián incluido | Se cierran todos | Nada |
+| «Cerrar igual» mientras todavía guarda, o 939 Host muere de golpe | El guardián le manda `stop` a cada Java (guarda y se detiene, hasta 10 minutos si sigue guardando) y termina; al volver a abrir se cuenta qué pasó | Se cierran todos | Nada |
+| Apagado, reinicio o cierre de sesión de Windows | Con servidores encendidos pide tiempo a Windows con un motivo visible, hace el cierre ordenado y lo libera (tope de 3 minutos); sin servidores no lo demora | Se cierran todos | Nada |
+| Corte de luz | Nada se puede hacer en el momento: protegen los guardados de Minecraft y los puntos de restauración | — | — |
 
 Datos locales (todos dentro de `%LOCALAPPDATA%\939Host`):
 
 - Clave del nodo protegida con DPAPI; configuración, integrantes firmados, historial de permisos.
 - Mundos, puntos de restauración y copias (con tope configurable de espacio).
-- Amigos: lista, solicitudes, bloqueados y chats (como mucho 500 mensajes por chat). Sin cifrado
-  propio en disco: se protege con los permisos de la cuenta de Windows.
+- Amigos: lista, solicitudes, códigos de invitación y chats (como mucho 500 mensajes por chat),
+  **cifrados con DPAPI** (`amigos.bin`, `mensajes/*.bin`). Solo la misma cuenta de Windows en la
+  misma PC los descifra. Si esa clave se pierde (Windows reinstalado, cuenta borrada), el archivo
+  se aparta como `*.ilegible-<fecha>` y se empieza de nuevo: los chats no se recuperan y hay que
+  volver a invitar a los amigos.
 - Fotos de perfil propias y de otras PCs (caché por huella SHA-256, 100 KB como máximo cada una).
 - El desinstalador pregunta dos veces antes de borrar estos datos; por defecto los conserva.
 
@@ -234,8 +240,15 @@ cada PC).
   lee como mucho 20 MB y solo si el contenido es PNG, JPG, WebP o GIF por sus primeros bytes.
   No es alcanzable desde la red.
 - **Estado compartido y OP de Minecraft.** El estado del servidor que muestran las otras PCs lo
-  anuncia la anfitriona y se muestra como tal. Los OP para coanfitrionas viajan en la
-  configuración firmada por la propietaria: una coanfitriona no puede darse OP a sí misma.
+  anuncia la anfitriona y se muestra como tal. La lista de OP autorizados es la firmada por la
+  propietaria (OP de integrantes + otras cuentas que ella autorizó, incluido lo que ya tenía su
+  `ops.json` al empezar). La anfitriona da OP a quien falte y quita, con un aviso y después de un
+  margen de 15 s, cualquier OP fuera de la lista (consola de una coanfitriona, `/op` en el juego,
+  `ops.json` editado). Un `op`/`deop` desde la consola o Jugadores de la propietaria actualiza la
+  lista firmada. `ops.json` no se puede subir desde otra PC.
+- **Guardián.** Proceso sin ventana, sin red y sin privilegios que solo recibe duplicados del Job
+  Object, del proceso de Java y de su consola. No acepta órdenes de nada más que de 939 Host (su
+  entrada es una tubería anónima).
 - **Indicadores de operaciones.** Solo locales; nunca inventan porcentajes.
 
 ## Modelo de amenazas (resumen STRIDE)
@@ -256,48 +269,34 @@ cada PC).
 | Amigo malicioso | Mandar mensajes molestos; ver presencia y qué servidor se juega | 20 mensajes por minuto, 500 caracteres; quitar o bloquear; «No disponible» |
 | Malware local con la sesión del usuario | Todo lo que puede el usuario: leer la clave del nodo, chats y mundos | Fuera del alcance de una app sin privilegios; Defender, cuentas separadas |
 
-## Riesgos residuales
+## Riesgos residuales (revisados uno por uno en la fase de calidad)
 
-1. **Mods aprobados.** Pueden hacer todo lo que puede el usuario de Windows. Minecraft no se
-   puede aislar sin romper el juego.
-2. **Grupo de dos PCs.** La coanfitriona puede apagar a la anfitriona con «Recuperar aquí»: no
-   hay terceros que confirmen. Queda registrado y la propietaria puede revertirlo.
-3. **Una coanfitriona recibe el mundo completo** (lo necesita para alojarlo), incluido
-   `server.properties` y la carpeta de jugadores.
-4. **El relay ve metadatos** (IP, horarios, volumen). En modo normal, una conexión directa
-   muestra la IP a la otra PC.
-5. **DPAPI protege contra otros usuarios, no contra malware** que corra con tu misma sesión.
-6. **Las jugadoras ven el historial de permisos** (qué PC alojó y cuándo). Lo necesitan para
-   verificar la cadena.
-7. **Las esperas de 72 h usan el reloj de cada PC.** Una PC con el reloj adelantado vería
-   terminar la espera antes.
-8. **Una invitación filtrada usada antes que el destinatario** da acceso con ese rol hasta que la
-   propietaria quite la PC.
-9. **El ejecutable no está firmado digitalmente** (la firma depende de SignPath).
-10. **Todas las PCs del grupo tienen que tener esta versión:** los permisos sin firma de versiones
-    anteriores se rechazan.
-11. **El nombre de un mod pendiente lo elige quien lo subió.** La propietaria aprueba una huella;
-    un mod malicioso puede llamarse como uno conocido. Aprobar es confiar en el origen.
-12. **Una coanfitriona elige qué anuncia de sí misma** (frescura de su copia, puntaje): puede
-    quedar primera para alojar si la anfitriona se cae. Puede alojar igual por su rol.
-13. **Configuración de mods aprobados:** algunos mods ejecutan scripts desde `config/` (por
-    ejemplo, KubeJS). Si la propietaria aprueba un mod así, una coanfitriona puede cambiar lo que
-    hace subiendo archivos de configuración.
-14. **Una coanfitriona puede ofrecer un punto falso de una época anterior.** No gana mientras la
-    anfitriona cree puntos en la época actual (con el servidor encendido, cada 15 minutos por
-    defecto, y siempre antes de un traspaso).
-15. **Traspaso automático con el servidor detenido.** Si la PC que tiene el permiso no está
-    alojando, acepta sola un pedido de otra PC con permiso para alojar. Con el servidor
-    encendido, siempre pregunta.
-16. **La anfitriona controla su Minecraft mientras aloja.** Desde la consola puede dar OP a
-    cualquiera en esa sesión; la lista firmada se vuelve a comparar con `ops.json` en cada vuelta de control mientras aloja; un OP agregado a mano fuera de esa lista no se quita solo.
-17. **La voz solo funciona por la dirección `.939host`.** Quien entra por una dirección pública
-    propia (playit.gg, router) necesita además el puerto UDP de Simple Voice Chat abierto ahí.
-18. **Si el proceso de 939 Host muere de golpe** (Administrador de tareas, corte de luz), el Job
-    Object cierra Java sin guardar: se pierde lo jugado desde el último guardado de Minecraft o el
-    último punto (cada 15 minutos por defecto).
-19. **Apagar Windows con un servidor encendido** da poco tiempo: Windows puede cortar antes de que
-    termine el guardado. Conviene detener el servidor antes.
-20. **Los chats de amigos se guardan sin cifrado propio** en la carpeta del usuario.
-21. **Los límites contra abuso frenan el volumen, no la existencia de pedidos:** una PC que conoce
-    la identidad del nodo puede seguir abriendo conexiones (cada una cuesta un saludo TLS).
+Estados: **Corregido** (ya no aplica como estaba), **Reducido** (sigue, con menos alcance),
+**Reducible** (se puede bajar más; queda anotado cómo), **Inevitable** (límite del diseño o de la
+plataforma), **Pendiente de infraestructura**, **Pendiente de pruebas reales**.
+
+| # | Riesgo | Estado | Detalle |
+|---|---|---|---|
+| 1 | Mods aprobados pueden hacer todo lo que el usuario de Windows | Inevitable | Minecraft no se puede aislar sin romper el juego; cuarentena por huella y aprobación explícita |
+| 2 | Grupo de 2 PCs: la coanfitriona puede apagar a la anfitriona con «Recuperar aquí» | Reducible | Queda registrado y la propietaria lo revierte. Se podría exigir su confirmación o una espera |
+| 3 | La coanfitriona recibe el mundo completo | Inevitable | Lo necesita para alojarlo |
+| 4 | El relay ve metadatos; en modo normal la otra PC ve la IP | Inevitable (con mitigación) | El modo privado oculta la IP a las otras PCs; el relay siempre ve IP, horarios y volumen |
+| 5 | DPAPI no protege contra malware con tu misma sesión | Inevitable | Límite de cualquier app sin privilegios |
+| 6 | Las jugadoras ven el historial de permisos | Inevitable | Lo necesitan para verificar la cadena firmada |
+| 7 | Las esperas de 72 h usan el reloj de cada PC | Reducible | Se podría medir con marcas de tiempo de la mayoría del grupo |
+| 8 | Una invitación filtrada usada primero da acceso | Reducido | Un solo uso, vence en 24 h, aviso a la propietaria, quitar la PC |
+| 9 | El ejecutable no está firmado | Pendiente de infraestructura | Depende de SignPath u otro certificado; Smart App Control puede bloquearlo |
+| 10 | Todas las PCs necesitan esta versión | Inevitable | Los permisos sin firma de versiones viejas se rechazan a propósito |
+| 11 | El nombre de un mod pendiente lo elige quien lo subió | Reducible | Se podría mostrar su origen buscando la huella en Modrinth |
+| 12 | Una coanfitriona elige qué anuncia de sí misma | Reducible | Se podrían firmar los índices de los puntos |
+| 13 | Scripts en `config/` de mods aprobados (KubeJS) | Reducible | Se podría poner `config/` en cuarentena para mods que ejecutan scripts |
+| 14 | Punto falso de una época anterior | Reducido | No gana mientras la anfitriona crea puntos en la época actual; se podrían firmar los índices |
+| 15 | Traspaso automático con el servidor detenido | Inevitable por diseño (decisión de producto) | Con el servidor encendido siempre pregunta; detenido, no hay nada que proteger |
+| 16 | OP agregados fuera de la lista autorizada | **Corregido** | Lista firmada como única autoridad; se revierte con aviso; prueba `estado_compartido_y_op_concedido_por_la_propietaria` |
+| 17 | La voz por una dirección pública depende del servicio externo | Pendiente de infraestructura | Ver [`DIRECCIONES-PUBLICAS.md`](DIRECCIONES-PUBLICAS.md) |
+| 18 | Si 939 Host muere de golpe, Java se cerraba sin guardar | **Corregido** (salvo corte de luz) | El guardián detiene Java con `stop`; probado en Windows matando el proceso. Si el guardián también muere, el Job Object cierra Java como antes |
+| 19 | Apagar Windows con un servidor encendido | **Corregido** (pendiente de prueba real) | Pide tiempo con motivo visible y guarda; probado con el aviso simulado en Windows; falta un apagado real |
+| 20 | Chats de amigos en texto plano | **Corregido** | Cifrados con DPAPI; migración automática |
+| 21 | Una PC que conoce la identidad del nodo puede seguir abriendo conexiones | Inevitable (con mitigación) | Límites por PC, tamaño y tiempo; cada conexión cuesta un saludo TLS |
+| 22 | Jugadores sin 939 Host sin revelar la IP de la casa | Pendiente de infraestructura | Requisito abierto; ver [`DIRECCIONES-PUBLICAS.md`](DIRECCIONES-PUBLICAS.md) |
+| 23 | «Finalizar árbol de procesos» en el Administrador de tareas | Inevitable | Termina también al guardián y a Java: el Job Object cierra Java sin guardar (como un corte) |
