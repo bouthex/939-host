@@ -204,9 +204,10 @@ Mediciones de la app (Windows de la CI): arranque 8,6 s; en reposo 116 MB de mem
 
 - `Pruebas en Windows` en `363f33e`: **6 de 6 trabajos en verde** (núcleo y servidores reales,
   cliente real, dos PCs, instalador, app instalada).
-- El commit de los límites contra abuso y este informe se publican después; su corrida se
-  revisa al publicar (ver el commit final).
-- El flujo `CI` general corre en `main` y en PRs; no se ejecuta solo en esta rama.
+- `ed8f259` (límites contra abuso + este informe): `Pruebas en Windows` **en verde** y el flujo
+  `CI` general (pruebas en Linux y compilación de Windows x64), lanzado a mano sobre esta rama,
+  **en verde**.
+- Este último commit solo cambia esta sección del informe.
 
 ## 14. Commit final en `rediseno-v3`
 
