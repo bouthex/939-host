@@ -132,6 +132,19 @@ jobs:
           if (Test-Path $exe) { throw "La desinstalación dejó el ejecutable" }
           "✔ versión de prueba: instala, abre, sin puerto de depuración, desinstala"
 
+  actualizaciones-windows:
+    name: Actualizaciones y firma del propietario en Windows
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: actualizaciones-windows
+      - name: Verificación, descarga reanudable, herramienta del propietario y clave en CNG
+        run: cargo test --locked -p host939-update --features propietario -- --nocapture
+
   nucleo-windows:
     name: Núcleo, P2P y grupo en Windows (servidores reales)
     runs-on: windows-2025
