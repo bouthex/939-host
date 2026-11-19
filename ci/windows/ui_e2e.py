@@ -89,8 +89,11 @@ async def main():
                 log(True, what, r or "")
                 return True
             except Exception as e:
-                await shot("ERROR-" + what.replace(" ", "-")[:40], 100)
-                log(False, what, str(e).splitlines()[0][:300])
+                try:
+                    await shot("ERROR-" + what.replace(" ", "-")[:40], 100)
+                except Exception:
+                    pass  # la app puede haberse cerrado a propósito (apagado simulado)
+                log(False, what, f"{type(e).__name__}: {str(e).splitlines()[0][:300] if str(e) else ''}")
                 return False
 
         async def state_text():
