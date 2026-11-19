@@ -529,7 +529,7 @@ impl Manager {
         let mut r = rt.lock().unwrap();
         if r.is_active() { return false; }
         // También vale lo que dejó anotado el guardián tras un cierre inesperado de 939 Host.
-        let marked = std::fs::remove_file(exit_mark(id)).is_ok();
+        let marked = take_exit_mark(id);
         std::mem::take(&mut r.exited_unsaved) || marked
     }
 
@@ -820,6 +820,9 @@ fn exit_mark(id: &str) -> std::path::PathBuf { paths::server_dir(id).join("pendi
 /// El servidor se detuvo sin que 939 Host publicara su estado final (lo usa el guardián): la
 /// próxima vez que 939 Host lo vea, lo trata como una salida sin publicar.
 pub fn mark_exit_unsaved(id: &str) { let _ = std::fs::write(exit_mark(id), b"1"); }
+
+/// Lee y quita la marca que dejó el guardián (true si había una).
+pub fn take_exit_mark(id: &str) -> bool { std::fs::remove_file(exit_mark(id)).is_ok() }
 
 fn check_lock(probe: &Probe, run_dir: &std::path::Path) -> AppResult<()> {
     let lock = run_dir.join(".939host.lock");

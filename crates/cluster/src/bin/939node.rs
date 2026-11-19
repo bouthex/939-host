@@ -117,7 +117,7 @@ impl LocalHost for Local {
         self.mgr.send_command(server, cmd).map_err(|e| e.message)
     }
     fn exited_unsaved(&self, server: &str) -> bool {
-        if self.fake { return self.exited.lock().unwrap().remove(server); }
+        if self.fake { return self.exited.lock().unwrap().remove(server) | host939_core::process::take_exit_mark(server); }
         self.mgr.take_exit_unsaved(server)
     }
     fn profile(&self) -> host939_cluster::HostProfile {

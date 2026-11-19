@@ -152,6 +152,9 @@ enum Req {
     Vote { server: String, epoch: u64, candidate: String, fresh: (u64, u64) },
     SyncNow { server: String },
     Bye { server: String },
+    /// «Abrime una conexión nueva»: lo pide una PC que acaba de ver que esta se reinició, para que
+    /// su transporte deje de usar el camino viejo (ver `serve_ctrl`).
+    Nudge { server: String },
     /// Una PC del grupo pide alojar el servidor (llega al anfitrión actual).
     HostRequest { server: String, name: String, symbol: String, profile: HostProfile },
     HostRequestCancel { server: String },
@@ -174,7 +177,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } => server,
         }
     }
 }
@@ -287,6 +290,9 @@ struct SrvState {
     /// OP sin autorizar vistos en `ops.json` y desde cuándo: se quitan recién después de un margen
     /// (así una lista firmada que todavía viene en camino no hace quitar un OP legítimo).
     op_unauthorized: HashMap<String, Instant>,
+    /// PCs a las que todavía no les llegó el aviso del estado final (estaban desconectadas o esta
+    /// PC recién arrancaba): se les reenvía en cuanto responden.
+    final_pending: HashSet<String>,
     /// Fotos de perfil que se están pidiendo (por huella).
     avatar_fetch: HashSet<String>,
 }
@@ -310,6 +316,9 @@ struct Inner {
     started: Instant,
     peers: RwLock<HashMap<String, EndpointAddr>>,
     conns: tokio::sync::Mutex<HashMap<(String, &'static [u8]), Connection>>,
+    /// Conexiones de control que abre esta PC: una tarea fija también atiende por ellas los pedidos
+    /// de la otra PC (ver `serve_ctrl`).
+    serve_tx: tokio::sync::mpsc::UnboundedSender<Connection>,
     state: Mutex<HashMap<String, SrvState>>,
     routes: tokio::sync::Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     stopping: std::sync::atomic::AtomicBool,
@@ -523,6 +532,7 @@ impl GroupNode {
         for (k, v) in network::load_peers() {
             if let Ok(a) = serde_json::from_value::<EndpointAddr>(v) { peers.insert(k, a); }
         }
+        let (serve_tx, mut serve_rx) = tokio::sync::mpsc::unbounded_channel::<Connection>();
         let inner = Arc::new(Inner {
             ep: ep.clone(), relays, key: iroh::SecretKey::from_bytes(&secret), me, name: RwLock::new((name.to_string(), String::new())), local, timing, started: Instant::now(),
             peers: RwLock::new(peers), conns: Default::default(), state: Default::default(), routes: Default::default(),
@@ -530,7 +540,12 @@ impl GroupNode {
             ctrl_limit: Mutex::new(RateLimit::new(CTRL_PER_MIN, 20_000)), sync_now_limit: Mutex::new(RateLimit::new(12, 200)),
             data_limit: Mutex::new(RateLimit::new(3000, 50_000)),
             friends_live: Default::default(), unread: Default::default(), voice_slots: Default::default(),
+            serve_tx,
         });
+        {
+            let inner = inner.clone();
+            tokio::spawn(async move { while let Some(c) = serve_rx.recv().await { tokio::spawn(serve_ctrl(inner.clone(), c)); } });
+        }
         let h = Handler(inner.clone());
         let router = Router::builder(ep)
             .accept(ALPN_CTRL, h.clone()).accept(ALPN_SYNC, SyncH(inner.clone())).accept(ALPN_MC, McH(inner.clone()))
@@ -1863,9 +1878,26 @@ impl Inner {
             if c.close_reason().is_none() { return Ok(c.clone()); }
         }
         let id: EndpointId = node.parse().map_err(|_| anyhow!("id de nodo inválido"))?;
-        let addr = self.peers.read().unwrap().get(node).cloned().unwrap_or_else(|| EndpointAddr::new(id));
+        let stored = self.peers.read().unwrap().get(node).cloned().unwrap_or_else(|| EndpointAddr::new(id));
+        // Lo guardado puede ser de antes de que la otra PC se reiniciara (otro puerto): se suman las
+        // direcciones que el transporte ya conoce de esa PC (por ejemplo, por una conexión que ella
+        // abrió hace un momento). En modo privado no hay transporte IP propio, así que esto nunca
+        // abre una conexión directa.
+        let info = self.ep.remote_info(id).await;
+        let active: Vec<_> = info.as_ref().map(|i| i.addrs().filter(|x| matches!(x.usage(), iroh::endpoint::TransportAddrUsage::Active)).map(|x| x.addr().clone()).collect()).unwrap_or_default();
+        let addr = if active.iter().any(|a| a.is_ip()) {
+            // Hay un camino directo en uso ahora mismo: se usa ese (más los relays guardados), no
+            // direcciones viejas que pueden ser de antes de un reinicio.
+            EndpointAddr::from_parts(id, active.into_iter().chain(stored.addrs.iter().filter(|t| !t.is_ip()).cloned()))
+        } else {
+            let known: Vec<_> = info.map(|i| i.addrs().map(|x| x.addr().clone()).collect()).unwrap_or_default();
+            EndpointAddr::from_parts(id, stored.addrs.iter().cloned().chain(known))
+        };
         let c = tokio::time::timeout(Duration::from_secs(6), self.ep.connect(addr, alpn)).await.context("sin respuesta")??;
         self.conns.lock().await.insert(key, c.clone());
+        // La conexión de control sirve en los dos sentidos: la otra PC también puede usarla para
+        // consultarle a esta (ver `serve_ctrl`).
+        if alpn == ALPN_CTRL { let _ = self.serve_tx.send(c.clone()); }
         Ok(c)
     }
 
@@ -2290,6 +2322,7 @@ impl Inner {
         match &l {
             Some(l) if l.held_by(&self.me) => {
                 if !self.local.is_running(server) && self.local.exited_unsaved(server) { self.publish_final(server).await; }
+                self.retry_final(server).await;
                 self.apply_mc_ops(server, &share);
                 self.host_checks(server, &share).await;
                 // La anfitriona tiene el servidor apagado y otra coanfitriona pidió alojarlo: no hay
@@ -2320,18 +2353,39 @@ impl Inner {
         match tokio::task::spawn_blocking(move || l2.snapshot(&s2, "Al detener el servidor", "auto")).await {
             Ok(Ok(info)) => {
                 let share = network::load_share(server);
-                let futs = share.members.iter().filter(|m| m.node_id != self.me && m.can_host()).map(|m| {
-                    let node = m.node_id.clone();
-                    let req = Req::SyncNow { server: server.into() };
-                    async move { let _ = self.rpc_timeout(&node, &req, Duration::from_secs(4)).await; }
-                });
-                futures_util::future::join_all(futs).await;
-                self.local.note(server, &format!("Estado final guardado (punto {}) y enviado a las demás PCs del grupo.", info.seq));
+                let targets: Vec<String> = share.members.iter().filter(|m| m.node_id != self.me && m.can_host()).map(|m| m.node_id.clone()).collect();
+                let failed = self.notify_final(server, &targets).await;
+                let msg = if failed.is_empty() {
+                    format!("Estado final guardado (punto {}) y enviado a las demás PCs del grupo.", info.seq)
+                } else {
+                    format!("Estado final guardado (punto {}). Se enviará a las PCs que no respondieron en cuanto se conecten.", info.seq)
+                };
+                self.with_state(server, |st| st.final_pending.extend(failed));
+                self.local.note(server, &msg);
                 self.local.changed(server);
             }
             Ok(Err(e)) => self.local.note(server, &format!("No se pudo guardar el estado final para el grupo: {e}")),
             Err(_) => {}
         }
+    }
+
+    /// Avisa a esas PCs que copien el estado final ya. Devuelve las que no respondieron.
+    async fn notify_final(self: &Arc<Self>, server: &str, nodes: &[String]) -> Vec<String> {
+        let futs = nodes.iter().map(|node| {
+            let req = Req::SyncNow { server: server.into() };
+            async move { (node.clone(), self.rpc_timeout(node, &req, Duration::from_secs(4)).await.is_ok()) }
+        });
+        futures_util::future::join_all(futs).await.into_iter().filter(|(_, ok)| !ok).map(|(n, _)| n).collect()
+    }
+
+    /// Reintenta el aviso del estado final a las PCs que antes no respondieron y ahora sí.
+    async fn retry_final(self: &Arc<Self>, server: &str) {
+        let ready: Vec<String> = self.with_state(server, |st| {
+            st.final_pending.iter().filter(|n| st.last_ok.get(*n).map(|t| t.elapsed() < self.timing.poll * 3).unwrap_or(false)).cloned().collect()
+        });
+        if ready.is_empty() { return; }
+        let failed = self.notify_final(server, &ready).await;
+        self.with_state(server, |st| { for n in &ready { if !failed.contains(n) { st.final_pending.remove(n); } } });
     }
 
     async fn host_checks(self: &Arc<Self>, server: &str, share: &ShareConfig) {
@@ -2382,7 +2436,12 @@ impl Inner {
         self.with_state(server, |s| s.syncing = false);
         match r {
             Ok(_) => { let s = server.to_string(); let _ = tokio::task::spawn_blocking(move || snapshots::prune(&s)).await; self.local.changed(server); }
-            Err(e) => self.local.note(server, &format!("No se pudo sincronizar: {e}")),
+            Err(e) => {
+                // La próxima vuelta abre una conexión nueva (la guardada puede ser de antes de que
+                // la otra PC se reiniciara).
+                self.conns.lock().await.remove(&(node.clone(), ALPN_SYNC));
+                self.local.note(server, &format!("No se pudo sincronizar: {e}"));
+            }
         }
     }
 
@@ -2505,40 +2564,81 @@ impl std::fmt::Debug for Handler { fn fmt(&self, f: &mut std::fmt::Formatter<'_>
 
 impl ProtocolHandler for Handler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        let remote = conn.remote_id().to_string();
-        let mut learned = false;
-        loop {
-            let Ok((mut send, mut recv)) = conn.accept_bi().await else { return Ok(()) };
-            let inner = self.0.clone();
-            let remote = remote.clone();
-            let learn = !std::mem::replace(&mut learned, true);
-            let rid = conn.remote_id();
-            tokio::spawn(async move {
-                let Ok(req) = wire::read_req::<_, Req>(&mut recv).await else { return };
-                // Límite por PC: el uso normal es de unos pocos pedidos por segundo; una PC que manda
-                // cientos (del grupo o no) no puede ocupar disco, CPU ni red de esta.
-                if !inner.ctrl_limit.lock().unwrap().allow(&remote) {
-                    let _ = wire::write_msg(&mut send, &Resp::Err { msg: "Demasiados pedidos; esperá un momento.".into() }).await;
-                    let _ = send.finish();
-                    return;
-                }
-                if !host939_core::paths::valid_server_id(req.server()) {
-                    let _ = wire::write_msg(&mut send, &Resp::Err { msg: "Servidor inválido.".into() }).await;
-                    let _ = send.finish();
-                    return;
-                }
-                if learn && inner.is_member(req.server(), &remote) { inner.learn_from(rid).await; }
-                let resp = if inner.is_member(req.server(), &remote) {
-                    inner.with_state(req.server(), |s| { s.last_ok.insert(remote.clone(), Instant::now()); });
-                    handle(&inner, &remote, req).await
-                } else {
-                    Resp::Err { msg: "Esta PC no es parte del grupo de ese servidor.".into() }
-                };
-                let _ = wire::write_msg(&mut send, &resp).await;
+        serve_ctrl(self.0.clone(), conn).await;
+        Ok(())
+    }
+}
+
+/// Atiende los pedidos de control que llegan por una conexión, la haya abierto la otra PC o esta.
+///
+/// La primera vez que una PC del grupo pide algo por una conexión, esa conexión pasa a ser la que
+/// esta PC usa para hablarle. Así, si la otra PC se reinició (otra dirección, otro puerto), esta le
+/// contesta y le consulta por la conexión nueva que ella misma abrió, sin insistir con una
+/// dirección vieja (lo detectó la prueba de cierre inesperado: B no podía volver a consultarle a A).
+/// Solo se guardan conexiones de integrantes verificados: una PC desconocida no llena la caché.
+async fn serve_ctrl(inner: Arc<Inner>, conn: Connection) {
+    let remote = conn.remote_id().to_string();
+    let mut learned = false;
+    loop {
+        let Ok((mut send, mut recv)) = conn.accept_bi().await else { return };
+        let inner = inner.clone();
+        let remote = remote.clone();
+        let learn = !std::mem::replace(&mut learned, true);
+        let rid = conn.remote_id();
+        let conn2 = conn.clone();
+        tokio::spawn(async move {
+            let Ok(req) = wire::read_req::<_, Req>(&mut recv).await else { return };
+            // Límite por PC: el uso normal es de unos pocos pedidos por segundo; una PC que manda
+            // cientos (del grupo o no) no puede ocupar disco, CPU ni red de esta.
+            if !inner.ctrl_limit.lock().unwrap().allow(&remote) {
+                let _ = wire::write_msg(&mut send, &Resp::Err { msg: "Demasiados pedidos; esperá un momento.".into() }).await;
                 let _ = send.finish();
-                let _ = send.stopped().await;
-            });
-        }
+                return;
+            }
+            if !host939_core::paths::valid_server_id(req.server()) {
+                let _ = wire::write_msg(&mut send, &Resp::Err { msg: "Servidor inválido.".into() }).await;
+                let _ = send.finish();
+                return;
+            }
+            if learn && inner.is_member(req.server(), &remote) {
+                inner.learn_from(rid).await;
+                let mut conns = inner.conns.lock().await;
+                let key = (remote.clone(), ALPN_CTRL);
+                let same = conns.get(&key).map(|c| c.stable_id() == conn2.stable_id()).unwrap_or(false);
+                if !same {
+                    // Conexión nueva de esa PC (por ejemplo, se reinició): las que esta PC tenía
+                    // guardadas con ella son de antes. Se cierran (no solo se olvidan) para que el
+                    // transporte deje de usar el camino viejo y las próximas se abran de cero.
+                    let stale: Vec<Connection> = conns.iter().filter(|((n, _), c)| n == &remote && c.stable_id() != conn2.stable_id()).map(|(_, c)| c.clone()).collect();
+                    conns.retain(|(n, _), _| n != &remote);
+                    conns.insert(key, conn2.clone());
+                    drop(conns);
+                    let had_stale = !stale.is_empty();
+                    for c in stale { c.close(0u32.into(), b"reemplazada"); }
+                    // Con iroh 1.4, si la otra PC se reinició rápido, el transporte puede quedar
+                    // usando el camino viejo para las conexiones nuevas (lo elige mientras la
+                    // conexión vieja todavía figura viva y no lo vuelve a revisar). Cerradas las
+                    // viejas, se le pide que abra una conexión nueva: eso hace que se vuelva a
+                    // elegir el camino, ya sin el viejo.
+                    if had_stale {
+                        let (inner, remote, server) = (inner.clone(), remote.clone(), req.server().to_string());
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                            let _ = inner.rpc_timeout(&remote, &Req::Nudge { server }, Duration::from_secs(8)).await;
+                        });
+                    }
+                }
+            }
+            let resp = if inner.is_member(req.server(), &remote) {
+                inner.with_state(req.server(), |s| { s.last_ok.insert(remote.clone(), Instant::now()); });
+                handle(&inner, &remote, req).await
+            } else {
+                Resp::Err { msg: "Esta PC no es parte del grupo de ese servidor.".into() }
+            };
+            let _ = wire::write_msg(&mut send, &resp).await;
+            let _ = send.finish();
+            let _ = send.stopped().await;
+        });
     }
 }
 
@@ -2639,6 +2739,20 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
                 Some(b) => Resp::Avatar { png: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b) },
                 None => Resp::Err { msg: "Esa foto ya no está.".into() },
             }
+        }
+        Req::Nudge { .. } => {
+            // Una conexión nueva hacia esa PC, que se cierra enseguida (solo sirve para que su
+            // transporte vuelva a elegir el camino). Sin caché: tiene que ser una conexión nueva.
+            let (inner, remote) = (inner.clone(), remote.to_string());
+            tokio::spawn(async move {
+                let Ok(id) = remote.parse::<EndpointId>() else { return };
+                let stored = inner.peers.read().unwrap().get(&remote).cloned().unwrap_or_else(|| EndpointAddr::new(id));
+                if let Ok(Ok(c)) = tokio::time::timeout(Duration::from_secs(6), inner.ep.connect(stored, ALPN_CTRL)).await {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    c.close(0u32.into(), b"listo");
+                }
+            });
+            Resp::Ok
         }
         Req::Bye { server } => {
             inner.with_state(&server, |s| { s.left.insert(remote.to_string()); s.last_ok.remove(remote); });

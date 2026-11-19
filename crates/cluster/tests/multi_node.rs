@@ -722,6 +722,47 @@ fn tierra_e_inventario_no_retroceden() {
     println!("✔ con la PC anfitriona apagada de golpe después de detener, no se perdió nada");
 }
 
+/// 939 Host muere de golpe con un servidor compartido encendido. En Windows, el guardián le manda
+/// «stop» a Minecraft (que guarda) y deja la marca «pendiente-publicar». Al volver a abrir 939 Host,
+/// esta PC (que sigue con el permiso) publica ese estado final al grupo: nada de lo jugado después
+/// del último punto se pierde ni queda solo en esta PC. Acá se reproduce el efecto del guardián.
+#[test]
+fn tras_un_cierre_inesperado_se_publica_lo_que_guardo_el_guardian() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_a = tmp.path().join("a");
+    let mut a = Node::spawn("A", &root_a, true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok("create Guardian 25861").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25862"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} bloque.txt pasto"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia el punto", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    // Se juega después del último punto y 939 Host muere de golpe.
+    a.ok(&format!("write {sid} bloque.txt tierra"));
+    signal(a.pid(), "KILL");
+    drop(a);
+    // Lo que hace el guardián: Minecraft guardó (el mundo ya está en disco) y queda la marca.
+    let dir = root_a.join("Servers").join(&sid);
+    assert!(dir.join("server/world/bloque.txt").exists(), "el mundo de A está en disco");
+    std::fs::write(dir.join("pendiente-publicar"), b"1").unwrap();
+    // Se vuelve a abrir 939 Host en A: publica el estado final sin encender nada.
+    let mut a = Node::spawn("A", &root_a, true, &[]);
+    wait("B recibe el estado que guardó el guardián", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) > fresh(&s1));
+    assert!(!dir.join("pendiente-publicar").exists(), "la marca se usó una vez");
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "no se enciende solo");
+    // B aloja después: tiene lo jugado antes del cierre inesperado.
+    let e = b.err(&format!("start {sid}"));
+    assert!(e.contains("te lo está pasando"), "{e}");
+    wait("B queda alojando", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "lo jugado antes del cierre inesperado no se pierde");
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos anfitrionas");
+    println!("✔ tras un cierre inesperado, el estado que guardó el guardián llega al grupo y nadie aloja dos veces");
+}
+
 fn id_of(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }
 
 /// Chat de voz (Simple Voice Chat usa UDP en otro puerto): llega a la anfitriona por la conexión
