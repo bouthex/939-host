@@ -81,6 +81,41 @@ relay; relays comunitarios operados por varias personas con el registro firmado 
 (ninguna persona es infraestructura central); o un programa de hosting gratuito para proyectos de
 código abierto.
 
+## Investigación de noviembre de 2026: relays comunitarios para Minecraft
+
+Existen servicios públicos y gratuitos, hechos justamente para esto, en los que **la PC que aloja se
+conecta hacia afuera a un relay** y recibe una dirección que cualquier Minecraft Java normal puede usar,
+sin cuenta y sin abrir puertos:
+
+| Proyecto | Qué ofrece | Lo que habría que resolver |
+|---|---|---|
+| e4mc (mod, código abierto) | Dirección pública tipo `xxxx.e4mc.link` para un mundo abierto en LAN; los clientes no instalan nada | Es un mod del lado de quien aloja; la dirección cambia en cada sesión; servicio de terceros sin garantía; revisar sus términos antes de integrarlo desde otro programa |
+| nekorelay (mod/plugin) | Relay público, gratuito y, según su página, sin cuenta ni token por ahora | Mismo tipo de dependencia; «por ahora» puede cambiar; límites de jugadores |
+| StealthPipe (mod) | Relay solo para Minecraft; **el servidor del relay es código abierto (MIT)** y se puede elegir otro relay | Su relay público por omisión es de terceros; un relay propio vuelve a necesitar una máquina con IP pública |
+
+Qué cumpliría de las condiciones: ninguna cuenta, tarjeta ni clave del propietario; la IP de la casa no
+se expone (los jugadores ven la del relay); los jugadores no instalan 939 Host ni abren puertos; sin
+costo.
+
+Qué no cumple todavía o falta verificar:
+
+- **Dependencia de un tercero** que puede cambiar sus reglas, limitarlo o cerrar. No sería
+  «infraestructura central del propietario», pero sí un punto único de falla ajeno al proyecto.
+- **Dirección fija**: los relays públicos dan nombres aleatorios por sesión. Con el traspaso de
+  anfitriona de 939 Host la dirección cambiaría en cada traspaso, salvo que el relay permita reservar un
+  nombre (no lo ofrecen hoy).
+- **Qué ve el operador del relay**: la IP de cada jugador, el nombre, horarios y volumen, y el contenido
+  si el servidor está en modo sin conexión.
+- **Términos de uso** de cada servicio para uso desde otro programa: sin revisar todavía. No se integra
+  nada sin leerlos y sin la aprobación del propietario.
+- **Protocolo**: habría que implementar el cliente del relay dentro de 939 Host (o lanzar el mod en el
+  servidor), probarlo con clientes reales desde otra red y comprobar que la IP de la casa no aparece.
+
+Conclusión: es el camino más prometedor encontrado hasta ahora porque no exige infraestructura propia,
+pero **no está implementado, no está probado y no se promete**. El siguiente paso, si el propietario lo
+aprueba, sería una prueba aislada con un relay público y un servidor de prueba (nunca un mundo real),
+revisando antes los términos del servicio.
+
 ## Pruebas obligatorias antes de declararlo listo
 
 Las 10 del pedido original (§16 F): conexión desde Minecraft Java normal sin 939 Host, con la

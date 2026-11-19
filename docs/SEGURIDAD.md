@@ -202,7 +202,7 @@ Además:
 | Salir desde la bandeja con servidores encendidos | Pregunta; pasa o suelta los servidores compartidos y detiene cada uno con `stop` (guardando); después termina todo, el guardián incluido | Se cierran todos | Nada |
 | «Cerrar igual» mientras todavía guarda, o 939 Host muere de golpe | El guardián le manda `stop` a cada Java (guarda y se detiene, hasta 10 minutos si sigue guardando) y termina; al volver a abrir se cuenta qué pasó | Se cierran todos | Nada |
 | Apagado, reinicio o cierre de sesión de Windows | Con servidores encendidos pide tiempo a Windows con un motivo visible, hace el cierre ordenado y lo libera (tope de 3 minutos); sin servidores no lo demora | Se cierran todos | Nada |
-| Corte de luz | Nada se puede hacer en el momento: protegen los guardados de Minecraft y los puntos de restauración | — | — |
+| Corte de luz, «Finalizar árbol de procesos» o falla de Windows | Nada se puede hacer en el momento. Queda la marca `en-marcha`: al volver a abrir se avisa una vez que el mundo no está confirmado como guardado; no se publica solo al grupo; si se pasa a otra PC, el punto queda rotulado «tras un cierre sin confirmar» y el anterior sigue disponible; lo que hubiera en la PC se aparta como punto «Antes de restaurar» si se restaura | — | — |
 
 Datos locales (todos dentro de `%LOCALAPPDATA%\939Host`):
 
@@ -276,34 +276,57 @@ cada PC).
 | Amigo malicioso | Mandar mensajes molestos; ver presencia y qué servidor se juega | 20 mensajes por minuto, 500 caracteres; quitar o bloquear; «No disponible» |
 | Malware local con la sesión del usuario | Todo lo que puede el usuario: leer la clave del nodo, chats y mundos | Fuera del alcance de una app sin privilegios; Defender, cuentas separadas |
 
-## Riesgos residuales (revisados uno por uno en la fase de calidad)
+## Revisión de Windows (noviembre de 2026)
 
-Estados: **Corregido** (ya no aplica como estaba), **Reducido** (sigue, con menos alcance),
-**Reducible** (se puede bajar más; queda anotado cómo), **Inevitable** (límite del diseño o de la
-plataforma), **Pendiente de infraestructura**, **Pendiente de pruebas reales**.
+| Tema | Estado | Cómo se comprobó |
+|---|---|---|
+| Defender | Sin detecciones en el instalador, el ejecutable ni la carpeta instalada. No se pide ni se agrega ninguna exclusión | Análisis de Defender en la CI de Windows. Limitación: en los equipos de GitHub la protección en tiempo real está apagada, así que esto no reemplaza una prueba con Defender completo en una PC real |
+| Firewall | No se agregan reglas ni se pide abrir puertos. La primera vez Windows puede preguntar por el acceso de red de 939 Host (nodo QUIC); con «Cancelar» sigue funcionando por relay | Revisión de código: no hay llamadas a la API del firewall ni a `netsh` |
+| UAC | Instalación y uso sin administrador (`RequestExecutionLevel user`, carpeta por usuario). La única acción con administrador es opcional y explícita: los nombres `.939host` en el archivo `hosts` | Instalador silencioso sin elevación en la CI |
+| Smart App Control | Bloquea la app mientras no esté firmada. No se indica a nadie que lo apague | Ver [firma/OPCIONES.md](firma/OPCIONES.md) |
+| Permisos de archivos | Todo en `%LOCALAPPDATA%` del usuario; secretos con DPAPI de esa cuenta | Pruebas de cifrado con DPAPI real en Windows |
+| Ejecución de procesos | Solo Java (Eclipse Temurin de Adoptium, verificado con el SHA-256 que publica Adoptium por HTTPS) y el propio ejecutable como guardián; Java dentro de un Job Object que lo cierra si todo muere | Prueba de interfaz en Windows: sin procesos huérfanos tras cerrar o matar la app |
+| Credenciales | Clave del nodo y datos de amigos con DPAPI; sin contraseñas guardadas; sin claves de API embebidas (revisado en cada compilación) | `verificar-secretos.sh` sobre el ejecutable |
+| Segundo plano y bandeja | Sin servicio de Windows ni tarea programada; «Iniciar con Windows» es opcional (entrada del usuario en `Run`). Sin ventana no consulta métricas de Java | Revisión de código y medición de CPU en bandeja en la CI |
+| Puerto de depuración de WebView2 | Solo existe en la compilación de prueba de la CI; la de entrega no lo abre aunque exista la variable | Prueba de la versión de prueba en Windows |
+| Desinstalación | Quita ejecutable, accesos directos y registro; conserva mundos por defecto | CI: instalar, actualizar, reinstalar, interrumpir y desinstalar en los dos modos |
+| Actualizaciones | No hay autoactualización; diseño propuesto en [ACTUALIZACIONES.md](ACTUALIZACIONES.md) | — |
+
+## Riesgos residuales — reclasificación de noviembre de 2026
+
+Estados: **Corregido y verificado** (con prueba automática que lo cubre), **Mitigado** (sigue
+existiendo con menos alcance), **Limitación de diseño** (inevitable con este diseño o esta plataforma),
+**Pendiente** (falta trabajo o infraestructura), **Requiere prueba real externa** (solo se puede
+confirmar en las PCs del equipo o desde otra red).
 
 | # | Riesgo | Estado | Detalle |
 |---|---|---|---|
-| 1 | Mods aprobados pueden hacer todo lo que el usuario de Windows | Inevitable | Minecraft no se puede aislar sin romper el juego; cuarentena por huella y aprobación explícita |
-| 2 | Grupo de 2 PCs: la coanfitriona puede apagar a la anfitriona con «Recuperar aquí» | Reducible | Queda registrado y la propietaria lo revierte. Se podría exigir su confirmación o una espera |
-| 3 | La coanfitriona recibe el mundo completo | Inevitable | Lo necesita para alojarlo |
-| 4 | El relay ve metadatos; en modo normal la otra PC ve la IP | Inevitable (con mitigación) | El modo privado oculta la IP a las otras PCs; el relay siempre ve IP, horarios y volumen |
-| 5 | DPAPI no protege contra malware con tu misma sesión | Inevitable | Límite de cualquier app sin privilegios |
-| 6 | Las jugadoras ven el historial de permisos | Inevitable | Lo necesitan para verificar la cadena firmada |
-| 7 | Las esperas de 72 h usan el reloj de cada PC | Reducible | Se podría medir con marcas de tiempo de la mayoría del grupo |
-| 8 | Una invitación filtrada usada primero da acceso | Reducido | Un solo uso, vence en 24 h, aviso a la propietaria, quitar la PC |
-| 9 | El ejecutable no está firmado | Pendiente de infraestructura | Depende de SignPath u otro certificado; Smart App Control puede bloquearlo |
-| 10 | Todas las PCs necesitan esta versión | Inevitable | Los permisos sin firma de versiones viejas se rechazan a propósito |
-| 11 | El nombre de un mod pendiente lo elige quien lo subió | Reducible | Se podría mostrar su origen buscando la huella en Modrinth |
-| 12 | Una coanfitriona elige qué anuncia de sí misma | Reducible | Se podrían firmar los índices de los puntos |
-| 13 | Scripts en `config/` de mods aprobados (KubeJS) | Reducible | Se podría poner `config/` en cuarentena para mods que ejecutan scripts |
-| 14 | Punto falso de una época anterior | Reducido | No gana mientras la anfitriona crea puntos en la época actual; se podrían firmar los índices |
-| 15 | Traspaso automático con el servidor detenido | Inevitable por diseño (decisión de producto) | Con el servidor encendido siempre pregunta; detenido, no hay nada que proteger |
-| 16 | OP agregados fuera de la lista autorizada | **Corregido** | Lista firmada como única autoridad; se revierte con aviso; prueba `estado_compartido_y_op_concedido_por_la_propietaria` |
-| 17 | La voz por una dirección pública depende del servicio externo | Pendiente de infraestructura | Ver [`DIRECCIONES-PUBLICAS.md`](DIRECCIONES-PUBLICAS.md) |
-| 18 | Si 939 Host muere de golpe, Java se cerraba sin guardar | **Corregido** (salvo corte de luz) | El guardián detiene Java con `stop`; probado en Windows matando el proceso. Si el guardián también muere, el Job Object cierra Java como antes |
-| 19 | Apagar Windows con un servidor encendido | **Corregido** (pendiente de prueba real) | Pide tiempo con motivo visible y guarda; probado con el aviso simulado en Windows (motivo registrado, proceso vivo hasta terminar, tope de 180 s); falta un apagado real |
-| 20 | Chats de amigos en texto plano | **Corregido** | Cifrados con DPAPI (probado con DPAPI real en Windows); migración automática; lo ilegible se aparta con aviso |
-| 21 | Una PC que conoce la identidad del nodo puede seguir abriendo conexiones | Inevitable (con mitigación) | Límites por PC, tamaño y tiempo; cada conexión cuesta un saludo TLS |
-| 22 | Jugadores sin 939 Host sin revelar la IP de la casa | Pendiente de infraestructura | Requisito abierto; ver [`DIRECCIONES-PUBLICAS.md`](DIRECCIONES-PUBLICAS.md) |
-| 23 | «Finalizar árbol de procesos» en el Administrador de tareas | Inevitable | Termina también al guardián y a Java: el Job Object cierra Java sin guardar (como un corte) |
+| 1 | Mods aprobados pueden hacer todo lo que el usuario de Windows | Limitación de diseño | Minecraft no se puede aislar sin romper el juego; cuarentena por huella y aprobación explícita |
+| 2 | Grupo de 2 PCs: la coanfitriona puede apagar a la anfitriona con «Recuperar aquí» | Mitigado | Queda registrado y la propietaria lo revierte. Se podría exigir su confirmación o una espera |
+| 3 | La coanfitriona recibe el mundo completo | Limitación de diseño | Lo necesita para alojarlo |
+| 4 | El relay ve metadatos; en modo normal la otra PC ve la IP | Mitigado | El modo privado oculta la IP a las otras PCs (probado); el relay siempre ve IP, horarios y volumen |
+| 5 | DPAPI no protege contra malware con tu misma sesión | Limitación de diseño | Límite de cualquier app sin privilegios |
+| 6 | Las jugadoras ven el historial de permisos | Limitación de diseño | Lo necesitan para verificar la cadena firmada |
+| 7 | Las esperas de 72 h usan el reloj de cada PC | Mitigado | Se podría medir con marcas de tiempo de la mayoría del grupo |
+| 8 | Una invitación filtrada usada primero da acceso | Mitigado | Un solo uso, vence en 24 h, aviso a la propietaria, quitar la PC (probado) |
+| 9 | El ejecutable no está firmado | Pendiente | Ver [firma/OPCIONES.md](firma/OPCIONES.md). Smart App Control lo bloquea y SmartScreen avisa |
+| 10 | Todas las PCs necesitan esta versión | Limitación de diseño | Los permisos sin firma de versiones viejas se rechazan a propósito |
+| 11 | El nombre de un mod pendiente lo elige quien lo subió | Mitigado | Se muestra la huella; se podría mostrar su origen buscándola en Modrinth |
+| 12 | Una coanfitriona elige qué anuncia de sí misma | Mitigado | Se podrían firmar los índices de los puntos |
+| 13 | Scripts en `config/` de mods aprobados (KubeJS) | Pendiente | Se podría poner `config/` en cuarentena para mods que ejecutan scripts |
+| 14 | Punto falso de una época anterior | Mitigado | No gana mientras la anfitriona crea puntos en la época actual (probado); se podrían firmar los índices |
+| 15 | Traspaso automático con el servidor detenido | Limitación de diseño (decisión de producto) | Con el servidor encendido siempre pregunta; detenido, no hay nada que proteger |
+| 16 | OP agregados fuera de la lista autorizada | Corregido y verificado | Lista firmada como única autoridad; prueba `estado_compartido_y_op_concedido_por_la_propietaria` |
+| 17 | La voz por una dirección pública depende del servicio externo | Pendiente | Ver [DIRECCIONES-PUBLICAS.md](DIRECCIONES-PUBLICAS.md) |
+| 18 | Si 939 Host muere de golpe, Java se cerraba sin guardar | Corregido y verificado | El guardián detiene Java con `stop`; probado en Windows matando el proceso |
+| 19 | Apagar Windows con un servidor encendido | Requiere prueba real externa | Probado con el aviso simulado en Windows (motivo registrado, tope de 180 s); falta un apagado real |
+| 20 | Chats de amigos en texto plano | Corregido y verificado | DPAPI real en Windows; migración automática; lo ilegible se aparta con aviso |
+| 21 | Una PC que conoce la identidad del nodo puede seguir abriendo conexiones | Mitigado | Límites por PC, tamaño y tiempo (prueba de inundación); cada conexión cuesta un saludo TLS |
+| 22 | Jugadores sin 939 Host sin revelar la IP de la casa | Pendiente | Investigación en curso; nada implementado ni prometido |
+| 23 | «Finalizar árbol de procesos», corte de luz o falla de Windows | Mitigado (antes: inevitable) | Sigue sin poder guardarse en el momento. Ahora se detecta al volver a abrir (marca `en-marcha`), se avisa, no se publica solo y el traspaso queda rotulado; pruebas `un_cierre_que_nadie_vio…` y `tras_un_corte_sin_guardian…`. Falta un corte real |
+| 24 | Una conexión nueva de una PC conocida cerraba la que estaba en uso (pedidos perdidos; dos PCs podían cerrarse mutuamente las conexiones) | Corregido y verificado | Se prueba la guardada antes de cerrarla; regresión en `mensajes_malformados_y_enormes` (falla con el código anterior) |
+| 25 | Las pruebas de Windows corren con Defender sin tiempo real y en Windows Server 2025 | Requiere prueba real externa | Instalar y usar en Windows 11 con Defender y Smart App Control como vienen |
+
+Historial: la tabla anterior (estados Corregido, Reducido, Reducible, Inevitable…) se reemplazó por
+esta; ningún riesgo se quitó.
+
