@@ -534,8 +534,10 @@ async fn e2e_log4shell_archivos() {
 #[tokio::test]
 #[ignore]
 async fn e2e_modrinth_modpack_detalle() {
-    let tmp = tempfile::tempdir().unwrap();
-    paths::init(tmp.path().to_path_buf()).unwrap();
+    // La raíz compartida del proceso: con una propia, si esta prueba terminaba primero borraba su
+    // carpeta temporal mientras `e2e_modrinth` (que corre a la vez y había tomado esa misma raíz,
+    // porque `paths::init` solo fija la primera) seguía usándola: «No se encontró el servidor».
+    init();
     let m = modrinth::Modrinth;
     let hits = m.search_modpacks("zombie", 0).await.expect("búsqueda de modpacks");
     assert!(!hits.hits.is_empty(), "la búsqueda de «zombie» devuelve modpacks");
