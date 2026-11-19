@@ -299,10 +299,106 @@ Ubuntu de Azure caído (infraestructura de GitHub); se agregó un espejo alterna
 En la corrida de `0438f24`, la CPU de 939 Host en la bandeja con el servidor encendido fue 0,94 %
 en la muestra de 10 s tomada justo después de cerrar la ventana (otras corridas: 0,0 % y 0,47 %).
 Supera el presupuesto propuesto de 0,5 %. Puede ser el cierre del WebView2 dentro de la muestra;
-**queda para revisar** con una muestra más larga, no se da por resuelto.
+**queda para revisar** con una muestra más larga, no se da por resuelto. → Revisado en la sección 10:
+con muestras de 60 s y 10 minutos queda por debajo del presupuesto.
 
 ### HEAD
 
 El commit que agrega esta sección (corrección de la carrera de la prueba y documentación) no
 cambia código del producto. Su corrida de Windows se revisa al publicarlo; el estado final se
 informa en la respuesta.
+
+## 10. Última etapa de ingeniería (19/11, noche)
+
+Distinción usada abajo: **[CI]** = comprobado automáticamente (Linux o Windows Server 2025 de GitHub);
+**[PC real]** = solo se puede confirmar en las PCs del equipo o entre dos casas.
+
+### Consumo en reposo y en la bandeja [CI]
+
+Corrida 44620772606 (`dcf8c03`), Windows Server 2025, porcentaje de **un núcleo**, por proceso, en
+ventanas de 60 s (granularidad de Windows: 15,6 ms):
+
+| Estado | 939 Host | WebView2 | Guardián | Java (servidor sin jugadores) |
+|---|---|---|---|---|
+| Ventana abierta, en reposo (2 × 60 s) | 0,00 / 0,05 % | 0,16 / 0,05 % | — | — |
+| Minimizada (2 × 60 s) | 0,03 / 0,10 % | 0,05 / 0,05 % | — | — |
+| Bandeja con servidor (3 × 60 s, tras 30 s de espera) | 0,03 / 0,03 / 0,16 % | 0 (cerrado) | 0,00 % | 0,16–0,29 % |
+| Bandeja, 10 minutos (promedio por minuto) | 0,00–0,14 % | 0 | 0,00 % | 0,09–0,26 % |
+
+- Memoria en la bandeja durante 10 minutos: 939 Host entre 17,4 y 18,3 MB (sin crecimiento), guardián
+  1,7–1,8 MB, Java 1.821–1.822 MB. La prueba falla si 939 Host crece más de 20 MB.
+- El 0,94 % anterior era una muestra de 10 s tomada mientras se cerraba WebView2.
+- Cambios para bajar trabajo de fondo sin tocar la confiabilidad: sin ventana no se piden métricas de
+  Java; el texto de la bandeja solo se actualiza si cambia; la configuración solo se lee con servidores
+  encendidos; la lista de puntos de restauración usa una caché por tamaño y fecha (70 ms → 0,09 ms con
+  30 puntos de 3.000 archivos; se pedía varias veces cada 5 s por cada PC del grupo). Las consultas del
+  grupo (cada 5 s), la sincronización y la detección de caídas no se tocaron.
+
+Nodo del grupo en Linux, compilación de depuración con los tiempos reales del producto [CI]:
+
+| Situación | CPU (un núcleo) | Memoria | Escritura a disco |
+|---|---|---|---|
+| Solo, sin grupo | 0,02 % | 43 MB | 0 KB/min |
+| Grupo de 3 + amigos, servidor apagado | 0,23–0,28 % | 47 MB | 1,4 KB/min |
+| Grupo de 3 + amigos, servidor encendido | 0,24–0,32 % | 47 MB | 1,4–1,6 KB/min |
+
+Red: el tráfico en reposo es el de las consultas del grupo (una por PC cada 5 s) y la presencia de
+amigos; no se midió en bytes en una red real **[PC real]**.
+
+### Problema real encontrado y corregido: conexiones cerradas en uso
+
+Al revisar una falla intermitente de la prueba de inundación se encontró que, cuando llegaba una
+conexión nueva de una PC ya conocida, la anterior se cerraba aunque estuviera en uso: se perdían pedidos
+en curso y, si dos PCs se conectaban a la vez, se podían cerrar mutuamente las conexiones una y otra vez.
+Ahora la guardada se prueba con un pedido corto y solo se cierra si no responde (que es el caso de una PC
+reiniciada, para el que existía el cierre). Regresión agregada: falla con el código anterior
+(«closed by peer: reemplazada») y pasa con el nuevo. La prueba de reconexión tras un cierre inesperado
+sigue pasando.
+
+También se encontró que las pruebas locales de esta sesión no recompilaban el nodo de prueba si no se
+pedía la característica `pruebas` (la CI siempre la pide): desde entonces todas las corridas locales la
+usan.
+
+### Cierres auditados
+
+| Camino | Qué pasa | Verificación |
+|---|---|---|
+| Cerrar la ventana (X) | La app sigue en la bandeja; los servidores siguen | [CI] Windows |
+| «Salir» desde la bandeja | Pregunta; pasa o suelta los compartidos, detiene cada uno con `stop` y termina | [CI] Windows |
+| Apagado, reinicio o cierre de sesión | Pide tiempo con motivo visible (tope 180 s) y hace el cierre ordenado | [CI] simulado; **[PC real]** apagado real |
+| 939 Host muere («Finalizar tarea», falla) | El guardián detiene Java con `stop`; al abrir, aviso y publicación del estado final | [CI] Windows y multi-PC |
+| Corte de luz / «Finalizar árbol de procesos» | No se puede guardar en el momento. **Nuevo:** al abrir se avisa que el mundo no está confirmado; no se publica solo; un traspaso posterior queda rotulado «tras un cierre sin confirmar» con el punto anterior disponible | [CI] unidad y multi-PC simulando el corte; **[PC real]** corte real |
+| Pérdida de conexión de la anfitriona | Sucesión por votación con permisos firmados; nunca dos anfitrionas | [CI] multi-PC |
+| Traspaso con el servidor encendido | Copia en caliente, guarda, apaga, copia lo último y recién entonces entrega el permiso | [CI] multi-PC y servidores reales |
+| Reinicio rápido de una PC | La otra detecta la conexión vieja, la cierra y pide una nueva | [CI] Linux y Windows |
+| Sincronización pendiente al cerrar | El estado final queda marcado y se reintenta al volver | [CI] multi-PC |
+| Guardando mientras se cierra | Se espera «Saved the game»; el guardián espera mientras el registro avance (hasta 10 min) | [CI] unidad y Windows |
+
+No hay doble escritura: el permiso firmado de anfitrión impide encender en dos PCs, y los puntos se
+importan solo con el manifiesto completo (un punto incompleto no se usa). Nada de esto requiere permisos
+de administrador ni deja procesos huérfanos (Job Object).
+
+### Instalador [CI]
+
+Comprobado en Windows (corrida 44620772606): instalación limpia silenciosa sin administrador; con 939
+Host abierto el instalador no reemplaza nada; actualización encima (arranca, un solo acceso directo, una
+sola entrada de desinstalación, mundo intacto); instalación cortada a los 400 ms y repetida (igual);
+desinstalación conservando datos (programa, procesos, registro, accesos del menú y del escritorio,
+caché y hosts limpios; mundo, copias y puntos intactos) y borrando datos solo con pedido explícito.
+
+### Versión de prueba [CI]
+
+Nuevo trabajo de la CI que compila como una release (sin la característica `pruebas`), revisa el
+ejecutable en modo `--release` (secretos, rutas personales, IPs privadas, ganchos de prueba, puerto de
+depuración), empaqueta con SHA-256 e identifica rama y commit en `VERSION-DE-PRUEBA.txt`. En Windows se
+instala, se abre con la variable del puerto de depuración puesta (no lo abre), se comprueba que no
+escucha TCP fuera de la PC y se desinstala. No crea etiquetas ni releases.
+
+### Documentos nuevos
+
+- [ACTUALIZACIONES.md](ACTUALIZACIONES.md): diseño de actualizaciones firmadas solo por el propietario
+  (Windows Hello, clave de recuperación, canales, anti-retroceso, vencimiento). **No implementado.**
+- [firma/OPCIONES.md](firma/OPCIONES.md): opciones de firma con costos, requisitos y efecto real.
+- [SEGURIDAD.md](SEGURIDAD.md): revisión de Windows y los 25 riesgos con la clasificación nueva.
+- [DIRECCIONES-PUBLICAS.md](DIRECCIONES-PUBLICAS.md): relays comunitarios investigados (§16 sigue
+  pendiente, sin implementar ni prometer).

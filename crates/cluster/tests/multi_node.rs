@@ -872,12 +872,18 @@ fn consumo_en_reposo() {
         let s = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
         s.lines().find(|l| l.starts_with("VmRSS")).unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap() / 1024
     }
+    // Bytes que el proceso escribió a disco (incluye lo que queda en caché del sistema).
+    fn written(pid: u32) -> u64 {
+        std::fs::read_to_string(format!("/proc/{pid}/io")).ok().and_then(|s| s.lines().find(|l| l.starts_with("wchar:")).and_then(|l| l.split_whitespace().nth(1)?.parse().ok())).unwrap_or(0)
+    }
     fn medir(nombre: &str, nodos: &[(&str, u32)], segs: u64) {
         let t0: Vec<u64> = nodos.iter().map(|(_, p)| cpu_ticks(*p)).collect();
+        let w0: Vec<u64> = nodos.iter().map(|(_, p)| written(*p)).collect();
         std::thread::sleep(Duration::from_secs(segs));
         for (i, (n, p)) in nodos.iter().enumerate() {
             let d = cpu_ticks(*p) - t0[i];
-            println!("MEDICION {nombre} {n}: CPU {:.2} % de un núcleo ({d} ticks en {segs} s), RSS {} MB", d as f64 / segs as f64, rss_mb(*p));
+            let w = written(*p).saturating_sub(w0[i]);
+            println!("MEDICION {nombre} {n}: CPU {:.2} % de un núcleo ({d} ticks en {segs} s), RSS {} MB, escrito {:.1} KB/min", d as f64 / segs as f64, rss_mb(*p), w as f64 / 1024.0 / (segs as f64 / 60.0));
         }
     }
     let tmp = tempfile::tempdir().unwrap();

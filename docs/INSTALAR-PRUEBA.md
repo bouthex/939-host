@@ -1,7 +1,15 @@
 # Instalar la versión de prueba en las tres PCs
 
-Versión de desarrollo de la rama `rediseno-v3`. No es una release publicada: sale de la ejecución
-«Pruebas en Windows» de GitHub Actions (artefacto `939Host-windows-prueba`).
+Versión de desarrollo de la rama `rediseno-v3`. **No es una release publicada.** Sale de la ejecución
+«Pruebas en Windows» de GitHub Actions, trabajo «Versión de prueba (compilación de entrega)», artefacto
+**`939Host-version-de-prueba`**: se compila igual que una release (sin las herramientas de prueba de la
+CI), se revisa que no tenga secretos, datos personales ni el puerto de depuración, y en Windows se
+instala, se abre y se desinstala automáticamente antes de dártela.
+
+El artefacto trae `VERSION-DE-PRUEBA.txt` con el identificador (`0.9.0+prueba.<commit>`), la rama, el
+commit exacto, el enlace a la ejecución y los SHA-256. **Si el commit no coincide con el que te pasaron
+en el informe, no lo instales.** (El artefacto `939Host-windows-prueba` es otro: es la compilación con
+herramientas de prueba que usa la CI; no es para instalar en sus PCs.)
 
 ## Antes de empezar
 
@@ -14,9 +22,8 @@ Versión de desarrollo de la rama `rediseno-v3`. No es una release publicada: sa
 
 ## Instalar (en cada PC)
 
-1. Conseguir el instalador: `939Host-prueba-<commit>-instalador.exe` (el que se pasa por el chat)
-   o, desde GitHub Actions → «Pruebas en Windows» → artefacto `939Host-windows-prueba`,
-   `939Host-0.9.0-instalador.exe` (la versión interna sigue siendo 0.9.0).
+1. Conseguir el instalador `939Host-0.9.0-instalador.exe` del artefacto `939Host-version-de-prueba`
+   (la versión interna sigue siendo 0.9.0; la identidad real está en `VERSION-DE-PRUEBA.txt`).
 2. Verificar el archivo (opcional, recomendado). En PowerShell, dentro de la carpeta:
    `Get-FileHash .\<nombre-del-instalador>.exe -Algorithm SHA256`
    El resultado tiene que coincidir con la línea correspondiente de `SHA256SUMS.txt`.
@@ -68,3 +75,21 @@ las dos a la vez. Los mismos avisos de SmartScreen y Smart App Control aplican.
   autorización antes de cambiar algo importante. Todo cambio se puede deshacer.
 - Si la PC anfitriona se apaga de golpe, otra coanfitriona toma el servidor sola en menos de un
   minuto (con al menos 3 PCs en el grupo). Con 2 PCs, usar **Recuperar aquí**.
+
+## Proteger los mundos durante la prueba
+
+- Antes de probar algo arriesgado (traspasos, cortes, reinstalar), en **Copias** tocá **Crear punto**.
+- Probá con un servidor nuevo o con una copia importada; **nunca con el mundo 939 Z original**.
+- Si 939 Host avisa al abrir que el último cierre «no lo vio nadie» (corte de luz, cierre forzado),
+  revisá el mundo antes de seguir; en Copias está el punto anterior.
+- No borres la carpeta `%LOCALAPPDATA%\939Host` a mano: ahí están mundos, puntos y la identidad de la PC.
+
+## Desinstalar
+
+- Configuración de Windows → Aplicaciones → 939 Host → Desinstalar (o «Desinstalar 939 Host» en el menú
+  Inicio). Cerrá 939 Host antes (desde la bandeja: «Salir»); si está abierto, el desinstalador lo avisa
+  y no sigue.
+- Por defecto **conserva** mundos, copias, puntos y configuración: reinstalar los recupera.
+- Para borrar también los datos, el desinstalador lo pregunta dos veces. Hacelo solo si ya no necesitás
+  esos mundos (o tenés copia).
+- Minecraft y `.minecraft` no se tocan nunca, ni al instalar ni al desinstalar.
