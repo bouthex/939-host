@@ -249,6 +249,13 @@ cada PC).
 - **Guardián.** Proceso sin ventana, sin red y sin privilegios que solo recibe duplicados del Job
   Object, del proceso de Java y de su consola. No acepta órdenes de nada más que de 939 Host (su
   entrada es una tubería anónima).
+- **Conexiones de control en los dos sentidos y `Nudge`.** La conexión que abre una PC del grupo
+  (autenticada con su identidad por TLS) también se usa para hablarle, y la que abre esta PC
+  también atiende pedidos; cada pedido sigue pasando por el control de integrante y el límite por
+  PC. Solo se guardan conexiones de integrantes verificados. `Nudge` le pide a una integrante que
+  abra una conexión nueva hacia esta PC: se marca solo a la dirección ya conocida de quien lo pide
+  (no acepta direcciones en el pedido) y se cierra al segundo. Existe para corregir que iroh 1.4
+  siga usando un camino viejo después de que una PC se reinicia.
 - **Indicadores de operaciones.** Solo locales; nunca inventan porcentajes.
 
 ## Modelo de amenazas (resumen STRIDE)
@@ -295,8 +302,8 @@ plataforma), **Pendiente de infraestructura**, **Pendiente de pruebas reales**.
 | 16 | OP agregados fuera de la lista autorizada | **Corregido** | Lista firmada como única autoridad; se revierte con aviso; prueba `estado_compartido_y_op_concedido_por_la_propietaria` |
 | 17 | La voz por una dirección pública depende del servicio externo | Pendiente de infraestructura | Ver [`DIRECCIONES-PUBLICAS.md`](DIRECCIONES-PUBLICAS.md) |
 | 18 | Si 939 Host muere de golpe, Java se cerraba sin guardar | **Corregido** (salvo corte de luz) | El guardián detiene Java con `stop`; probado en Windows matando el proceso. Si el guardián también muere, el Job Object cierra Java como antes |
-| 19 | Apagar Windows con un servidor encendido | **Corregido** (pendiente de prueba real) | Pide tiempo con motivo visible y guarda; probado con el aviso simulado en Windows; falta un apagado real |
-| 20 | Chats de amigos en texto plano | **Corregido** | Cifrados con DPAPI; migración automática |
+| 19 | Apagar Windows con un servidor encendido | **Corregido** (pendiente de prueba real) | Pide tiempo con motivo visible y guarda; probado con el aviso simulado en Windows (motivo registrado, proceso vivo hasta terminar, tope de 180 s); falta un apagado real |
+| 20 | Chats de amigos en texto plano | **Corregido** | Cifrados con DPAPI (probado con DPAPI real en Windows); migración automática; lo ilegible se aparta con aviso |
 | 21 | Una PC que conoce la identidad del nodo puede seguir abriendo conexiones | Inevitable (con mitigación) | Límites por PC, tamaño y tiempo; cada conexión cuesta un saludo TLS |
 | 22 | Jugadores sin 939 Host sin revelar la IP de la casa | Pendiente de infraestructura | Requisito abierto; ver [`DIRECCIONES-PUBLICAS.md`](DIRECCIONES-PUBLICAS.md) |
 | 23 | «Finalizar árbol de procesos» en el Administrador de tareas | Inevitable | Termina también al guardián y a Java: el Job Object cierra Java sin guardar (como un corte) |

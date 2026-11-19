@@ -615,6 +615,9 @@ fn remote_files_follow_host_and_protect_world() {
     // Apagado: ahora sí se puede tocar el mundo (lo borrado va a la Papelera de A).
     a.ok(&format!("stop {sid}"));
     wait("A apagado", Duration::from_secs(20), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
+    // Al detener, A guarda el estado final en segundo plano; mientras tanto no acepta otro punto
+    // («Ya hay una operación en curso»). Se espera a que termine (en Windows tarda más).
+    wait("A guarda el estado final", Duration::from_secs(30), || a.ok(&format!("latest {sid}"))["label"] == "Al detener el servidor");
     b.ok(&format!("frm {sid} world/marca.txt"));
     assert!(!a.ok(&format!("exists {sid} world/marca.txt")).as_bool().unwrap());
     println!("✔ apagado: B manda un archivo del mundo a la Papelera de A");
