@@ -141,6 +141,7 @@ mod redteam {
         match name {
             "ctrl" => host939_cluster::ALPN_CTRL, "sync" => host939_cluster::ALPN_SYNC, "mc" => host939_cluster::ALPN_MC,
             "bridge" => host939_cluster::ALPN_BRIDGE, "join" => host939_cluster::ALPN_JOIN, "files" => host939_cluster::files::ALPN_FILES,
+            "friend" => host939_cluster::friends::ALPN_FRIEND, "voice" => host939_cluster::ALPN_VOICE,
             _ => b"939host/desconocido/9",
         }
     }

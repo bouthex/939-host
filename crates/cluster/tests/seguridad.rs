@@ -796,3 +796,30 @@ fn amigos_presencia_y_mensajes() {
     wait("C ve a A desconectada", Duration::from_secs(10), || c.ok("flist").as_array().unwrap().iter().any(|f| f["node"] == ia.as_str() && f["online"] == false));
     println!("✔ al cerrar 939 Host, sus amigos la ven desconectada");
 }
+
+/// Red team de los canales nuevos (amigos): una PC desconocida no puede pedir amistad sin código,
+/// mandar mensajes ni hacer que la víctima reserve memoria con un mensaje enorme.
+#[test]
+fn amigos_resisten_a_una_pc_desconocida() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut x = Node::spawn("X", &tmp.path().join("x"), true, &[]);
+    let ia = id(&mut a);
+    let addr = a.ok("myaddr");
+    x.ok(&format!("knowaddr {addr}"));
+    let r = x.ok(&format!(r#"raw {ia} friend {{"t":"request","secret":"inventado","name":"X","addr":null}}"#));
+    assert!(r["msg"].as_str().unwrap_or("").contains("no es válido"), "sin código no hay solicitud: {r}");
+    let r = x.ok(&format!(r#"raw {ia} friend {{"t":"msg","text":"spam"}}"#));
+    assert!(r["msg"].as_str().unwrap_or("").contains("No son amigos"), "{r}");
+    let r = x.ok(&format!(r#"raw {ia} friend {{"t":"accepted","name":"X","addr":null}}"#));
+    assert!(r["msg"].as_str().unwrap_or("").contains("pendiente"), "«aceptada» sin haber pedido nada: {r}");
+    let big = "a".repeat(1024 * 1024);
+    // La víctima corta después de 16 KB: del lado del atacante la escritura falla o la conexión
+    // se cierra sin respuesta. Cualquiera de los dos es correcto; nunca una respuesta normal.
+    let r = x.cmd(&format!(r#"raw {ia} friend {{"t":"msg","text":"{big}"}}"#));
+    assert!(!r["ok"].as_bool().unwrap() || r["v"].get("closed").is_some(), "un mensaje de 1 MB se corta sin leerlo entero");
+    assert!(a.ok("freqs").as_array().unwrap().is_empty() && a.ok("flist").as_array().unwrap().is_empty());
+    // A sigue funcionando.
+    assert!(a.ok("finvite").as_str().unwrap().starts_with("amigo:"));
+    println!("✔ sin código, sin amistad y con mensajes enormes: todo rechazado; A sigue funcionando");
+}

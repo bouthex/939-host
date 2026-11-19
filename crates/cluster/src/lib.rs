@@ -321,6 +321,8 @@ struct Inner {
     /// Presencia en vivo de los amigos y mensajes sin leer (ver `friends`).
     friends_live: Mutex<HashMap<String, friends::Live>>,
     unread: Mutex<HashMap<String, usize>>,
+    /// Conexiones de voz abiertas por PC (con tope).
+    voice_slots: Mutex<HashMap<String, usize>>,
 }
 
 /// Estado de un servidor compartido tal como lo ve esta PC (para la interfaz).
@@ -518,7 +520,7 @@ impl GroupNode {
             stopping: Default::default(), join_limit: Mutex::new(RateLimit::new(5, 30)),
             ctrl_limit: Mutex::new(RateLimit::new(CTRL_PER_MIN, 20_000)), sync_now_limit: Mutex::new(RateLimit::new(12, 200)),
             data_limit: Mutex::new(RateLimit::new(3000, 50_000)),
-            friends_live: Default::default(), unread: Default::default(),
+            friends_live: Default::default(), unread: Default::default(), voice_slots: Default::default(),
         });
         let h = Handler(inner.clone());
         let router = Router::builder(ep)
@@ -2795,6 +2797,17 @@ impl ProtocolHandler for VoiceH {
         // Solo integrantes del grupo, y solo si esta PC aloja el servidor y tiene voz.
         if !inner.is_member(&server, &remote) || !lease::read(&server).map(|l| l.held_by(&inner.me)).unwrap_or(false) { conn.close(1u32.into(), b"no"); return Ok(()); }
         let Some(port) = host939_core::voice::port(&server, inner.local.mc_port(&server)).filter(|_| inner.local.is_running(&server)) else { conn.close(2u32.into(), b"sin voz"); return Ok(()) };
+        // Un socket por cliente de voz, con tope: hasta 4 por PC y 64 en total.
+        let slot = {
+            let mut v = inner.voice_slots.lock().unwrap();
+            let mine = v.get(&remote).copied().unwrap_or(0);
+            let total: usize = v.values().sum();
+            if mine >= 4 || total >= 64 { false } else { *v.entry(remote.clone()).or_default() += 1; true }
+        };
+        if !slot { conn.close(3u32.into(), b"demasiadas"); return Ok(()); }
+        struct Release(Arc<Inner>, String);
+        impl Drop for Release { fn drop(&mut self) { let mut v = self.0.voice_slots.lock().unwrap(); if let Some(n) = v.get_mut(&self.1) { *n = n.saturating_sub(1); if *n == 0 { v.remove(&self.1); } } } }
+        let _release = Release(inner.clone(), remote.clone());
         let Ok(sock) = tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await else { return Ok(()) };
         if sock.connect(("127.0.0.1", port)).await.is_err() { return Ok(()); }
         let mut buf = vec![0u8; 2048];

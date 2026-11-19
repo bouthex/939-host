@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 
 pub const ALPN_FRIEND: &[u8] = b"939host/friend/1";
 pub const MAX_TEXT: usize = 500;
+/// Tope de cada pedido de amistad, presencia o mensaje (texto de 500 caracteres + dirección).
+const MAX_FRAME: usize = 16 * 1024;
 const MAX_FRIENDS: usize = 200;
 const MAX_CHAT: usize = 500;
 const MAX_INBOX_REQ: usize = 20;
@@ -285,8 +287,12 @@ impl iroh::protocol::ProtocolHandler for FriendH {
     async fn accept(&self, conn: Connection) -> Result<(), iroh::protocol::AcceptError> {
         let remote = conn.remote_id().to_string();
         if load().blocked.iter().any(|b| *b == remote) { conn.close(1u32.into(), b"bloqueado"); return Ok(()); }
+        // Cualquier PC de Internet que conozca esta identidad puede llegar hasta acá: mismo límite de
+        // pedidos por PC que el control del grupo y mensajes chicos (no los 8 MB generales).
+        if !self.0.ctrl_limit.lock().unwrap().allow(&remote) { conn.close(2u32.into(), b"limite"); return Ok(()); }
         let Ok((mut send, mut recv)) = conn.accept_bi().await else { return Ok(()) };
-        let Ok(req) = wire::read_msg::<_, FReq>(&mut recv).await else { return Ok(()) };
+        let Ok(Ok(raw)) = tokio::time::timeout(Duration::from_secs(10), wire::read_frame(&mut recv, MAX_FRAME)).await else { return Ok(()) };
+        let Ok(req) = serde_json::from_slice::<FReq>(&raw) else { return Ok(()) };
         let resp = handle(&self.0, &remote, req).await;
         let _ = wire::write_msg(&mut send, &resp).await;
         let _ = send.finish();
