@@ -752,6 +752,7 @@ fn tras_un_cierre_inesperado_se_publica_lo_que_guardo_el_guardian() {
     let dir = root_a.join("Servers").join(&sid);
     assert!(dir.join("server/world/bloque.txt").exists(), "el mundo de A está en disco");
     std::fs::write(dir.join("pendiente-publicar"), b"1").unwrap();
+    let _ = std::fs::remove_file(dir.join("en-marcha"));
     // Se vuelve a abrir 939 Host en A: publica el estado final sin encender nada.
     let mut a = Node::spawn("A", &root_a, true, &[]);
     wait("B recibe el estado que guardó el guardián", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) > fresh(&s1));
@@ -764,6 +765,49 @@ fn tras_un_cierre_inesperado_se_publica_lo_que_guardo_el_guardian() {
     assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "lo jugado antes del cierre inesperado no se pierde");
     assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos anfitrionas");
     println!("✔ tras un cierre inesperado, el estado que guardó el guardián llega al grupo y nadie aloja dos veces");
+}
+
+/// Corte de luz (o «Finalizar árbol de procesos»): muere 939 Host y nadie deja la marca del guardián.
+/// Lo que quedó en disco después del último punto no se publica como si fuera seguro; el grupo sigue
+/// desde el último punto, y lo de la PC cortada no se borra: queda como punto apartado.
+#[test]
+fn tras_un_corte_sin_guardian_no_se_publica_lo_no_confirmado() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_a = tmp.path().join("a");
+    let mut a = Node::spawn("A", &root_a, true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok("create Corte 25871").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25872"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} bloque.txt pasto"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia el punto", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    a.ok(&format!("write {sid} bloque.txt tierra"));
+    signal(a.pid(), "KILL");
+    drop(a);
+    let mut a = Node::spawn("A", &root_a, true, &[]);
+    // Al abrir, A avisa una vez que el último cierre no lo vio nadie.
+    let notes = a.ok("cierres").to_string();
+    assert!(notes.contains("cierre-sin-ver") && notes.contains("sin-confirmar"), "sin aviso del cierre sin ver: {notes}");
+    assert_eq!(a.ok("cierres"), serde_json::json!([]), "el aviso se muestra una sola vez");
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(fresh(&b.status(&sid)["myLatest"]), fresh(&s1), "se publicó solo un estado que nadie confirmó como guardado");
+    println!("    tras volver a abrir A: aviso de cierre sin ver y el grupo sigue en el último punto");
+    // B pide alojar: A le pasa lo que quedó en disco (es lo más nuevo), rotulado como sin confirmar,
+    // y el punto anterior sigue disponible para volver.
+    let e = b.err(&format!("start {sid}"));
+    assert!(e.contains("te lo está pasando"), "{e}");
+    wait("B queda alojando", Duration::from_secs(60), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"));
+    let snaps = b.ok(&format!("snapshots {sid}")).to_string();
+    assert!(snaps.contains("tras un cierre sin confirmar"), "el punto del traspaso no está rotulado: {snaps}");
+    assert!(snaps.contains(s1["id"].as_str().expect("id del punto")), "falta el punto anterior para volver: {snaps}");
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos anfitrionas");
+    assert_eq!(a.ok("cierres"), serde_json::json!([]), "la marca se usó en el traspaso");
+    println!("✔ corte sin guardián: aviso, nada se publica solo, el traspaso queda rotulado y el punto anterior sigue");
 }
 
 fn id_of(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }

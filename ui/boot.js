@@ -86,6 +86,10 @@ async function boot() {
 /* Qué pasó con cada servidor la última vez que 939 Host se cerró de golpe o se apagó Windows. */
 function showLastClose(n) {
   const name = `«${esc(n.name)}»`;
+  if (n.cause === 'cierre-sin-ver') {
+    dialog({ title: 'Último cierre', body: `<p>La última vez, ${name} estaba encendido y se cortó sin que 939 Host pudiera guardarlo (corte de luz, cierre forzado desde el Administrador de tareas o una falla de Windows).</p><p>El mundo quedó como estaba en el último guardado automático de Minecraft. Revisalo antes de seguir; si falta algo o no abre, en <b>Copias</b> podés volver a un punto de restauración. Si le pasás el servidor a otra PC, ese punto queda marcado como «sin confirmar».</p>`, buttons: [{ label: 'Entendido', value: 'ok', kind: 'pri' }] });
+    return;
+  }
   const why = n.cause === 'cierre-inesperado' ? `939 Host se cerró de forma inesperada mientras ${name} estaba encendido.`
     : n.cause === 'cierre-de-sesion' ? `Se cerró la sesión de Windows mientras ${name} estaba encendido.`
     : `Windows se apagó o se reinició mientras ${name} estaba encendido.`;

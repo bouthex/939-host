@@ -27,10 +27,12 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "camelCase")]
 pub struct LastClose {
     pub at: String,
-    /// "cierre-inesperado" | "apagado-windows"
+    /// "cierre-inesperado" | "apagado-windows" | "cierre-de-sesion" | "cierre-sin-ver" (corte de luz o
+    /// proceso terminado junto con el guardián: lo detecta la marca `en-marcha`)
     pub cause: String,
     /// "guardado" (Minecraft confirmó el guardado y se detuvo) | "detenido" (se detuvo, sin
-    /// confirmación en el registro) | "forzado" (no respondió en 10 minutos)
+    /// confirmación en el registro) | "forzado" (no respondió en 10 minutos) | "sin-confirmar"
+    /// (nadie vio el cierre)
     pub outcome: String,
     pub seconds: u64,
 }
@@ -40,6 +42,9 @@ fn marker_path(id: &str) -> PathBuf { paths::server_dir(id).join("recuperando") 
 
 pub fn write_record(id: &str, r: &LastClose) { let _ = paths::write_json(&record_path(id), r); }
 
+/// Cierres sin ver ya avisados en esta ejecución (la ventana se vuelve a crear desde la bandeja).
+static NOTIFIED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+
 /// Lee y quita los avisos pendientes de todos los servidores (para mostrarlos una vez).
 pub fn take_records() -> Vec<(String, LastClose)> {
     let mut out = vec![];
@@ -47,7 +52,14 @@ pub fn take_records() -> Vec<(String, LastClose)> {
         let p = record_path(&id);
         if let Ok(r) = paths::read_json::<LastClose>(&p) {
             let _ = std::fs::remove_file(&p);
+            crate::process::clear_running(&id);
             out.push((id, r));
+        } else if crate::process::unconfirmed_close(&id) && NOTIFIED.lock().unwrap().insert(id.clone()) {
+            // Nadie vio el cierre (corte de luz, «Finalizar árbol de procesos»): se avisa una vez.
+            // La marca queda hasta el próximo encendido o traspaso, para rotular ese punto.
+            let at = std::fs::metadata(crate::paths::server_dir(&id).join("en-marcha")).and_then(|m| m.modified()).ok()
+                .map(|t| chrono::DateTime::<chrono::Local>::from(t).to_rfc3339()).unwrap_or_default();
+            out.push((id, LastClose { at, cause: "cierre-sin-ver".into(), outcome: "sin-confirmar".into(), seconds: 0 }));
         }
     }
     out
@@ -217,6 +229,8 @@ pub fn run() -> ! {
                 write_record(&s.id, &LastClose { at: chrono::Local::now().to_rfc3339(), cause: "cierre-inesperado".into(), outcome: outcome.into(), seconds: started.elapsed().as_secs() });
                 // El estado final se publica al grupo la próxima vez que se abre 939 Host.
                 if outcome != "forzado" { crate::process::mark_exit_unsaved(&s.id); }
+                // El cierre ya quedó registrado (con su resultado): no es un cierre sin ver.
+                crate::process::clear_running(&s.id);
                 let _ = std::fs::remove_file(marker_path(&s.id));
                 unsafe { CloseHandle(s.proc_h as HANDLE); }
                 s.proc_h = 0;
@@ -237,6 +251,47 @@ pub fn run() -> ! { std::process::exit(0) }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn un_cierre_que_nadie_vio_se_avisa_una_vez_y_no_se_confunde_con_uno_en_curso() {
+        let dir = std::env::temp_dir().join(format!("h939-guard-{}", std::process::id()));
+        let _ = paths::init(dir);
+        let mut b = [0u8; 8]; getrandom::getrandom(&mut b).unwrap();
+        let id = format!("srv{}", u64::from_le_bytes(b));
+        std::fs::create_dir_all(paths::server_dir(&id)).unwrap();
+        // Configuración mínima: los avisos se buscan entre los servidores configurados.
+        std::fs::write(paths::server_dir(&id).join("instance.json"), serde_json::json!({
+            "id": id, "name": "x", "description": "", "mcVersion": "1.21.1", "loader": "vanilla",
+            "loaderVersion": null, "javaMajor": 21, "memoryMb": 1024, "jvmProfile": "balanced", "extraJvmArgs": "", "port": 25565,
+            "maxPlayers": 4, "motd": "", "onlineMode": true, "whitelist": false, "difficulty": "easy", "gamemode": "survival",
+            "hardcore": false, "pvp": true, "levelSeed": "", "levelType": "minecraft:normal", "viewDistance": 8, "simulationDistance": 6,
+            "spawnProtection": 0, "allowFlight": false, "enableCommandBlock": false, "syncIntervalMin": 15, "restoreIntervalMin": 15,
+            "installed": true, "installError": null, "eulaAcceptedAt": "x", "createdAt": "x",
+            "identity": { "publicKey": "a", "accessCode": "X" }, "extraProperties": {}
+        }).to_string()).unwrap();
+        assert!(crate::instance::list_configs().iter().any(|c| c.id == id), "la configuración de prueba no se lee");
+        // Encendido en este proceso: la marca es la de ahora, no un cierre sin ver.
+        crate::process::mark_running(&id);
+        assert!(!crate::process::unconfirmed_close(&id));
+        // Como si fuera de una ejecución anterior que se cortó: la marca quedó y nadie la vio.
+        crate::process::clear_running(&id);
+        std::fs::write(paths::server_dir(&id).join("en-marcha"), b"1").unwrap();
+        assert!(crate::process::unconfirmed_close(&id));
+        let mine = |v: Vec<(String, LastClose)>| v.into_iter().filter(|(i, _)| i == &id).collect::<Vec<_>>();
+        let r = mine(take_records());
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].1.cause.as_str(), r[0].1.outcome.as_str()), ("cierre-sin-ver", "sin-confirmar"));
+        assert!(mine(take_records()).is_empty(), "se avisa una sola vez");
+        // La marca sigue (rotula el próximo traspaso) hasta que se usa.
+        assert!(crate::process::take_unconfirmed(&id));
+        assert!(!crate::process::unconfirmed_close(&id));
+        // Si el guardián registró el cierre, ese registro manda y la marca se quita.
+        std::fs::write(paths::server_dir(&id).join("en-marcha"), b"1").unwrap();
+        write_record(&id, &LastClose { at: String::new(), cause: "cierre-inesperado".into(), outcome: "guardado".into(), seconds: 1 });
+        let r = mine(take_records());
+        assert_eq!(r[0].1.cause, "cierre-inesperado");
+        assert!(!crate::process::unconfirmed_close(&id));
+    }
 
     #[test]
     fn resultado_segun_el_registro() {

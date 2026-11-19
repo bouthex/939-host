@@ -324,6 +324,7 @@ impl Manager {
         job::assign(&child);
         // Si 939 Host termina de golpe, el guardián detiene este Java con «stop» (guardando).
         if let Some(si) = child.stdin.as_ref() { crate::guardian::watch(&cfg.id, &child, si); }
+        mark_running(&cfg.id);
         let pid = child.id();
         let _ = std::fs::write(run_dir.join(".939host.lock"), pid.to_string());
 
@@ -376,6 +377,7 @@ impl Manager {
             std::thread::spawn(move || {
                 let status = child.wait();
                 crate::guardian::release(&id);
+                clear_running(&id);
                 let _ = std::fs::remove_file(run_dir.join(".939host.lock"));
                 let mut r = rt.lock().unwrap();
                 r.stdin = None;
@@ -830,6 +832,37 @@ pub fn mark_exit_unsaved(id: &str) { let _ = std::fs::write(exit_mark(id), b"1")
 
 /// Lee y quita la marca que dejó el guardián (true si había una).
 pub fn take_exit_mark(id: &str) -> bool { std::fs::remove_file(exit_mark(id)).is_ok() }
+
+fn running_mark(id: &str) -> std::path::PathBuf { paths::server_dir(id).join("en-marcha") }
+
+/// Java está corriendo para este servidor. La marca se quita cuando 939 Host ve terminar el
+/// proceso o cuando el guardián confirma que se detuvo. Si al volver a abrir 939 Host sigue ahí,
+/// el cierre no lo vio nadie (corte de luz, «Finalizar árbol de procesos», falla de Windows):
+/// lo que hay en disco no está confirmado como guardado.
+pub fn mark_running(id: &str) {
+    STARTED_HERE.lock().unwrap().insert(id.to_string());
+    let _ = std::fs::write(running_mark(id), b"1");
+}
+pub fn clear_running(id: &str) {
+    STARTED_HERE.lock().unwrap().remove(id);
+    let _ = std::fs::remove_file(running_mark(id));
+}
+
+/// Servidores que este proceso de 939 Host encendió y todavía no vio terminar: su marca es la de
+/// ahora, no la de un cierre anterior.
+static STARTED_HERE: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+
+/// ¿Quedó la marca de un servidor que ya no corre? (no la quita: ver `take_unconfirmed`).
+pub fn unconfirmed_close(id: &str) -> bool {
+    running_mark(id).exists() && !STARTED_HERE.lock().unwrap().contains(id) && !is_pid_alive_for(id)
+}
+
+/// Lee y quita la marca de un cierre que nadie vio (true si había una y el servidor no corre).
+pub fn take_unconfirmed(id: &str) -> bool { unconfirmed_close(id) && std::fs::remove_file(running_mark(id)).is_ok() }
+
+/// Hay un Java de este servidor todavía vivo (por ejemplo, 939 Host se cerró y el guardián lo está
+/// guardando): entonces no es un cierre sin ver.
+fn is_pid_alive_for(id: &str) -> bool { crate::guardian::recovering(id) }
 
 fn check_lock(probe: &Probe, run_dir: &std::path::Path) -> AppResult<()> {
     let lock = run_dir.join(".939host.lock");

@@ -1583,7 +1583,17 @@ impl Inner {
             // Fase 2: punto final y copia de lo que cambió (poco). Recién con todo copiado se
             // entrega el permiso: así nunca queda una PC con permiso y sin mundo.
             inner.local.op(server, &label_busy, "Copiando el último estado a la otra PC…", None);
-            let snap = take(format!("Traspaso a {}", info.name)).await?;
+            // Si el último cierre en esta PC no lo vio nadie (corte de luz, proceso terminado
+            // junto con el guardián), lo que hay en disco no está confirmado como guardado: se
+            // pasa igual (es lo más nuevo que existe), pero rotulado y avisando, y los puntos
+            // anteriores siguen disponibles para volver.
+            let unconfirmed = !was_running && host939_core::process::unconfirmed_close(server);
+            if unconfirmed {
+                inner.local.note(server, &format!("El último cierre de este servidor en esta PC no se completó (corte de luz o cierre forzado). Se pasa a {} lo que quedó en disco; si algo falta o falla, en Copias está el punto anterior.", info.name));
+            }
+            let label = if unconfirmed { format!("Traspaso a {} (tras un cierre sin confirmar)", info.name) } else { format!("Traspaso a {}", info.name) };
+            let snap = take(label).await?;
+            if unconfirmed { host939_core::process::take_unconfirmed(server); }
             if let Err(e) = prefetch(snap.id.clone()).await {
                 if was_running && still_mine() { let _ = inner.blocking(server, |l, s| l.start(s)).await; }
                 bail!("{} no pudo copiar el último estado ({e}). El servidor siguió en esta PC.", info.name);

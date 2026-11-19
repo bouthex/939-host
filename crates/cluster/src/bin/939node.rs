@@ -59,6 +59,7 @@ impl LocalHost for Local {
             let run = paths::server_run_dir(server);
             std::fs::create_dir_all(run.join("world")).map_err(|e| e.to_string())?;
             if !run.join("world/level.dat").exists() { std::fs::write(run.join("world/level.dat"), b"nuevo").map_err(|e| e.to_string())?; }
+            host939_core::process::mark_running(server);
             let l = std::net::TcpListener::bind(("127.0.0.1", cfg.port)).map_err(|e| format!("puerto: {e}"))?;
             l.set_nonblocking(true).unwrap();
             let name = self.name.clone();
@@ -89,7 +90,7 @@ impl LocalHost for Local {
     }
     fn stop(&self, server: &str) -> Result<(), String> {
         if self.fake {
-            if let Some(t) = self.fakes.lock().unwrap().remove(server) { t.abort(); self.exited.lock().unwrap().insert(server.to_string()); }
+            if let Some(t) = self.fakes.lock().unwrap().remove(server) { t.abort(); self.exited.lock().unwrap().insert(server.to_string()); host939_core::process::clear_running(server); }
             std::thread::sleep(Duration::from_millis(100));
             return Ok(());
         }
@@ -472,6 +473,8 @@ async fn main() {
                 "knowaddr" => redteam::know(&parts[1..].join(" ")),
                 "ticketinfo" => { let (a, _) = host939_p2p::parse_ticket(&p(1)).map_err(|e| e.to_string())?; Ok(serde_json::json!({ "ips": a.ip_addrs().count(), "relays": a.relay_urls().count() })) }
                 "peersfile" => Ok(serde_json::json!(std::fs::read_to_string(paths::root().join("peers.json")).unwrap_or_default())),
+                // cierres: avisos del último cierre no normal (como los ve la interfaz al abrir).
+                "cierres" => Ok(serde_json::to_value(host939_core::guardian::take_records()).unwrap()),
                 "exit" => { node.shutdown().await; say("@@", "{\"ok\":true,\"v\":\"bye\"}"); std::process::exit(0) }
                 other => Err(format!("orden desconocida: {other}")),
             }
