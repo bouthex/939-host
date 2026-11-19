@@ -357,6 +357,15 @@ async fn main() {
                 "fpresence" => { node.presence_once().await; Ok(serde_json::json!(true)) }
                 "grantop" => node.grant_mc_op(&p(1), &p(2), &p(3)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "revokeop" => node.revoke_mc_op(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                // Consola de esta PC, como en la app: el comando va al servidor y un op/deop de la
+                // propietaria actualiza la lista firmada.
+                "console" => {
+                    let cmd = parts[2..].join(" ");
+                    local.command(&p(1), &cmd).and_then(|_| match host939_core::players::op_command(&cmd) {
+                        Some((g, n)) => node.local_op_change(&p(1), &n, g).map_err(|e| e.to_string()),
+                        None => Ok(()),
+                    }).map(|_| serde_json::json!(true))
+                }
                 "ops" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_run_dir(&p(1)).join("ops.json")).unwrap_or_default())),
                 "latest" => Ok(serde_json::to_value(snapshots::latest(&p(1))).unwrap()),
                 "snapshots" => Ok(serde_json::to_value(snapshots::list(&p(1))).unwrap()),

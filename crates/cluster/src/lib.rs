@@ -284,6 +284,9 @@ struct SrvState {
     mods_noticed: HashSet<String>,
     /// Hay una solicitud para alojar y acá el servidor está apagado: se acepta sola.
     auto_answer: bool,
+    /// OP sin autorizar vistos en `ops.json` y desde cuándo: se quitan recién después de un margen
+    /// (así una lista firmada que todavía viene en camino no hace quitar un OP legítimo).
+    op_unauthorized: HashMap<String, Instant>,
     /// Fotos de perfil que se están pidiendo (por huella).
     avatar_fetch: HashSet<String>,
 }
@@ -487,6 +490,12 @@ fn claim_conflict_wins(cur: &Lease, next: &Lease) -> bool {
 }
 
 fn is_sha256(h: &str) -> bool { h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) }
+
+/// Nombres con OP en `ops.json` del servidor (vacío si no existe).
+fn read_ops(server: &str) -> Vec<String> {
+    host939_core::paths::read_json::<Vec<serde_json::Value>>(&host939_core::paths::server_run_dir(server).join("ops.json")).unwrap_or_default()
+        .iter().filter_map(|o| o.get("name").and_then(|n| n.as_str()).map(String::from)).collect()
+}
 
 fn has_copy(server: &str) -> bool { host939_core::instance::load(server).is_ok() }
 
@@ -916,6 +925,7 @@ impl GroupNode {
     /// Queda en la lista firmada: nadie más puede concederlo, ni a sí mismo.
     pub fn grant_mc_op(&self, server: &str, node: &str, mc_name: &str) -> Result<()> {
         if !self.inner.is_owner(server) { bail!("Solo la PC propietaria concede el OP de Minecraft."); }
+        self.inner.init_mc_ops(server)?;
         if !host939_core::players::valid_name(mc_name) { bail!("Ese no es un nombre de Minecraft válido (3 a 16 letras, números o _)."); }
         let mut s = network::load_share(server);
         if s.member(node).is_none() { bail!("Esa PC no es del grupo."); }
@@ -930,6 +940,7 @@ impl GroupNode {
     /// La propietaria quita el OP concedido: la anfitriona se lo quita en el servidor.
     pub fn revoke_mc_op(&self, server: &str, node: &str) -> Result<()> {
         if !self.inner.is_owner(server) { bail!("Solo la PC propietaria quita el OP de Minecraft."); }
+        self.inner.init_mc_ops(server)?;
         let mut s = network::load_share(server);
         let gone: Vec<String> = s.mc_ops.iter().filter(|o| o.node_id == node).map(|o| o.mc_name.clone()).collect();
         if gone.is_empty() { return Ok(()); }
@@ -937,6 +948,33 @@ impl GroupNode {
         for n in gone { if !s.mc_ops_revoked.iter().any(|x| x.eq_ignore_ascii_case(&n)) { s.mc_ops_revoked.push(n.clone()); } audit(server, "mc-op-revoke", &n); }
         if s.mc_ops_revoked.len() > 200 { let k = s.mc_ops_revoked.len() - 200; s.mc_ops_revoked.drain(0..k); }
         self.inner.commit(server, &mut s)
+    }
+
+    /// La persona de esta PC dio o quitó OP desde 939 Host (consola o Jugadores). Si esta PC es la
+    /// propietaria de un servidor compartido, eso actualiza la lista firmada de OP autorizados
+    /// (así la decisión vale en cualquier anfitriona). En cualquier otra PC no cambia nada: la
+    /// anfitriona lo va a revertir con un aviso si no está autorizado.
+    pub fn local_op_change(&self, server: &str, mc_name: &str, granted: bool) -> Result<()> {
+        let s0 = network::load_share(server);
+        if !s0.enabled || !self.inner.is_owner(server) || !host939_core::players::valid_name(mc_name) { return Ok(()); }
+        self.inner.init_mc_ops(server)?;
+        let mut s = network::load_share(server);
+        let before = (s.mc_ops_base.clone(), s.mc_ops.clone(), s.mc_ops_revoked.clone());
+        let eq = |x: &String| x.eq_ignore_ascii_case(mc_name);
+        if granted {
+            s.mc_ops_revoked.retain(|x| !eq(x));
+            if !s.mc_ops_base.iter().any(eq) && !s.mc_ops.iter().any(|o| eq(&o.mc_name)) { s.mc_ops_base.push(mc_name.to_string()); }
+        } else {
+            s.mc_ops_base.retain(|x| !eq(x));
+            if s.mc_ops.iter().any(|o| eq(&o.mc_name)) {
+                s.mc_ops.retain(|o| !eq(&o.mc_name));
+                if !s.mc_ops_revoked.iter().any(eq) { s.mc_ops_revoked.push(mc_name.to_string()); }
+            }
+        }
+        if (s.mc_ops_base.clone(), s.mc_ops.clone(), s.mc_ops_revoked.clone()) == before { return Ok(()); }
+        self.inner.commit(server, &mut s)?;
+        audit(server, if granted { "mc-op-autorizado" } else { "mc-op-desautorizado" }, mc_name);
+        Ok(())
     }
 
     /// Reclamo de sucesión en curso (para la interfaz): (quién, segundos que faltan).
@@ -1889,26 +1927,56 @@ impl Inner {
         self.local.run_state(server)
     }
 
-    /// Aplica el OP de Minecraft que concedió (o quitó) la propietaria. Lo hace la PC que aloja,
-    /// con el servidor encendido, comparando con `ops.json` (así vale aunque cambie la anfitriona).
-    /// Nunca toca a quien la propietaria no nombró en la lista firmada.
+    /// Aplica la lista de OP de Minecraft autorizada por la propietaria (lista firmada). Lo hace
+    /// la PC que aloja, con el servidor encendido, comparando con `ops.json` (así vale aunque
+    /// cambie la anfitriona y aunque alguien edite el archivo o use `/op` dentro del juego):
+    /// - a quien está autorizado y no tiene OP, se le da;
+    /// - a quien tiene OP sin estar autorizado (una coanfitriona que se lo dio, un `/op` en el
+    ///   juego), se le quita, siempre con un aviso que dice por qué y cómo autorizarlo.
+    /// La primera vez, en la PC propietaria, la lista se fija con el `ops.json` que ya tenía: nunca
+    /// se quitan OP que existían antes de esta función.
     fn apply_mc_ops(&self, server: &str, share: &ShareConfig) {
-        if share.mc_ops.is_empty() && share.mc_ops_revoked.is_empty() { return; }
         if !self.local.is_running(server) { return; }
-        let ops_now: Vec<String> = host939_core::paths::read_json::<Vec<serde_json::Value>>(&host939_core::paths::server_run_dir(server).join("ops.json")).unwrap_or_default()
-            .iter().filter_map(|o| o.get("name").and_then(|n| n.as_str()).map(|n| n.to_ascii_lowercase())).collect();
-        for o in &share.mc_ops {
-            if !host939_core::players::valid_name(&o.mc_name) || share.member(&o.node_id).is_none() { continue; }
-            if !ops_now.contains(&o.mc_name.to_ascii_lowercase()) && self.local.command(server, &format!("op {}", o.mc_name)).is_ok() {
-                self.local.note(server, &format!("OP de Minecraft para {} (lo concedió la propietaria).", o.mc_name));
+        if !share.mc_ops_init && self.is_owner(server) {
+            let _ = self.init_mc_ops(server);
+            return;
+        }
+        let ops_now = read_ops(server);
+        let (give, take) = network::op_plan(&ops_now, share);
+        for n in give {
+            if self.local.command(server, &format!("op {n}")).is_ok() {
+                self.local.note(server, &format!("OP de Minecraft para {n} (lo autorizó la propietaria)."));
             }
         }
-        for n in &share.mc_ops_revoked {
-            if !host939_core::players::valid_name(n) || share.mc_ops.iter().any(|o| o.mc_name.eq_ignore_ascii_case(n)) { continue; }
-            if ops_now.contains(&n.to_ascii_lowercase()) && self.local.command(server, &format!("deop {n}")).is_ok() {
-                self.local.note(server, &format!("Se quitó el OP de Minecraft a {n} (lo decidió la propietaria)."));
+        let grace = self.timing.poll * 3;
+        let take: Vec<String> = self.with_state(server, |st| {
+            st.op_unauthorized.retain(|k, _| take.iter().any(|n| n.eq_ignore_ascii_case(k)));
+            take.into_iter().filter(|n| st.op_unauthorized.entry(n.to_ascii_lowercase()).or_insert_with(Instant::now).elapsed() >= grace).collect()
+        });
+        for n in take {
+            self.with_state(server, |st| { st.op_unauthorized.remove(&n.to_ascii_lowercase()); });
+            if self.local.command(server, &format!("deop {n}")).is_ok() {
+                audit(server, "mc-op-quitado", &n);
+                let why = if share.mc_ops_revoked.iter().any(|x| x.eq_ignore_ascii_case(&n)) { "lo decidió la propietaria".to_string() }
+                    else { "no está en la lista de OP que autorizó la propietaria; ella puede concederlo desde Jugadores o la consola de 939 Host".to_string() };
+                self.local.note(server, &format!("Se quitó el OP de Minecraft a {n}: {why}."));
             }
         }
+    }
+
+    /// Fija la lista de OP autorizados con el `ops.json` que tiene la propietaria (una sola vez).
+    fn init_mc_ops(&self, server: &str) -> Result<()> {
+        let mut s = network::load_share(server);
+        if s.mc_ops_init || !s.enabled || !self.is_owner(server) { return Ok(()); }
+        for n in read_ops(server) {
+            if host939_core::players::valid_name(&n) && !s.mc_ops_base.iter().any(|x| x.eq_ignore_ascii_case(&n)) && !s.mc_ops.iter().any(|o| o.mc_name.eq_ignore_ascii_case(&n)) {
+                s.mc_ops_base.push(n);
+            }
+        }
+        s.mc_ops_init = true;
+        self.commit(server, &mut s)?;
+        audit(server, "mc-op-lista-fijada", &s.mc_ops_base.join(","));
+        Ok(())
     }
 
     /// Mejor PC para hostear entre esta y las conectadas: estado más reciente, después mejor

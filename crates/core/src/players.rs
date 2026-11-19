@@ -32,6 +32,15 @@ pub struct PlayerView {
 #[serde(rename_all = "snake_case")]
 pub enum PlayerAction { WhitelistAdd, WhitelistRemove, Op, Deop, Ban, Pardon, Kick }
 
+/// Si `cmd` es un `op <nombre>` o `deop <nombre>` de consola (con o sin `/`), devuelve
+/// (dio OP, nombre).
+pub fn op_command(cmd: &str) -> Option<(bool, String)> {
+    let mut it = cmd.trim().trim_start_matches('/').split_whitespace();
+    let granted = match it.next()?.to_ascii_lowercase().as_str() { "op" => true, "deop" => false, _ => return None };
+    let name = it.next()?;
+    (it.next().is_none() && valid_name(name)).then(|| (granted, name.to_string()))
+}
+
 fn file(cfg: &ServerConfig, name: &str) -> PathBuf { paths::server_run_dir(&cfg.id).join(name) }
 
 fn read_list(cfg: &ServerConfig, name: &str) -> Vec<Value> {
@@ -186,5 +195,17 @@ mod tests {
         assert!(!valid_name("a b"));
         assert!(!valid_name("ab"));
         assert!(!valid_name("x; stop"));
+    }
+}
+
+#[cfg(test)]
+mod op_command_tests {
+    #[test]
+    fn reconoce_op_de_consola() {
+        assert_eq!(super::op_command("op Archi"), Some((true, "Archi".into())));
+        assert_eq!(super::op_command(" /DEOP kaki_1 "), Some((false, "kaki_1".into())));
+        assert_eq!(super::op_command("op @a"), None);
+        assert_eq!(super::op_command("op a b"), None);
+        assert_eq!(super::op_command("opx Archi"), None);
     }
 }

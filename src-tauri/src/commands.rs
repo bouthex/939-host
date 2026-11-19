@@ -191,8 +191,20 @@ pub async fn restart_server(app: AppHandle, id: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn send_command(id: String, command: String, mgr: State<'_, Manager>) -> AppResult<()> {
-    mgr.send_command(&id, &command)
+pub fn send_command(app: AppHandle, id: String, command: String, mgr: State<'_, Manager>) -> AppResult<()> {
+    mgr.send_command(&id, &command)?;
+    // `op`/`deop` desde la consola de la propietaria actualiza la lista firmada de OP autorizados.
+    if let Some((granted, name)) = host939_core::players::op_command(&command) { note_op_change(&app, &id, &name, granted); }
+    Ok(())
+}
+
+/// La persona de esta PC cambió el OP de alguien desde 939 Host: si es la propietaria de un
+/// servidor compartido, queda en la lista firmada (ver `GroupNode::local_op_change`).
+fn note_op_change(app: &AppHandle, id: &str, name: &str, granted: bool) {
+    let (app, id, name) = (app.clone(), id.to_string(), name.to_string());
+    tauri::async_runtime::spawn(async move {
+        if let Some(n) = app.state::<crate::network::Cluster>().try_node() { let _ = n.local_op_change(&id, &name, granted); }
+    });
 }
 
 #[tauri::command]
@@ -680,7 +692,13 @@ pub fn players_list(id: String, mgr: State<'_, Manager>) -> AppResult<Vec<host93
 pub async fn player_action(app: AppHandle, id: String, name: String, action: host939_core::players::PlayerAction, reason: Option<String>) -> AppResult<String> {
     let cfg = instance::load(&id)?;
     let mgr = app.state::<Manager>();
-    host939_core::players::apply(&mgr, &cfg, &name, action, reason.as_deref()).await
+    let r = host939_core::players::apply(&mgr, &cfg, &name, action, reason.as_deref()).await?;
+    match action {
+        host939_core::players::PlayerAction::Op => note_op_change(&app, &id, &name, true),
+        host939_core::players::PlayerAction::Deop => note_op_change(&app, &id, &name, false),
+        _ => {}
+    }
+    Ok(r)
 }
 
 #[tauri::command]

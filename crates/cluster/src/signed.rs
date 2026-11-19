@@ -50,6 +50,8 @@ pub fn payload(server: &str, s: &ShareConfig) -> Vec<u8> {
     if !s.rejected_mods.is_empty() { v["rejectedMods"] = serde_json::json!(s.rejected_mods); }
     if !s.mc_ops.is_empty() { v["mcOps"] = serde_json::json!(s.mc_ops); }
     if !s.mc_ops_revoked.is_empty() { v["mcOpsRevoked"] = serde_json::json!(s.mc_ops_revoked); }
+    if !s.mc_ops_base.is_empty() { v["mcOpsBase"] = serde_json::json!(s.mc_ops_base); }
+    if s.mc_ops_init { v["mcOpsInit"] = serde_json::json!(true); }
     canonical(&v)
 }
 

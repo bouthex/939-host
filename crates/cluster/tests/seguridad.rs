@@ -711,6 +711,10 @@ fn estado_compartido_y_op_concedido_por_la_propietaria() {
     wait("B ve su OP en la lista firmada", Duration::from_secs(20), || b.status(&sid)["members"].as_array().unwrap().iter().any(|m| m["mcOp"] == "Bjugador"));
     println!("✔ solo la propietaria concede OP; la anfitriona lo aplicó");
 
+    // OP desde la consola de la propietaria (§8 de la fase final): queda autorizado en la lista firmada.
+    a.ok(&format!("console {sid} op Amiga"));
+    wait("A ve a Amiga autorizada", Duration::from_secs(20), || a.status(&sid).to_string().contains("Amiga") || a.ok(&format!("ops {sid}")).as_str().unwrap_or("").contains("Amiga"));
+
     // Traspaso a B: el estado lo ven todas y la nueva anfitriona respeta la revocación.
     a.ok(&format!("handover {sid} {id_b}"));
     wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
@@ -725,6 +729,17 @@ fn estado_compartido_y_op_concedido_por_la_propietaria() {
         !ops.as_str().unwrap_or("").contains("Bjugador") && b.status(&sid)["members"].as_array().unwrap().iter().all(|m| m["mcOp"].is_null())
     });
     println!("✔ después del traspaso la nueva anfitriona respetó la revocación");
+
+    // B aloja: el OP autorizado por la propietaria por consola también vale acá.
+    wait("B da OP a Amiga (autorizada por la propietaria)", Duration::from_secs(25), || b.ok(&format!("ops {sid}")).as_str().unwrap_or("").contains("Amiga"));
+    // La coanfitriona se da OP (o a otra cuenta) desde su consola: se revierte con aviso.
+    b.ok(&format!("console {sid} op Intruso"));
+    assert!(b.ok(&format!("ops {sid}")).as_str().unwrap_or("").contains("Intruso"), "el servidor simulado lo aplicó");
+    wait("B quita el OP no autorizado", Duration::from_secs(25), || !b.ok(&format!("ops {sid}")).as_str().unwrap_or("").contains("Intruso"));
+    // Y si le quita el OP a quien la propietaria autorizó, vuelve.
+    b.ok(&format!("console {sid} deop Amiga"));
+    wait("B devuelve el OP autorizado", Duration::from_secs(25), || b.ok(&format!("ops {sid}")).as_str().unwrap_or("").contains("Amiga"));
+    println!("✔ OP coherente con la lista firmada: lo de la coanfitriona se revierte, lo autorizado vuelve");
 
     b.ok(&format!("stop {sid}"));
     wait("A y C ven el servidor apagado", Duration::from_secs(25), || {

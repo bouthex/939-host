@@ -102,6 +102,31 @@ pub struct ShareConfig {
     /// Cuentas a las que la propietaria les quitó el OP concedido (la anfitriona se lo quita).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mc_ops_revoked: Vec<String>,
+    /// Otras cuentas de Minecraft con OP autorizado por la propietaria (no atadas a una PC del
+    /// grupo: su propia cuenta, amigos). Junto con `mc_ops` forman la lista de OP autorizados.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mc_ops_base: Vec<String>,
+    /// La propietaria ya fijó la lista de OP autorizados (al principio, con el `ops.json` que tenía).
+    /// Hasta entonces la anfitriona no quita OP que no conoce.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mc_ops_init: bool,
+}
+
+/// Qué tiene que hacer la anfitriona con el OP de Minecraft según la lista firmada:
+/// (dar OP a, quitar OP a). `ops_now` son los nombres que tiene hoy `ops.json`.
+/// - Autorizados = OP concedidos a integrantes (`mc_ops`) + `mc_ops_base`.
+/// - Con la lista ya fijada (`mc_ops_init`), todo OP fuera de esa lista se quita.
+/// - Antes de fijarla, solo se quita lo revocado explícitamente.
+pub fn op_plan(ops_now: &[String], s: &ShareConfig) -> (Vec<String>, Vec<String>) {
+    let valid = crate::players::valid_name;
+    let has = |list: &[String], n: &str| list.iter().any(|x| x.eq_ignore_ascii_case(n));
+    let mut auth: Vec<String> = vec![];
+    for n in s.mc_ops.iter().filter(|o| s.member(&o.node_id).is_some()).map(|o| &o.mc_name).chain(s.mc_ops_base.iter()) {
+        if valid(n) && !has(&auth, n) { auth.push(n.clone()); }
+    }
+    let to_op = auth.iter().filter(|n| !has(ops_now, n)).cloned().collect();
+    let to_deop = ops_now.iter().filter(|n| valid(n) && !has(&auth, n) && (s.mc_ops_init || has(&s.mc_ops_revoked, n))).cloned().collect();
+    (to_op, to_deop)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -110,7 +135,7 @@ pub struct McOp { pub node_id: String, pub mc_name: String }
 
 impl Default for ShareConfig {
     fn default() -> Self {
-        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None, rejected_mods: vec![], mc_ops: vec![], mc_ops_revoked: vec![] }
+        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None, rejected_mods: vec![], mc_ops: vec![], mc_ops_revoked: vec![], mc_ops_base: vec![], mc_ops_init: false }
     }
 }
 
@@ -171,4 +196,33 @@ pub fn random_secret() -> String {
     // emitir un secreto predecible (antes, un error dejaba el secreto en ceros).
     getrandom::getrandom(&mut b).expect("generador aleatorio del sistema");
     hex::encode(b)
+}
+
+#[cfg(test)]
+mod op_tests {
+    use super::*;
+    fn share(init: bool) -> ShareConfig {
+        let mut s = ShareConfig { enabled: true, mc_ops_init: init, ..Default::default() };
+        s.members.push(Member { node_id: "b".into(), name: "B".into(), role: "coanfitrion".into(), joined_at: String::new() });
+        s.mc_ops.push(McOp { node_id: "b".into(), mc_name: "Bjug".into() });
+        s.mc_ops.push(McOp { node_id: "ya-no-esta".into(), mc_name: "Viejo".into() });
+        s.mc_ops_base.push("Duena".into());
+        s.mc_ops_revoked.push("Quitado".into());
+        s
+    }
+    fn v(x: &[&str]) -> Vec<String> { x.iter().map(|s| s.to_string()).collect() }
+
+    #[test]
+    fn op_coherente_con_la_lista_firmada() {
+        // Lista fijada: se da a los autorizados que falten y se quita a cualquiera de afuera.
+        let (give, take) = op_plan(&v(&["duena", "Intruso", "Quitado", "Viejo"]), &share(true));
+        assert_eq!(give, v(&["Bjug"]), "mayúsculas no importan; Viejo ya no es del grupo");
+        assert_eq!(take, v(&["Intruso", "Quitado", "Viejo"]));
+        // Antes de fijarla: solo lo revocado explícitamente (nunca se quitan OP preexistentes).
+        let (_, take) = op_plan(&v(&["Intruso", "Quitado"]), &share(false));
+        assert_eq!(take, v(&["Quitado"]));
+        // Nombres inválidos en ops.json no generan comandos.
+        let (_, take) = op_plan(&v(&["a b;stop"]), &share(true));
+        assert!(take.is_empty());
+    }
 }

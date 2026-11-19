@@ -13,7 +13,7 @@
 
 use crate::{wire, Inner};
 use anyhow::{anyhow, bail, Result};
-use host939_core::paths;
+use host939_core::{paths, sealed};
 use iroh::endpoint::Connection;
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
@@ -63,12 +63,16 @@ pub struct Store {
 #[serde(rename_all = "camelCase")]
 pub struct Message { pub from_me: bool, pub text: String, pub at: String, #[serde(default)] pub delivered: bool }
 
-fn store_path() -> std::path::PathBuf { paths::root().join("amigos.json") }
-fn chat_path(node: &str) -> std::path::PathBuf { paths::root().join("mensajes").join(format!("{}.json", &node[..node.len().min(64)])) }
-pub fn load() -> Store { paths::read_json(&store_path()).unwrap_or_default() }
-fn save(s: &Store) -> Result<()> { paths::write_json(&store_path(), s).map_err(|e| anyhow!(e.message)) }
-pub fn chat(node: &str) -> Vec<Message> { if valid_node(node) { paths::read_json(&chat_path(node)).unwrap_or_default() } else { vec![] } }
-fn save_chat(node: &str, m: &[Message]) { let _ = std::fs::create_dir_all(paths::root().join("mensajes")); let _ = paths::write_json(&chat_path(node), &m); }
+// La lista de amigos (incluye códigos de invitación) y los chats se guardan cifrados con DPAPI
+// (`host939_core::sealed`). Los archivos `.json` en texto plano de versiones anteriores se migran
+// al leerlos por primera vez.
+fn store_path() -> std::path::PathBuf { paths::root().join("amigos.bin") }
+fn store_legacy() -> std::path::PathBuf { paths::root().join("amigos.json") }
+fn chat_file(node: &str, ext: &str) -> std::path::PathBuf { paths::root().join("mensajes").join(format!("{}.{ext}", &node[..node.len().min(64)])) }
+pub fn load() -> Store { sealed::read(&store_path(), Some(&store_legacy())).or_default() }
+fn save(s: &Store) -> Result<()> { sealed::write(&store_path(), s).map_err(|e| anyhow!(e.message)) }
+pub fn chat(node: &str) -> Vec<Message> { if valid_node(node) { sealed::read(&chat_file(node, "bin"), Some(&chat_file(node, "json"))).or_default() } else { vec![] } }
+fn save_chat(node: &str, m: &[Message]) { let _ = sealed::write(&chat_file(node, "bin"), &m); }
 fn valid_node(n: &str) -> bool { n.len() == 64 && n.bytes().all(|b| b.is_ascii_hexdigit()) }
 
 /// Texto de un mensaje: sin caracteres de control (salvo saltos de línea), recortado y con tope.

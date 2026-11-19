@@ -38,6 +38,7 @@ pub mod profile;
 pub mod properties;
 pub mod pcname;
 pub mod repair;
+pub mod sealed;
 pub mod settings;
 pub mod skins;
 pub mod snapshots;

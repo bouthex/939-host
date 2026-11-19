@@ -244,6 +244,10 @@ pub fn remote_write_check(id: &str, rel: &str) -> AppResult<()> {
         if RUNTIME_DIRS.contains(&t.as_str()) || (single && RUNTIME_FILES.contains(&t.as_str())) {
             return Err(AppError::new("denied", "Esa parte del servidor define qué programa se ejecuta: solo se cambia desde la PC anfitriona (o reinstalando el servidor)."));
         }
+        // Los OP de Minecraft los decide la propietaria (lista firmada), no un archivo subido.
+        if single && t == "ops.json" {
+            return Err(AppError::new("denied", "Los OP de Minecraft los autoriza la propietaria desde Jugadores o Grupo: ops.json no se cambia desde otra PC."));
+        }
     }
     Ok(())
 }
