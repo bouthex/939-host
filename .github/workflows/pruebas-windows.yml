@@ -47,6 +47,91 @@ jobs:
             dist/SHA256SUMS.txt
           retention-days: 14
 
+  # Versión de prueba para las PCs del equipo: igual que una release (sin la característica
+  # `pruebas`, revisada con --release), pero solo como artefacto de esta ejecución. No crea
+  # etiquetas ni releases. Queda identificada por rama y commit en VERSION-DE-PRUEBA.txt.
+  version-de-prueba:
+    name: Versión de prueba (compilación de entrega)
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/rediseno-v3'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Herramientas
+        timeout-minutes: 15
+        run: |
+          scripts/ci-apt.sh mingw-w64 nsis zip
+          rustup toolchain install
+      # Sin caché: compilación limpia, como las releases.
+      - run: scripts/compilar-windows.sh
+      - name: Sin secretos, datos personales ni ganchos de prueba
+        run: scripts/verificar-secretos.sh target/x86_64-pc-windows-gnu/release/939Host.exe --release
+      - run: scripts/empaquetar.sh "$(scripts/version.sh)"
+      - name: Identificación
+        run: |
+          v="$(scripts/version.sh)"
+          {
+            echo "939 Host — versión de prueba (no es una release)"
+            echo "Identificador: ${v}+prueba.${GITHUB_SHA::12}"
+            echo "Rama: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Ejecución: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "Firma digital: NO (sin firmar; Smart App Control la bloquea y SmartScreen avisa)"
+            echo "Requisitos: Windows 10 u 11 de 64 bits con WebView2 (incluido en Windows 11). Probada de forma automática solo en Windows Server 2025."
+            echo
+            echo "SHA-256:"
+            cat dist/SHA256SUMS.txt
+          } > dist/VERSION-DE-PRUEBA.txt
+          cat dist/VERSION-DE-PRUEBA.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: 939Host-version-de-prueba
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+            dist/VERSION-DE-PRUEBA.txt
+          retention-days: 30
+
+  version-de-prueba-windows:
+    name: Versión de prueba instalada en Windows
+    runs-on: windows-2025
+    needs: version-de-prueba
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: 939Host-version-de-prueba
+          path: dist
+      - name: Verificar SHA-256
+        shell: bash
+        run: cd dist && sha256sum -c <(grep -v payload/ SHA256SUMS.txt)
+      - name: Instalar, abrir, comprobar que no hay puerto de depuración y desinstalar
+        shell: pwsh
+        run: |
+          $inst = (Get-ChildItem dist\*-instalador.exe | Select-Object -First 1).FullName
+          Start-Process $inst -ArgumentList '/S' -Wait
+          $dir = "$env:LOCALAPPDATA\Programs\939 Host"
+          $exe = "$dir\939Host.exe"
+          if (!(Test-Path $exe)) { throw "No se instaló en $exe" }
+          # Aunque exista la variable, la compilación de entrega no abre el puerto de depuración.
+          $env:H939_E2E_DEVTOOLS_PORT = "9223"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 25
+          if ($p.HasExited) { throw "La app se cerró sola (código $($p.ExitCode))" }
+          $open = Get-NetTCPConnection -State Listen -LocalPort 9223 -ErrorAction SilentlyContinue
+          if ($open) { throw "La versión de entrega abrió el puerto de depuración" }
+          $listen = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $p.Id }
+          "Puertos TCP en escucha de la app: $(@($listen | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" }) -join ', ')"
+          foreach ($l in $listen) { if ($l.LocalAddress -notin @('127.0.0.1', '::1')) { throw "La app escucha TCP fuera de esta PC: $($l.LocalAddress):$($l.LocalPort)" } }
+          $sig = Get-AuthenticodeSignature $exe
+          "Firma: $($sig.Status)"
+          Get-Process | Where-Object { $_.Path -like "$dir*" } | Stop-Process -Force
+          Start-Sleep 3
+          Start-Process "$dir\Desinstalar.exe" -ArgumentList '/S' -Wait -ErrorAction SilentlyContinue
+          Start-Sleep 5
+          if (Test-Path $exe) { throw "La desinstalación dejó el ejecutable" }
+          "✔ versión de prueba: instala, abre, sin puerto de depuración, desinstala"
+
   nucleo-windows:
     name: Núcleo, P2P y grupo en Windows (servidores reales)
     runs-on: windows-2025
