@@ -12,8 +12,11 @@
 set -euo pipefail
 [ "$#" -gt 0 ] || { echo "uso: $0 paquete..." >&2; exit 2; }
 
+# Tercer espejo independiente de Azure: cuando el de Azure no responde, archive.ubuntu.com también
+# termina ahí desde los runners (pasó el 19/11/2026 durante horas).
 MIRRORS='http://azure.archive.ubuntu.com/ubuntu/	priority:1
-http://archive.ubuntu.com/ubuntu/	priority:2'
+http://archive.ubuntu.com/ubuntu/	priority:2
+http://mirrors.edge.kernel.org/ubuntu/	priority:3'
 
 # Los runners de Ubuntu 24.04 leen la lista de espejos de este archivo (mirror+file:).
 if [ -f /etc/apt/apt-mirrors.txt ]; then
@@ -25,7 +28,7 @@ for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.l
   sudo sed -i -E 's#https?://[a-z0-9.-]*\.ec2\.archive\.ubuntu\.com/ubuntu/?#http://azure.archive.ubuntu.com/ubuntu/#g' "$f"
 done
 
-# Sin datos durante 30 s, se corta y se reintenta (en el siguiente espejo si hace falta).
-APT_OPTS=(-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+# Sin datos durante 20 s, se corta y se reintenta (en el siguiente espejo si hace falta).
+APT_OPTS=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
 sudo apt-get "${APT_OPTS[@]}" update
 sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends "$@"
