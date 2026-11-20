@@ -2643,12 +2643,36 @@ async fn serve_ctrl(inner: Arc<Inner>, conn: Connection) {
                             // Sin conexión de control guardada pero con otras (sincronización,
                             // archivos): la de control ya se descartó por fallar, así que las demás
                             // también se consideran de antes.
-                            let alive = match &old { None => false, Some(old) => { let probe = Req::Info { server: server.clone() }; tokio::time::timeout(Duration::from_secs(3), async {
-                                let (mut s, mut r) = old.open_bi().await?;
-                                wire::write_msg(&mut s, &probe).await?;
-                                s.finish()?;
-                                wire::read_msg::<_, Resp>(&mut r).await
-                            }).await.map(|r| r.is_ok()).unwrap_or(false) } };
+                            // Se manda un pedido corto por la guardada y se mira si llega algo de vuelta a
+                            // nivel de transporte (aunque sea solo el acuse de recibo): una conexión viva
+                            // contesta en lo que tarda la red aunque la otra PC esté muy ocupada; una de
+                            // antes de un reinicio no recibe nada (en Windows tampoco avisa que murió).
+                            // Mientras la vieja sigue abierta, el transporte puede seguir usando el camino
+                            // viejo para esa PC, por eso no se espera más de 1 s. Equivocarse con una
+                            // conexión lentísima solo hace lo de antes (cerrar y pedir una nueva).
+                            let alive = match &old {
+                                None => false,
+                                Some(old) => {
+                                    let rx0 = old.stats().udp_rx.datagrams;
+                                    let probe = Req::Info { server: server.clone() };
+                                    let old2 = old.clone();
+                                    let ask = tokio::spawn(async move {
+                                        let (mut s, mut r) = old2.open_bi().await?;
+                                        wire::write_msg(&mut s, &probe).await?;
+                                        s.finish()?;
+                                        wire::read_msg::<_, Resp>(&mut r).await
+                                    });
+                                    let end = Instant::now() + PROBE_WAIT;
+                                    let mut alive = false;
+                                    while Instant::now() < end {
+                                        if old.stats().udp_rx.datagrams > rx0 { alive = old.close_reason().is_none(); break; }
+                                        if old.close_reason().is_some() { break; }
+                                        tokio::time::sleep(Duration::from_millis(25)).await;
+                                    }
+                                    ask.abort();
+                                    alive
+                                }
+                            };
                             debug(&format!("conexión nueva de {}: la guardada {}", &remote[..4.min(remote.len())], if alive { "responde, no se cierra" } else { "no responde, se cierran las viejas" }));
                             if !alive {
                                 let mut conns = inner.conns.lock().await;
@@ -2905,6 +2929,9 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool { a.len() == b.len() && a.iter().zip(b).fol
 /// Pedidos de control por minuto y por PC. Con la consulta normal (cada 5 s, o 0,7 s en las
 /// pruebas) una PC manda menos de 100 por minuto por servidor.
 const CTRL_PER_MIN: usize = 600;
+
+/// Cuánto se espera la respuesta de una conexión guardada antes de darla por vieja (ver `serve_ctrl`).
+const PROBE_WAIT: Duration = Duration::from_millis(1000);
 
 struct RateLimit { per_node: usize, total: usize, hits: HashMap<String, Vec<Instant>>, all: Vec<Instant> }
 impl RateLimit {

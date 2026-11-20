@@ -420,6 +420,17 @@ escucha TCP fuera de la PC y se desinstala. No crea etiquetas ni releases.
 - Seguridad: una coanfitriona ya no puede escribir `server.properties` por el administrador remoto;
   `p256` 0.14 (sin la vulnerabilidad de `crypto-bigint` 0.5).
 
+### Problema encontrado en la CI de Windows y corregido
+
+En la corrida 44644967224 fallaron en Windows las dos pruebas de reinicio de una PC (cierre inesperado
+con guardián y corte sin guardián), que habían pasado en las dos corridas anteriores y pasan siempre en
+Linux. Causa: la comprobación de la conexión guardada (agregada en esta fase para no cerrar conexiones en
+uso) esperaba hasta 3 s una respuesta; en Windows una conexión muerta no avisa, y mientras seguía abierta
+el transporte mandaba también las respuestas por el camino viejo hacia la PC reiniciada. Ahora se da por
+viva solo si llega algo de vuelta a nivel de transporte (basta el acuse de recibo) dentro de 1 s; si no,
+se cierra como antes. La prueba de inundación (conexiones en uso bajo carga) y las de reinicio pasan en
+Linux; el resultado en Windows es el de la corrida final (informe de la etapa).
+
 ### Pruebas, separadas por lo que necesitan
 
 | Tipo | Qué |
