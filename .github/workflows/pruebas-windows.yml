@@ -387,7 +387,15 @@ jobs:
             if (Select-String -Path "$env:WINDIR\System32\drivers\etc\hosts" -Pattern "# >>> 939 Host" -Quiet) { throw "${what}: quedó el bloque de 939 Host en hosts" }
             if (Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object TaskName -match '939') { throw "${what}: quedó una tarea programada" }
             if (Get-Service -ErrorAction SilentlyContinue | Where-Object Name -match '939') { throw "${what}: quedó un servicio" }
-            if (Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object DisplayName -match '939') { throw "${what}: quedó una regla de Firewall" }
+            # 939 Host no crea reglas de Firewall. Windows sí puede crear las suyas para 939Host.exe
+            # cuando muestra su aviso de red (y en un equipo sin nadie que lo responda las crea solo);
+            # esas son del sistema, solo se borran con administrador y apuntan al programa ya borrado.
+            # Se muestran, y se falla solo si aparece una regla que no sea de ese aviso.
+            foreach ($r in @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '939' })) {
+              $prog = ($r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program
+              Write-Output "${what}: regla de Firewall «$($r.DisplayName)» ($($r.Direction), $($r.Action), programa: $prog)"
+              if ($prog -notlike '*\939 Host\939Host.exe' -and $prog -notlike '*\939Host.exe') { throw "${what}: quedó una regla de Firewall que no es la del aviso de Windows" }
+            }
           }
           Check-Clean "conservando datos"
           # Los servidores, mundos e identidad del usuario no se borran sin su consentimiento.

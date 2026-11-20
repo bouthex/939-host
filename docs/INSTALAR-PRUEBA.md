@@ -100,6 +100,10 @@ En **Grupo** se ve si la conexión es «directa» o «por relay» (el relay solo
 3. Por defecto **conserva** mundos, copias, puntos y configuración (reinstalar los recupera). Para borrar
    también los datos, el desinstalador lo pregunta dos veces.
 4. Minecraft y `.minecraft` no se tocan nunca.
+5. Si al principio Windows te preguntó por el acceso de red de 939 Host, puede quedar **su** regla de
+   Firewall para `939Host.exe` (la crea Windows, no 939 Host, y solo se borra con permisos de
+   administrador). No abre nada: apunta a un programa que ya no existe. Si querés quitarla: Seguridad de
+   Windows → Firewall y protección de red → Configuración avanzada → Reglas de entrada.
 
 ## Si algo falla
 
