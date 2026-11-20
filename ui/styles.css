@@ -771,3 +771,7 @@ details.tech[open] > summary::before { content: '▾ '; }
 /* Encabezado de página: el texto cede espacio y los botones quedan a la derecha mientras entren. */
 .head > :first-child { flex: 1 1 360px; min-width: 0; }
 .head > .btns { flex: none; }
+/* Ítem de un mod que no está instalado: se distingue, nunca parece un ítem normal. */
+.slot.unk { border-style: dashed; background: transparent; }
+.slot.unk .nm { font-size: 15px; color: var(--t3); }
+.slot img { object-fit: cover; object-position: top; }

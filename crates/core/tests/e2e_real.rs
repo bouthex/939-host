@@ -257,7 +257,30 @@ async fn e2e_cliente_real() {
         let client_log = std::fs::read_to_string(dir.join("game/logs/latest.log")).or_else(|_| std::fs::read_to_string(dir.join("salida.txt"))).unwrap_or_default();
         if joined {
             println!("✔ un cliente real de Minecraft {mc} entró al servidor {loader:?} («{name} joined the game»)");
+            // Fase 2 con un jugador de verdad: conectado, ficha en vivo y edición por comandos.
+            std::thread::sleep(Duration::from_secs(3));
+            assert!(host939_core::players::list(&mgr, &cfg).iter().any(|p| p.name == name && p.online), "la lista lo muestra conectado");
+            let live = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).expect("ficha en vivo");
+            println!("✔ ficha en vivo: vida {:?}, hambre {:?}, nivel {:?}", live.health, live.food, live.xp_level);
+            let e = host939_core::playeredit::Edit { health: Some(7.0), xp_level: Some(5), ..Default::default() };
+            let msg = host939_core::playeredit::apply_online(&mgr, &cfg, name, &e, "prueba").expect("editar en vivo");
+            let after = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap();
+            println!("✔ edición en vivo: {msg} → vida {:?}, nivel {:?}", after.health, after.xp_level);
+            assert_eq!(after.xp_level, Some(5));
+            assert!(after.health.map(|h| (h - 7.0).abs() <= 0.5).unwrap_or(false), "vida tras /damage: {:?}", after.health);
             mgr.send_command(&cfg.id, &format!("kick {name} prueba terminada")).ok();
+            // Salida: queda desconectado, con su sesión registrada y su archivo guardado.
+            assert!(wait_for(Duration::from_secs(20), || !mgr.runtime(&cfg.id).lock().unwrap().players.contains(name)), "sigue figurando conectado");
+            let h = host939_core::sessions::history(&cfg.id, name);
+            assert_eq!(h.sessions, 1, "una sesión registrada: {h:?}");
+            println!("✔ salida registrada: {} s de sesión", h.total_secs);
+            let p = host939_core::players::list(&mgr, &cfg).into_iter().find(|p| p.name == name).expect("en la lista");
+            assert!(!p.online && p.last_seen.is_some());
+            assert!(wait_for(Duration::from_secs(20), || host939_core::playerdata::detail(&mgr, &cfg, name, &p.uuid, false).map(|d| d.source == "saved").unwrap_or(false)), "Minecraft no guardó al jugador");
+            let msg = host939_core::playeredit::apply_offline(&mgr, &cfg, name, &p.uuid, &host939_core::playeredit::Edit { health: Some(13.0), food: Some(9), ..Default::default() }, "prueba").expect("editar desconectado");
+            let d = host939_core::playerdata::detail(&mgr, &cfg, name, &p.uuid, false).unwrap();
+            assert_eq!((d.health, d.food), (Some(13.0), Some(9)), "{msg}");
+            println!("✔ edición desconectado sobre el archivo real de Minecraft {mc}: vida 13, hambre 9");
         }
         let _ = child.kill();
         let _ = child.wait();
@@ -557,4 +580,35 @@ async fn e2e_modrinth_modpack_detalle() {
         break;
     }
     assert!(checked, "al menos un modpack chico para revisar su contenido");
+}
+
+/// Ítems de mods reales (bajados de Modrinth y verificados por hash): el índice encuentra nombres
+/// e íconos en mods de Fabric y de NeoForge, sin ejecutar nada de ellos.
+#[tokio::test]
+#[ignore]
+async fn e2e_items_de_mods() {
+    init();
+    let dir = host939_core::paths::cache().join("prueba-items-de-mods");
+    std::fs::create_dir_all(&dir).unwrap();
+    // (proyecto, cargador, ítem que tiene que aparecer con nombre e ícono)
+    for (slug, loader, item) in [("farmers-delight", "fabric", "farmersdelight:tomato"), ("create", "neoforge", "create:wrench"), ("sodium", "fabric", "")] {
+        let url = format!("https://api.modrinth.com/v2/project/{slug}/version?loaders=%5B%22{loader}%22%5D");
+        let versions: serde_json::Value = host939_core::net::get_json(&url, "Modrinth").await.expect("versiones");
+        let f = &versions[0]["files"][0];
+        let jar = dir.join(f["filename"].as_str().unwrap());
+        host939_core::net::download(f["url"].as_str().unwrap(), &jar, host939_core::net::Hash::Sha1(f["hashes"]["sha1"].as_str().unwrap()), |_, _| {}).await.expect("descarga");
+        let t = std::time::Instant::now();
+        let idx = host939_core::moditems::index_jar(&jar).expect("índice");
+        println!("✔ {slug} ({loader}): «{}», {} nombres, {} íconos, espacios {:?}, en {} ms", idx.mod_name, idx.names.len(), idx.icons.len(), idx.namespaces, t.elapsed().as_millis());
+        if item.is_empty() {
+            // Mod sin ítems (optimización): ningún ítem inventado.
+            assert!(idx.icons.len() < 5, "un mod sin ítems no debería tener íconos de ítems: {:?}", idx.icons.keys().take(5).collect::<Vec<_>>());
+            continue;
+        }
+        assert!(idx.names.contains_key(item), "falta el nombre de {item}");
+        assert!(idx.icons.contains_key(item), "falta el ícono de {item}");
+        let with_icon = idx.names.keys().filter(|k| idx.icons.contains_key(*k)).count();
+        println!("    {with_icon} de {} ítems con nombre tienen ícono", idx.names.len());
+        assert!(with_icon * 10 >= idx.names.len() * 6, "menos del 60 % de los ítems con ícono");
+    }
 }

@@ -75,6 +75,8 @@ pub struct PlayerDetail {
     pub ender: Vec<Item>,
     pub effects: Vec<Effect>,
     pub stats: Stats,
+    /// Sesiones vistas por 939 Host en la consola (entradas y salidas reales).
+    pub history: crate::sessions::History,
 }
 
 fn max_damage(id: &str) -> Option<i64> {
@@ -304,6 +306,7 @@ pub fn detail(mgr: &Manager, cfg: &ServerConfig, name: &str, uuid: &str, online:
     d.name = name.to_string();
     d.uuid = uuid.to_string();
     d.stats = read_stats(cfg, uuid);
+    d.history = crate::sessions::history(&cfg.id, name);
     Ok(d)
 }
 

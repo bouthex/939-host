@@ -149,6 +149,38 @@ pub fn parse_nbt(data: &[u8]) -> Result<Value, String> {
     r.payload(10, 0)
 }
 
+/// Número para `patch_root`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Num { Int(i32), Float(f32) }
+
+/// Cambia valores numéricos que **ya existen** en la raíz de un NBT binario (sin comprimir),
+/// escribiendo encima de los mismos bytes: todo lo demás del archivo queda idéntico. Si un campo
+/// falta o tiene otro tipo, no toca nada y devuelve error.
+pub fn patch_root(data: &[u8], edits: &[(&str, Num)]) -> Result<Vec<u8>, String> {
+    let mut r = Nbt { b: data, i: 0 };
+    if r.u8()? != 10 { return Err("el archivo no empieza con un compuesto".into()); }
+    let _ = r.string()?;
+    let mut found: std::collections::HashMap<String, (u8, usize)> = Default::default();
+    loop {
+        let t = r.u8()?;
+        if t == 0 { break; }
+        let k = r.string()?;
+        found.insert(k, (t, r.i));
+        r.payload(t, 1)?;
+    }
+    if r.i != data.len() { return Err("datos sobrantes al final del archivo".into()); }
+    let mut out = data.to_vec();
+    for (k, v) in edits {
+        let &(t, at) = found.get(*k).ok_or_else(|| format!("el archivo no tiene «{k}»"))?;
+        match (t, v) {
+            (3, Num::Int(x)) => out[at..at + 4].copy_from_slice(&x.to_be_bytes()),
+            (5, Num::Float(x)) => out[at..at + 4].copy_from_slice(&x.to_be_bytes()),
+            _ => return Err(format!("«{k}» tiene otro tipo de dato")),
+        }
+    }
+    Ok(out)
+}
+
 struct Nbt<'a> { b: &'a [u8], i: usize }
 
 impl<'a> Nbt<'a> {
@@ -245,6 +277,25 @@ pub mod tests {
         s(&mut out, "");
         p(&mut out, v);
         out
+    }
+
+    #[test]
+    fn patch_root_cambia_solo_esos_bytes() {
+        // Raíz con Health (float), foodLevel (int) y una lista anidada que no se toca.
+        let mut d = vec![10, 0, 0];
+        d.extend([5, 0, 6]); d.extend(b"Health"); d.extend(17.0f32.to_be_bytes());
+        d.extend([3, 0, 9]); d.extend(b"foodLevel"); d.extend(14i32.to_be_bytes());
+        d.extend([9, 0, 3]); d.extend(b"Pos"); d.push(6); d.extend(2i32.to_be_bytes()); d.extend(1.5f64.to_be_bytes()); d.extend(2.5f64.to_be_bytes());
+        d.push(0);
+        let out = patch_root(&d, &[("Health", Num::Float(20.0)), ("foodLevel", Num::Int(20))]).unwrap();
+        assert_eq!(out.len(), d.len());
+        let v = parse_nbt(&out).unwrap();
+        assert_eq!((v["Health"].as_f64(), v["foodLevel"].as_i64(), v["Pos"][1].as_f64()), (Some(20.0), Some(20), Some(2.5)));
+        let changed = d.iter().zip(&out).filter(|(a, b)| a != b).count();
+        assert!(changed <= 8, "solo cambian los bytes de los dos valores");
+        assert!(patch_root(&d, &[("XpLevel", Num::Int(3))]).is_err(), "no agrega campos");
+        assert!(patch_root(&d, &[("Health", Num::Int(3))]).is_err(), "no cambia tipos");
+        assert!(patch_root(&d[..d.len() - 1], &[]).is_err(), "truncado");
     }
 
     #[test]

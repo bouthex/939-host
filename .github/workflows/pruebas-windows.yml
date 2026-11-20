@@ -185,6 +185,9 @@ jobs:
       - name: Perfil para jugar (.mrpack verificado contra Modrinth)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_perfil_mrpack -- --ignored --nocapture
+      - name: Ítems de mods reales (nombres e íconos desde Modrinth)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_items_de_mods -- --ignored --nocapture
       - name: Direcciones .939host (archivo hosts real, nombre, 127.93.x.y)
         if: ${{ !cancelled() }}
         env:

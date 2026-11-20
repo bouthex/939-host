@@ -26,6 +26,8 @@ const LOG_LINES: usize = 2000;
 pub struct Runtime {
     pub status: Option<RunStatus>,
     pub players: BTreeSet<String>,
+    /// Sesiones en curso para el historial (nombre → hora de entrada).
+    pub open_sessions: crate::sessions::Open,
     pub started_at: Option<chrono::DateTime<chrono::Local>>,
     pub pid: Option<u32>,
     stdin: Option<ChildStdin>,
@@ -120,8 +122,6 @@ pub struct Manager {
 }
 
 static RE_DONE: Lazy<Regex> = Lazy::new(|| Regex::new(r"Done \([0-9.,]+s\)!").unwrap());
-static RE_JOIN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:\]|:) ([A-Za-z0-9_]{1,16}) joined the game").unwrap());
-static RE_LEAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:\]|:) ([A-Za-z0-9_]{1,16}) left the game").unwrap());
 static RE_AVG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)average time per tick:\s*([0-9.]+)\s*ms").unwrap());
 static RE_P95: Lazy<Regex> = Lazy::new(|| Regex::new(r"P95:\s*([0-9.]+)\s*ms").unwrap());
 static RE_BIND: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)failed to bind to port").unwrap());
@@ -383,6 +383,7 @@ impl Manager {
                 r.stdin = None;
                 r.pid = None;
                 r.players.clear();
+                r.open_sessions.close_all(&id, chrono::Local::now());
                 r.reset_live();
                 r.exited_unsaved = true;
                 let code = status.ok().and_then(|s| s.code());
@@ -634,8 +635,21 @@ fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: S
                 changed = true;
             }
         }
-        if let Some(c) = RE_JOIN.captures(&line) { r.players.insert(c[1].to_string()); changed = true; }
-        if let Some(c) = RE_LEAVE.captures(&line) { r.players.remove(&c[1]); changed = true; }
+        // Entradas y salidas: solo líneas del propio servidor, nunca texto del chat.
+        match crate::sessions::parse(&line) {
+            Some(crate::sessions::Event::Join { name, previously }) => {
+                if let Some(old) = &previously { r.players.remove(old); }
+                r.players.insert(name.clone());
+                r.open_sessions.join(&name, previously, chrono::Local::now());
+                changed = true;
+            }
+            Some(crate::sessions::Event::Leave { name }) => {
+                r.players.remove(&name);
+                r.open_sessions.leave(id, &name, chrono::Local::now());
+                changed = true;
+            }
+            None => {}
+        }
         if line.contains("Saved the game") { r.save_counter += 1; }
         if line.contains("OutOfMemoryError") {
             r.last_error = Some("Al servidor le faltó memoria (OutOfMemoryError).".into());

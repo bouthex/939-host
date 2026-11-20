@@ -102,6 +102,54 @@ pub async fn player_detail(app: AppHandle, id: String, name: String) -> AppResul
     }).await
 }
 
+/// ¿Puede esta PC cambiar datos de jugadores de este servidor? Solo la PC propietaria y solo
+/// donde está el servidor (si lo aloja otra PC, los datos vivos están allá). Se comprueba acá,
+/// en el backend: la interfaz solo esconde lo que no se puede hacer.
+async fn edit_permission(app: &AppHandle, id: &str) -> Result<String, String> {
+    let share = host939_core::network::load_share(id);
+    if !share.enabled { return Ok("esta PC".into()); }
+    let me = match app.state::<crate::network::Cluster>().node().await { Ok(n) => n.id(), Err(_) => return Err("La red del grupo todavía no está lista.".into()) };
+    if share.member(&me).map(|m| m.role != "propietario").unwrap_or(true) {
+        return Err("Solo la PC propietaria del servidor puede cambiar la vida, el hambre o la experiencia de los jugadores.".into());
+    }
+    if let Some(l) = host939_core::lease::read(id) {
+        if l.state == host939_core::lease::LeaseState::Hosting && l.host != me {
+            return Err(format!("Ahora lo aloja {}: los datos de los jugadores están en esa PC. Cambialos cuando el servidor vuelva a esta PC.", l.host_name));
+        }
+    }
+    Ok(me)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditAccess { allowed: bool, reason: Option<String>, live_health: bool, live_feed: bool, live_xp: bool }
+
+#[tauri::command]
+pub async fn player_edit_access(app: AppHandle, id: String) -> AppResult<EditAccess> {
+    let cfg = instance::load(&id)?;
+    let (h, f, x) = host939_core::playeredit::online_support(&cfg.mc_version);
+    Ok(match edit_permission(&app, &id).await {
+        Ok(_) => EditAccess { allowed: true, reason: None, live_health: h, live_feed: f, live_xp: x },
+        Err(r) => EditAccess { allowed: false, reason: Some(r), live_health: h, live_feed: f, live_xp: x },
+    })
+}
+
+/// Cambia vida, hambre, saturación o nivel. Con el jugador conectado usa comandos; desconectado
+/// edita su archivo (con copia previa). Queda en la auditoría del servidor.
+#[tauri::command]
+pub async fn player_edit(app: AppHandle, id: String, name: String, edit: host939_core::playeredit::Edit) -> AppResult<String> {
+    let who = edit_permission(&app, &id).await.map_err(|r| AppError::new("forbidden", r))?;
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        let mgr = app.state::<Manager>();
+        let list = players::list(&mgr, &cfg);
+        let p = list.iter().find(|p| p.name.eq_ignore_ascii_case(&name)).ok_or_else(|| AppError::not_found("el jugador"))?;
+        let live = p.online && mgr.runtime(&id).lock().unwrap().status() == RunStatus::Running;
+        if live { host939_core::playeredit::apply_online(&mgr, &cfg, &p.name, &edit, &who) }
+        else { host939_core::playeredit::apply_offline(&mgr, &cfg, &p.name, &p.uuid, &edit, &who) }
+    }).await
+}
+
 /// Skin del jugador como data URL; `None` si están desactivadas o no hay conexión (la interfaz
 /// muestra las iniciales).
 #[tauri::command]
@@ -146,6 +194,14 @@ pub async fn game_sprites(version: String, keys: Vec<String>) -> AppResult<HashM
         }
         Ok(out)
     }).await
+}
+
+/// Ítems que no son de Minecraft: nombre, mod e ícono leídos de los mods instalados en el
+/// servidor (archivos locales, sin descargas). `known: false` = el mod no está instalado.
+#[tauri::command]
+pub async fn mod_items(id: String, ids: Vec<String>) -> AppResult<HashMap<String, host939_core::moditems::ItemInfo>> {
+    if !host939_core::paths::valid_server_id(&id) { return Err(AppError::invalid("Servidor inválido.")); }
+    blocking(move || Ok(host939_core::moditems::lookup(&id, &ids))).await
 }
 
 /// Nombres en español de ítems y efectos (del idioma oficial del juego descargado).

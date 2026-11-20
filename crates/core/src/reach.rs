@@ -125,8 +125,8 @@ pub struct JoinWatch {
 }
 
 static RE_AUTH: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"UUID of player ([A-Za-z0-9_]{1,16}) is").unwrap());
-static RE_LOST: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"(?:\]|:) ([A-Za-z0-9_]{1,16})(?: \([0-9a-f-]{36}\))? lost connection: (.*)$").unwrap());
-static RE_JOINED: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"(?:\]|:) ([A-Za-z0-9_]{1,16}) joined the game").unwrap());
+// Anclada al prefijo del registro: el chat («<Bob> Ana lost connection: …») no cuenta.
+static RE_LOST: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"^(?:\[[^\[\]]*\] ?)+: ([A-Za-z0-9_]{1,16})(?: \([0-9a-f-]{36}\))? lost connection: (.*)$").unwrap());
 static RE_DISC: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"Disconnecting (?:([A-Za-z0-9_]{1,16})|.*?name=([A-Za-z0-9_]{1,16}).*?)(?: \(/[^)]*\))?: (.*)$").unwrap());
 
 impl JoinWatch {
@@ -138,8 +138,8 @@ impl JoinWatch {
             self.pending.push((c[1].to_string(), now));
             return None;
         }
-        if let Some(c) = RE_JOINED.captures(line) {
-            self.pending.retain(|(p, _)| p != &c[1]);
+        if let Some(crate::sessions::Event::Join { name, .. }) = crate::sessions::parse(line) {
+            self.pending.retain(|(p, _)| p != &name);
             return None;
         }
         let at = chrono::Local::now().to_rfc3339();
