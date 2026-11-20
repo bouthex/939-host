@@ -402,3 +402,39 @@ escucha TCP fuera de la PC y se desinstala. No crea etiquetas ni releases.
 - [SEGURIDAD.md](SEGURIDAD.md): revisión de Windows y los 25 riesgos con la clasificación nueva.
 - [DIRECCIONES-PUBLICAS.md](DIRECCIONES-PUBLICAS.md): relays comunitarios investigados (§16 sigue
   pendiente, sin implementar ni prometer).
+
+## 11. Etapa de actualizaciones, identidad del propietario y auditoría (20/11)
+
+### Implementado
+
+- Crate `host939-update`: metadatos firmados con principios de TUF, verificación en la app, descarga
+  reanudable y verificada, reglas de instalación segura; herramienta del propietario `939publicar`.
+  Detalle en [ACTUALIZACIONES.md](ACTUALIZACIONES.md).
+- Clave del propietario en Windows CNG (TPM si existe), no exportable: probada en la CI de Windows
+  (almacén de software; los equipos de GitHub no tienen TPM).
+- Migraciones de datos con respaldo, validación y restauración (`core::datos`); la app no abre con datos
+  de una versión más nueva.
+- Actualizaciones dentro de la app (Configuración → Actualizaciones), **desactivadas** hasta que el
+  propietario configure raíz y distribución.
+- Instalador con `/ESPERAR` y `/REABRIR`.
+- Seguridad: una coanfitriona ya no puede escribir `server.properties` por el administrador remoto;
+  `p256` 0.14 (sin la vulnerabilidad de `crypto-bigint` 0.5).
+
+### Pruebas, separadas por lo que necesitan
+
+| Tipo | Qué |
+|---|---|
+| Automáticas (Linux, esta sesión) | Núcleo 114, grupo 18, multi-PC 12, seguridad 14, actualizaciones 8 + 2 + herramienta del propietario 1 (de punta a punta), migraciones 5 |
+| Automáticas en Windows (CI) | Lo anterior en Windows más clave CNG, instalador (`/ESPERAR`, `/REABRIR`, actualizar, reinstalar, cortar, desinstalar), app real con interfaz, dos PCs en máquinas separadas de GitHub, cliente real de Minecraft |
+| Locales controladas (PC del propietario) | `939publicar iniciar` con TPM real y aviso de Windows; Windows Hello (no implementado) |
+| Dos PCs | Traspasos, reconexión, apagado real de Windows |
+| Dos redes o casas | Traspaso y reconexión por internet, modo privado |
+| Infraestructura externa | Actualización completa desde un servidor de distribución real; direcciones para jugadores sin 939 Host (§16, pendiente) |
+
+Lo simulado en la CI no se da por comprobado en redes reales.
+
+### Decisiones que quedan para el propietario
+
+Ver el informe final de la etapa y [ACTUALIZACIONES.md](ACTUALIZACIONES.md) (identidad, distribución,
+raíz en la app, política de firma), [firma/OPCIONES.md](firma/OPCIONES.md) (certificado o Store) y
+[DIRECCIONES-PUBLICAS.md](DIRECCIONES-PUBLICAS.md) (§16).

@@ -276,6 +276,59 @@ cada PC).
 | Amigo malicioso | Mandar mensajes molestos; ver presencia y qué servidor se juega | 20 mensajes por minuto, 500 caracteres; quitar o bloquear; «No disponible» |
 | Malware local con la sesión del usuario | Todo lo que puede el usuario: leer la clave del nodo, chats y mundos | Fuera del alcance de una app sin privilegios; Defender, cuentas separadas |
 
+## Auditoría independiente (19/11/2026, noche)
+
+Revisión hecha desde el lado de quien quiere comprometer 939 Host, no solo sobre la lista anterior.
+
+### Qué puede hacer cada atacante
+
+| Atacante | Puede | No puede (comprobado) | Gravedad / probabilidad | Riesgo residual |
+|---|---|---|---|---|
+| Cualquier PC de internet que conoce la identidad de un nodo | Abrir conexiones QUIC y mandar basura | Pasar de la autenticación por clave; unirse sin un código válido (5 intentos por minuto); tumbar al grupo con inundaciones (límite por PC, prueba de inundación) | Media / baja | Consumo de CPU y red mientras dura el ataque |
+| Jugadora del grupo | Jugar; ver quién aloja; ver el historial de permisos | Recibir direcciones de las demás PCs; alojar; administrar archivos; dar OP; ver puntos ni hardware | Baja / media | Lo que cualquier jugador ve dentro de Minecraft |
+| Coanfitriona | Recibir el mundo completo; alojar; administrar archivos de la anfitriona salvo lo que decide qué programa arranca, `ops.json` y `server.properties`; subir mods (quedan en cuarentena) | Ejecutar código en la PC de la propietaria: mods sin aprobar no se cargan, librerías/servidor/argumentos de Java bloqueados, argumentos de Java locales nunca viajan, RCON/query/administración apagados en servidores compartidos; dar OP fuera de la lista firmada; quedarse con el servidor sin permiso firmado | Alta / baja | **Mientras ella aloja** controla su copia: puede cambiar su `server.properties`, sus mods, ver IPs de jugadores en modo normal (no en modo privado). Scripts en `config/` de mods aprobados (riesgo 13) |
+| Alguien con acceso a la PC anfitriona (misma cuenta de Windows) | Todo lo que esa cuenta puede: leer mundos, usar la clave del nodo, cambiar la app | — (límite de cualquier programa sin privilegios; DPAPI no protege contra la misma sesión) | Alta / baja | Inherente; se mitiga con la seguridad de Windows |
+| Servidor de distribución comprometido | Negar o demorar actualizaciones | Colar un archivo o una versión vieja (firmas, secuencia, vencimiento; pruebas `ataques.rs`) | Alta / baja | Congelamiento hasta que vence la publicación (120 días como máximo) |
+| Quien robe la clave de publicación | Firmar una versión maliciosa | — | Crítica / muy baja | Se revoca con la recuperación; las apps que ya instalaron esa versión quedan comprometidas. Por eso la clave está en el TPM y cada firma pide confirmación de Windows |
+
+### Áreas revisadas
+
+- **Ejecución de código y comandos**: Java (Temurin verificado), el guardián (mismo ejecutable) y el
+  instalador descargado (verificado); nada se ejecuta con datos de otra PC. Consola de Minecraft solo
+  desde esta PC.
+- **Archivos y rutas**: limpieza de rutas, puntos de reanálisis (*junctions*), ruta final del archivo
+  abierto, nombres reservados de Windows, Papelera en lugar de borrar; bloqueos por rol (arriba).
+- **Instalador, actualizador y desinstalador**: por usuario, sin administrador; no reemplaza con la app
+  abierta; conserva datos salvo pedido explícito; actualizador ver [ACTUALIZACIONES.md](ACTUALIZACIONES.md).
+- **Procesos, servicios, puertos**: sin servicios ni tareas programadas; Minecraft en `127.0.0.1`; la app
+  no escucha TCP fuera de la PC (prueba de la versión de prueba en Windows); un socket UDP de iroh.
+- **P2P, NAT y relays**: QUIC con TLS 1.3 autenticado por clave; el relay ve IP, horarios y volumen; modo
+  privado oculta la IP a las otras PCs. Corregido en esta fase: conexiones en uso que se cerraban.
+- **Identidad, permisos de anfitrión, OP**: cadena de permisos firmada, votación, lista de integrantes
+  firmada, OP solo por la lista firmada.
+- **Transferencia y doble escritura**: punto incompleto no se usa; nunca dos anfitrionas; cierre que nadie
+  vio rotulado.
+- **Mods y modpacks**: cuarentena por huella, aprobación de la propietaria, verificación de hash de
+  Modrinth/CurseForge, detección de Log4Shell.
+- **Mensajes de otros usuarios**: tamaños máximos, límites por PC, JSON validado, mensajes enormes y
+  malformados en los 5 protocolos probados.
+- **Secretos e información personal**: revisión de cada ejecutable compilado (claves, rutas personales,
+  IPs privadas, ganchos de prueba); informes de diagnóstico sin IPs ni rutas de usuario.
+- **Logs y temporales**: registro de auditoría sin IPs ni mensajes; temporales de más de 6 horas se borran.
+- **Abuso de recursos**: límites de pedidos, tamaño de subidas, tope de espacio de puntos, metadatos de
+  actualización de hasta 256 KB y descargas que nunca superan lo firmado.
+
+### Dependencias
+
+`cargo audit` (base de RustSec del 19/11/2026) sobre todo el workspace:
+
+- **0 vulnerabilidades** después de pasar `p256` a 0.14 (la 0.13 traía `crypto-bigint` 0.5 con
+  RUSTSEC-2026-0387, tiempos variables en operaciones que deberían ser constantes; en 939 Host solo se
+  usaba para verificar firmas públicas, sin secretos, pero se actualizó igual).
+- Avisos sin vulnerabilidad: `chrono` sin mantenimiento (riesgo 29); `paste`, `proc-macro-error`, `zbus*`
+  y `glib` vienen de la parte de Linux de Tauri y no entran en la compilación de Windows.
+- No se actualizaron dependencias en bloque: solo `p256`, con todas las pruebas.
+
 ## Revisión de Windows (noviembre de 2026)
 
 | Tema | Estado | Cómo se comprobó |
@@ -326,6 +379,11 @@ confirmar en las PCs del equipo o desde otra red).
 | 23 | «Finalizar árbol de procesos», corte de luz o falla de Windows | Mitigado (antes: inevitable) | Sigue sin poder guardarse en el momento. Ahora se detecta al volver a abrir (marca `en-marcha`), se avisa, no se publica solo y el traspaso queda rotulado; pruebas `un_cierre_que_nadie_vio…` y `tras_un_corte_sin_guardian…`. Falta un corte real |
 | 24 | Una conexión nueva de una PC conocida cerraba la que estaba en uso (pedidos perdidos; dos PCs podían cerrarse mutuamente las conexiones) | Corregido y verificado | Se prueba la guardada antes de cerrarla; regresión en `mensajes_malformados_y_enormes` (falla con el código anterior) |
 | 25 | Las pruebas de Windows corren con Defender sin tiempo real y en Windows Server 2025 | Requiere prueba real externa | Instalar y usar en Windows 11 con Defender y Smart App Control como vienen |
+| 26 | Una coanfitriona cambiaba `server.properties` por el administrador remoto (por ejemplo, un paquete de recursos en un sitio suyo que ve las IPs de quienes lo descargan) | Corregido y verificado | Desde otra PC solo la propietaria puede escribirlo; prueba `mods_de_otra_pc_necesitan_aprobacion`. Mientras una coanfitriona **aloja**, controla su propia copia (limitación de diseño, ver la auditoría) |
+| 27 | Actualizaciones: alguien publica una versión falsa, vieja o de otro canal | Mitigado (implementado, sin distribución activa) | Metadatos firmados por la clave del propietario, con secuencia, vencimiento y canal; ver [ACTUALIZACIONES.md](ACTUALIZACIONES.md). Riesgo residual: robo de la PC del propietario desbloqueada o de su archivo de recuperación |
+| 28 | Malware con la misma cuenta de Windows cambia el instalador descargado entre la verificación y su ejecución | Limitación de diseño | Se verifica justo antes de abrirlo; un programa con la misma cuenta igual podría modificar la app instalada (es la misma frontera del riesgo 5) |
+| 29 | `chrono` (fechas) figura como sin mantenimiento (RUSTSEC-2026-0543) | Pendiente | Sin vulnerabilidad conocida; cambiar a `jiff` o `time` es un trabajo grande que se hace aparte y con pruebas |
+| 30 | La herramienta del propietario deja claves de prueba en el almacén de Windows de quien corre sus pruebas | Limitación (solo desarrollo) | En la CI los equipos se descartan; en una PC propia, borrar las claves `939Host-publicaciones-*` de prueba o correr las pruebas solo en la CI |
 
 Historial: la tabla anterior (estados Corregido, Reducido, Reducible, Inevitable…) se reemplazó por
 esta; ningún riesgo se quitó.

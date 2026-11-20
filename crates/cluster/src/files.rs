@@ -113,7 +113,16 @@ impl Inner {
             FileReq::Transfer { from, to, mv, .. } => if *mv { vec![from.as_str(), to.as_str()] } else { vec![to.as_str()] },
             _ => vec![],
         };
+        let owner = network::load_share(&server).member(remote).map(|m| m.role == "propietario").unwrap_or(false);
         for t in targets {
+            // server.properties decide, entre otras cosas, el paquete de recursos que Minecraft les
+            // ofrece descargar a los jugadores (quien controla esa dirección ve sus IPs): desde otra
+            // PC solo lo cambia la propietaria.
+            let props = lf::clean(t).map(|p| p.components().count() == 1 && p.to_string_lossy().eq_ignore_ascii_case("server.properties")).unwrap_or(false);
+            if props && !owner {
+                super::audit(&server, "file-properties-denied", remote);
+                return wire::write_msg(send, &FileResp { ok: false, error: Some("server.properties solo lo cambia la propietaria (define, entre otras cosas, qué descargan los jugadores al entrar).".into()), code: Some("denied".into()), ..Default::default() }).await;
+            }
             if let Err(e) = lf::remote_write_check(&server, t) {
                 super::audit(&server, "file-runtime-denied", remote);
                 return wire::write_msg(send, &FileResp { ok: false, error: Some(e.message), code: Some("denied".into()), ..Default::default() }).await;

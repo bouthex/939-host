@@ -116,6 +116,35 @@ pero **no está implementado, no está probado y no se promete**. El siguiente p
 aprueba, sería una prueba aislada con un relay público y un servidor de prueba (nunca un mundo real),
 revisando antes los términos del servicio.
 
+## Auditoría de relays comunitarios (19/11/2026)
+
+Ninguno se incorpora. Resultado de revisar código, condiciones y diseño:
+
+| Criterio | e4mc | nekorelay | StealthPipe |
+|---|---|---|---|
+| Jugadores con Minecraft normal | Sí (solo quien aloja instala el mod) | Sí | **No**: exige el mod en los dos lados → descartado para este objetivo |
+| Código | Cliente y servidor publicados (MIT) | Plugin/mod MIT; servidor del servicio no revisado | Relay publicado (MIT) |
+| Quién opera el servicio | Una desarrolladora independiente | KuronekoServer (Japón); condiciones en japonés, con traducción automática | El autor del mod |
+| Estado / disponibilidad | Sin acuerdo de servicio | Publicado como beta; avisos de caídas; plan gratuito con tope de 20 jugadores (implica planes pagos) | Relay público con límites de tamaño de paquete |
+| Dirección | Aleatoria por sesión | Asignada por el servicio | — |
+| Dirección persistente al cambiar de anfitriona | No | No documentado | — |
+| Qué ve el operador | IP de cada jugador, nombre, horarios, volumen; contenido si el servidor está en modo sin conexión | Lo mismo | Lo mismo |
+| Aislamiento y proxy abierto | Por diseño solo reenvía hacia el servidor registrado; habría que auditar el código del servidor | Afirma reenviar solo Minecraft; no auditado | Afirma que no es un proxy general |
+| Si desaparece | La función deja de andar | Igual | Igual |
+
+Riesgos comunes: el relay recibe conexiones de cualquiera y las entrega al puerto de Minecraft de la
+anfitriona, así que escaneo y DoS llegan hasta la PC por ese único puerto; un tercero no puede entrar a
+otras partes de la PC (solo se reenvía al servidor de Minecraft), pero sí intentar explotar fallas de
+Minecraft o de mods como cualquier jugador. Con «Permitir jugadores sin 939 Host» desactivado nada de esto
+existe.
+
+**Conclusión**: ninguno cumple dirección persistente, disponibilidad razonable y condiciones revisadas.
+La función **sigue pendiente** y no se ofrece. La alternativa técnicamente válida es la descripta arriba
+(subdominio de un dominio del proyecto, por ejemplo `nombre.<dominio-del-proyecto>`, con un relay TCP que
+lea el nombre del Handshake): requiere un servidor con IP pública (desde unos 4–6 EUR por mes, precios
+de 2026) más un dominio, pagados y administrados por alguien. `.939` no puede ser un dominio público:
+no existe ese dominio de primer nivel.
+
 ## Pruebas obligatorias antes de declararlo listo
 
 Las 10 del pedido original (§16 F): conexión desde Minecraft Java normal sin 939 Host, con la

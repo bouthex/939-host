@@ -56,3 +56,32 @@ que en MSIX se comportan distinto y habría que probar una por una antes de deci
 - Que firmar elimina los avisos: la reputación se construye con el tiempo y por cada versión.
 - Que SAC aceptará la app: depende de la reputación en la nube además de la firma.
 - Que una opción es gratis si tiene costos de renovación o requisitos que el propietario no cumple.
+
+## Recomendación para 939 Host (desarrollador independiente en Argentina)
+
+| Opción | ¿Disponible desde Argentina? | Qué queda público | Costo | Efecto real |
+|---|---|---|---|---|
+| SignPath Foundation | Sí (programa para proyectos de código abierto; aceptación discrecional) | Editor «SignPath Foundation»; el nombre del propietario no aparece en el certificado | 0 | SmartScreen sigue avisando hasta que haya reputación; Smart App Control acepta firmas de una CA de confianza cuando la nube no tiene veredicto, salvo reputación mala |
+| Certum Open Source | Sí (validación con documento) | **Nombre real** del titular en cada ejecutable | Desde unos 69 € más renovación (validez acortada desde 2026) | Igual que arriba |
+| OV comercial | Sí | Nombre validado del titular o de su empresa | 150–300 USD por año | Igual que arriba |
+| Azure Artifact Signing | **No** para personas (solo EE. UU. y Canadá) | — | 9,99 USD por mes | — |
+| Microsoft Store (MSIX) | Muy probablemente (registro gratis en casi 200 mercados; confirmar Argentina al registrarse; documento y selfie a Microsoft) | El nombre de editor elegido en la Store; Microsoft conoce la identidad, el público no | 0 | Sin avisos de SmartScreen al instalar desde la Store; requiere empaquetar en MSIX y probar las limitaciones listadas arriba |
+
+**Recomendación**: seguir con **SignPath** (no expone datos personales y no cuesta) y, en paralelo,
+evaluar **MSIX en la Microsoft Store** como segundo canal, que además resolvería las actualizaciones
+para quien instale desde ahí. Certum u OV solo si el propietario acepta que su nombre real figure en el
+ejecutable. Ninguna opción garantiza cero avisos el primer día.
+
+**Sin firma** (situación actual): SmartScreen muestra «Windows protegió tu PC» y en PCs con Smart App
+Control activo la app **no se puede abrir** (ni dar acceso a sus amigos por la red del grupo). No se
+recomienda apagar Smart App Control.
+
+**Qué falta para distribuir de forma confiable**: (1) un certificado o la aceptación de SignPath; (2) la
+identidad de publicación y la distribución de actualizaciones ([ACTUALIZACIONES.md](../ACTUALIZACIONES.md));
+(3) firmar también el desinstalador y la herramienta de actualización con el mismo certificado; (4) las
+pruebas reales en sus PCs.
+
+**Datos personales fuera de los artefactos**: los ejecutables se revisan en cada compilación (rutas
+personales, correos y claves); los commits usan una dirección `noreply`; la raíz de actualizaciones solo
+lleva claves públicas. Lo único que expondría un nombre real es un certificado OV o Certum a nombre de
+una persona.

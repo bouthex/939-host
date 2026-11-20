@@ -24,6 +24,7 @@ de publicar la versión.
 | Modrinth: `cdn.modrinth.com` | Al mostrar íconos y capturas de mods, solo si **Íconos y capturas de los mods** está activado (viene activado) | Pedido de cada imagen |
 | PCs de tu grupo (iroh / QUIC, cifrado de extremo a extremo) | Mientras compartís un servidor o estás unido a uno | Mundo, mods y configuración del servidor compartido; estado del grupo; nombre de la PC; tráfico de Minecraft. Solo con las PCs que aceptaron una invitación |
 | Relays y descubrimiento públicos de iroh (number 0) | Si **Relays públicos gratuitos** o el **Modo privado** están activados (los relays vienen activados) | La clave pública del nodo y la dirección del relay que usa (939 Host no publica tus IPs); el relay ve tu IP, cuándo te conectás y cuánto tráfico pasa, y reenvía paquetes **cifrados** que no puede leer. En modo privado, todo pasa por el relay y ninguna PC del grupo ve tu IP |
+| Servidor de actualizaciones del proyecto | **Hoy ninguno**: las actualizaciones automáticas están desactivadas hasta que el proyecto configure su distribución. Cuando exista: al abrir (después de 1 minuto) y cada 6 horas | Pedido de archivos públicos (metadatos firmados e instalador). Sin identificadores, cuentas ni datos de la PC; el servidor ve tu IP como en cualquier descarga |
 
 Las descargas de Mojang, Adoptium, loaders y Modrinth también exponen tu dirección IP a esos servicios,
 como cualquier descarga.

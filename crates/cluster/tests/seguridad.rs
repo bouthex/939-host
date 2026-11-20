@@ -460,7 +460,11 @@ fn mods_de_otra_pc_necesitan_aprobacion() {
     let e = b.err(&format!("fmv {sid} config/permitido.jar libraries/permitido.jar"));
     assert!(e.contains("qué programa se ejecuta"), "mover a libraries: {e}");
     assert!(b.err(&format!("fmkdir {sid} libraries/nueva")).contains("qué programa se ejecuta"));
-    println!("✔ la coanfitriona no puede reemplazar el servidor, las librerías ni los argumentos de Java desde su PC");
+    let e = b.err(&format!("fput {sid} {} server.properties", evil.display()));
+    assert!(e.contains("solo lo cambia la propietaria"), "server.properties desde una coanfitriona: {e}");
+    let e = b.err(&format!("fmv {sid} config/permitido.jar SERVER.PROPERTIES"));
+    assert!(e.contains("solo lo cambia la propietaria"), "mover sobre server.properties: {e}");
+    println!("✔ la coanfitriona no puede reemplazar el servidor, las librerías, los argumentos de Java ni server.properties desde su PC");
     // Pasa a la coanfitriona y vuelve: en cada encendido, lo recibido sin aprobar se aparta.
     a.ok(&format!("handover {sid} {ib}"));
     wait("B aloja", Duration::from_secs(30), || b.ok(&format!("running {sid}")).as_bool().unwrap());
