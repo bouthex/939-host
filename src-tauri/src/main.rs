@@ -488,6 +488,7 @@ fn main() {
             aliases::alias_apply_hosts,
             v3::server_logo_set,
             v3::server_logo_clear,
+            v3::server_logo_default,
             v3::version_analyze,
             v3::version_last_change,
             v3::version_update,

@@ -382,7 +382,14 @@ input[type=range] { width: 100%; accent-color: var(--text); }
 /* ── pantalla de carga ── */
 .splash { position: fixed; inset: 0; background: var(--page); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; z-index: 100; color: var(--text); transition: opacity .2s var(--ease); }
 .splash.out { opacity: 0; pointer-events: none; }
-.splash .bar { width: 120px; }
+.splash .bar { width: 120px; opacity: 0; animation: sp-late .3s var(--ease) 1.2s forwards; }
+@keyframes sp-late { to { opacity: 1; } }
+/* Estado final fuera de la animación: con «menos movimiento» se ve directamente el logo quieto. */
+.sp-row { display: flex; gap: 10px; perspective: 520px; }
+.sp-cube { width: 56px; height: 56px; display: grid; place-items: center; border: 1px solid var(--line2); border-radius: 12px; background: var(--bg);
+  transform-origin: 50% 50% -28px; backface-visibility: hidden; animation: sp-roll .62s var(--ease-out) calc(var(--i) * 110ms) backwards; }
+.sp-cube svg { width: 19px; height: 29px; fill: none; stroke: currentColor; stroke-width: 2.7; stroke-linejoin: round; stroke-linecap: round; }
+@keyframes sp-roll { from { transform: rotateX(-90deg); opacity: 0; } 60% { opacity: 1; } to { transform: none; opacity: 1; } }
 
 /* ── ventanas angostas (1024 px) ── */
 @media (max-width: 1180px) {
@@ -746,3 +753,21 @@ details.tech[open] > summary::before { content: '▾ '; }
 .chat-form { padding: 12px 16px; border-top: 1px solid var(--line); }
 .chat-form textarea { resize: none; flex: 1; }
 .li.click.on { background: var(--hover); }
+
+/* ───────── terminaciones (revisión de márgenes) ───────── */
+/* Interruptor dentro de una tarjeta propia: el relleno de la tarjeta, no el de la lista. */
+.card.switch { padding: 16px 20px; border-top: 0; }
+/* Chat: campo de una línea que crece, con letra normal, y el botón alineado abajo. */
+.chat-form { align-items: flex-end; }
+.chat-form textarea.input { height: auto; min-height: 40px; max-height: 140px; font-family: inherit; font-size: 13.5px; line-height: 1.45; padding: 9px 12px; }
+.card-head .btns { flex-wrap: nowrap; }
+.card-head > :first-child { min-width: 0; }
+/* Volver a la pantalla anterior */
+.back-btn { display: inline-flex; align-items: center; gap: 4px; max-width: 320px; background: none; border: 0; padding: 4px 8px 4px 4px; margin-left: -4px; border-radius: 6px; color: var(--text2) !important; text-decoration: none !important; font-weight: 500; cursor: pointer; }
+.back-btn:hover { background: var(--surface); color: var(--text) !important; }
+.back-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+.back-sep { width: 1px; height: 14px; background: var(--line2); margin: 0 4px; }
+.page > .crumbs { margin-bottom: 4px; }
+/* Encabezado de página: el texto cede espacio y los botones quedan a la derecha mientras entren. */
+.head > :first-child { flex: 1 1 360px; min-width: 0; }
+.head > .btns { flex: none; }

@@ -172,6 +172,8 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
     std::fs::create_dir_all(paths::server_backups_dir(&id)).map_err(|e| AppError::io("No se pudo crear la carpeta de backups", e))?;
     cfg.identity = identity::create_server_identity(&id, &cfg.name)?;
     save(&cfg)?;
+    // Logo de 939 Host por defecto; si algo falla el servidor queda igual, con el ícono genérico.
+    if crate::logo::set_default(&id).is_ok() { cfg.logo = Some(crate::logo::DEFAULT_KIND.into()); }
     if cfg.loader != Loader::Vanilla { crate::optimize::set_pending(&id, &input.optimize)?; }
 
     if let Some(src) = import {

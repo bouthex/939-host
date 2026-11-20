@@ -70,9 +70,17 @@ A['bench-welcome'] = async (el) => {
 A.open = (el) => { state.tab = 'summary'; go('server', { id: el.dataset.id }); };
 A.new = () => { state.wizard = null; go('create'); };
 A.start = async (el) => {
+  const id = el.dataset.id || state.params.id;
   el.disabled = true;
-  try { await invoke('start_server', { id: el.dataset.id }); toast('Iniciando servidor…'); } catch (e) { fail(e); el.disabled = false; }
+  markPending(id, 'start');
+  repaintState(id);
+  try { await invoke('start_server', { id }); } catch (e) { clearPending(id); repaintState(id); fail(e); el.disabled = false; }
 };
+/* Vuelve a dibujar el estado de un servidor donde se esté viendo (lista o pantalla del servidor). */
+function repaintState(id) {
+  if (state.route === 'server' && state.params.id === id && state.server) drawHeader();
+  else if (state.route === 'servers') routes.servers();
+}
 A.stop = (el) => stopFlow(el.dataset.id, 'stop');
 
 /* ───────── Crear servidor ───────── */

@@ -4,6 +4,7 @@ Unicode true
 !include "LogicLib.nsh"
 !include "StrFunc.nsh"
 !include "FileFunc.nsh"
+!include "nsDialogs.nsh"
 ${StrStr}
 ${UnStrStr}
 
@@ -61,17 +62,57 @@ BrandingText "939 Host ${VERSION}"
 !define MUI_HEADERIMAGE_BITMAP "encabezado.bmp"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APPEXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "Abrir 939 Host"
+; Casilla «Crear acceso directo en el escritorio» (usa el lugar de «Mostrar léame» de la página final).
+; Marcada en instalaciones nuevas; en una actualización respeta lo elegido la vez anterior.
+!define MUI_FINISHPAGE_SHOWREADME ""
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Crear acceso directo en el escritorio"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION DesktopNoop
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${SRCDIR}/LEEME-INSTALACION.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishShow
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE FinishLeave
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "Spanish"
 
 Var Reopen
+; "1" = acceso directo en el escritorio. Se recuerda en HKCU\Software\939 Host\EscritorioAcceso.
+; Sin ventana (/S) se puede elegir con /ESCRITORIO=0 o /ESCRITORIO=1.
+Var WantDesktop
+
+Function DesktopNoop
+FunctionEnd
+
+Function FinishShow
+  ${If} $WantDesktop == "1"
+    ${NSD_Check} $mui.FinishPage.ShowReadme
+  ${Else}
+    ${NSD_Uncheck} $mui.FinishPage.ShowReadme
+  ${EndIf}
+FunctionEnd
+
+Function ApplyDesktop
+  ${If} $WantDesktop == "1"
+    CreateShortcut "$DESKTOP\939 Host.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\icon.ico"
+  ${Else}
+    Delete "$DESKTOP\939 Host.lnk"
+  ${EndIf}
+  WriteRegStr HKCU "Software\939 Host" "EscritorioAcceso" "$WantDesktop"
+FunctionEnd
+
+Function FinishLeave
+  ${NSD_GetState} $mui.FinishPage.ShowReadme $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $WantDesktop "1"
+  ${Else}
+    StrCpy $WantDesktop "0"
+  ${EndIf}
+  Call ApplyDesktop
+FunctionEnd
 
 Function .onInit
 !ifdef INNER
@@ -83,6 +124,19 @@ Function .onInit
   ; cerrando; se espera hasta 2 minutos a que el proceso termine antes de comprobar.
   StrCpy $Reopen "0"
   ${GetParameters} $R0
+  ReadRegStr $WantDesktop HKCU "Software\939 Host" "EscritorioAcceso"
+  ${If} $WantDesktop != "0"
+    StrCpy $WantDesktop "1"
+  ${EndIf}
+  ClearErrors
+  ${GetOptions} $R0 "/ESCRITORIO=" $R1
+  ${IfNot} ${Errors}
+    ${If} $R1 == "0"
+      StrCpy $WantDesktop "0"
+    ${ElseIf} $R1 == "1"
+      StrCpy $WantDesktop "1"
+    ${EndIf}
+  ${EndIf}
   ClearErrors
   ${GetOptions} $R0 "/REABRIR" $R1
   ${IfNot} ${Errors}
@@ -162,9 +216,9 @@ Section "939 Host" SecMain
   CreateDirectory "$SMPROGRAMS\939 Host"
   CreateShortcut "$SMPROGRAMS\939 Host\939 Host.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\icon.ico"
   CreateShortcut "$SMPROGRAMS\939 Host\Desinstalar 939 Host.lnk" "$INSTDIR\Desinstalar.exe"
-  CreateShortcut "$DESKTOP\939 Host.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\icon.ico"
-
   WriteRegStr HKCU "Software\939 Host" "InstallDir" "$INSTDIR"
+  ; Escritorio: se aplica ya lo recordado (o /ESCRITORIO=); la casilla de la página final lo ajusta.
+  Call ApplyDesktop
 !ifdef SIGNED_UNINST
   File "/oname=Desinstalar.exe" "${SIGNED_UNINST}"
 !else

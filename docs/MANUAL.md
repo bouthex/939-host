@@ -2,7 +2,7 @@
 
 ## 1. Instalar
 
-1. Ejecutá `939Host-0.9.0-instalador.exe`. Se instala para tu usuario en `%LOCALAPPDATA%\Programs\939 Host` (no pide permisos de administrador) y crea accesos en el menú Inicio y el escritorio.
+1. Ejecutá `939Host-0.9.0-instalador.exe`. Se instala para tu usuario en `%LOCALAPPDATA%\Programs\939 Host` (no pide permisos de administrador) y crea un acceso en el menú Inicio. Al terminar podés elegir con la casilla «Crear acceso directo en el escritorio» (marcada por defecto); se recuerda en las actualizaciones. Sin ventana: `/S /ESCRITORIO=0` o `/ESCRITORIO=1`.
 2. Si Windows bloquea o advierte sobre el programa, mirá [Instalación → Firma digital](INSTALACION.md#firma-digital-y-smart-app-control).
 3. La primera vez que 939 Host o Java usen la red, el Firewall de Windows pregunta: **permitilo en redes privadas**. Sin eso no hay conexión directa con tus amigos.
 

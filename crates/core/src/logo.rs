@@ -49,10 +49,27 @@ pub fn read_input_image(path: &std::path::Path) -> AppResult<String> {
     Ok(format!("data:image/{kind};base64,{}", base64::engine::general_purpose::STANDARD.encode(b)))
 }
 
-/// Guarda el logo. `kind` = `custom`, `preset:<n>` o `skin:<jugador>`. `big` es el PNG de 256×256 y `icon` el de 64×64.
+/// Logo de 939 Host que reciben los servidores nuevos. Se guarda como cualquier otro logo
+/// (archivo del servidor), así se ve igual después de reiniciar y aloje la PC que aloje.
+pub const DEFAULT_KIND: &str = "939";
+const DEFAULT_BIG: &[u8] = include_bytes!("../assets/logo-939-256.png");
+const DEFAULT_ICON: &[u8] = include_bytes!("../assets/logo-939-64.png");
+
+/// Pone el logo de 939 Host. Lo usan los servidores nuevos y la opción «Logo de 939 Host».
+pub fn set_default(id: &str) -> AppResult<()> { set(id, DEFAULT_KIND, DEFAULT_BIG, DEFAULT_ICON) }
+
+/// Copia el logo de un servidor a otro (copias de servidor). Sin logo de origen no hace nada.
+pub fn copy(from: &str, to: &str) -> AppResult<()> {
+    let Some(kind) = instance::load(from)?.logo else { return Ok(()) };
+    let big = std::fs::read(logo_path(from)).map_err(|e| AppError::io("No se pudo leer el logo", e))?;
+    let icon = std::fs::read(icon_path(from)).map_err(|e| AppError::io("No se pudo leer el ícono", e))?;
+    set(to, &kind, &big, &icon)
+}
+
+/// Guarda el logo. `kind` = `939`, `custom`, `preset:<n>` o `skin:<jugador>`. `big` es el PNG de 256×256 y `icon` el de 64×64.
 pub fn set(id: &str, kind: &str, big: &[u8], icon: &[u8]) -> AppResult<()> {
     let skin_ok = kind.strip_prefix("skin:").map(crate::players::valid_name).unwrap_or(false);
-    if !(kind == "custom" || skin_ok || kind.strip_prefix("preset:").map(|n| !n.is_empty() && n.len() < 4 && n.chars().all(|c| c.is_ascii_digit())).unwrap_or(false)) {
+    if !(kind == "custom" || kind == DEFAULT_KIND || skin_ok || kind.strip_prefix("preset:").map(|n| !n.is_empty() && n.len() < 4 && n.chars().all(|c| c.is_ascii_digit())).unwrap_or(false)) {
         return Err(AppError::invalid("Tipo de logo desconocido."));
     }
     if big.len() > MAX_BYTES || icon.len() > MAX_BYTES { return Err(AppError::invalid("La imagen es demasiado grande.")); }
@@ -104,6 +121,11 @@ mod t {
         v.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
         v.extend_from_slice(&[0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
         v
+    }
+    #[test]
+    fn el_logo_de_939_tiene_los_tamanos_que_pide_minecraft() {
+        assert_eq!(png_size(DEFAULT_BIG).unwrap(), (256, 256));
+        assert_eq!(png_size(DEFAULT_ICON).unwrap(), (64, 64));
     }
     #[test]
     fn validates_png() {

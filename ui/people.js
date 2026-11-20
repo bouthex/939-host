@@ -37,7 +37,7 @@ function paintPeople(soft = false) {
     ${v.error ? `<div class="note">${icon('alert')}<div class="grow sm">${esc(v.error)}</div></div>` : ''}
     ${ppl.notices.map((n) => `<div class="note">${icon('alert')}<div class="grow sm">${esc(n)}</div></div>`).join('')}
     ${(v.requests || []).map((r) => `<div class="note strong">${pcAvatar('', 32)}<div class="grow"><b>${esc(r.name)} quiere ser tu amigo</b><span class="sm t2">Si aceptás, se ven conectados y pueden mandarse mensajes. No le da acceso a ningún servidor.</span></div><div class="btns"><button class="btn s" data-a="ppl-answer" data-node="${esc(r.node)}" data-v="no">Rechazar</button><button class="btn s pri" data-a="ppl-answer" data-node="${esc(r.node)}" data-v="si">Aceptar</button></div></div>`).join('')}
-    <div class="grid2" style="grid-template-columns:minmax(260px,0.8fr) minmax(0,1.6fr);margin-top:12px">
+    <div class="grid2" style="grid-template-columns:minmax(260px,0.8fr) minmax(0,1.6fr)">
       <div class="stack" style="gap:12px">
         <label class="switch card pad" style="margin:0"><div class="grow"><b>Disponible para jugar</b><span class="sm t2">Tus amigos lo ven mientras estás conectado.</span></div><input type="checkbox" id="ppl-av" ${v.available ? 'checked' : ''}></label>
         <div class="card"><div class="card-head"><h2>Tus amigos</h2><span class="sm t3">${fr.filter((f) => f.online).length} de ${fr.length} conectados</span></div>
@@ -62,6 +62,9 @@ function wireChat(f) {
   const log = $('#chat-log'); if (log) log.scrollTop = log.scrollHeight;
   const form = $('#chat-form'), inp = $('#chat-in');
   inp?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+  // El campo crece con el texto (hasta unas 5 líneas) en lugar de ocupar siempre ese alto.
+  const grow = () => { inp.style.height = 'auto'; inp.style.height = `${Math.min(inp.scrollHeight + 2, 140)}px`; };
+  inp?.addEventListener('input', grow);
   form?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = inp.value.trim(); if (!text) return;

@@ -444,6 +444,16 @@ pub fn avatars(hashes: Vec<String>) -> std::collections::HashMap<String, String>
     hashes.into_iter().take(200).filter_map(|h| host939_core::avatar::data_url(&h).map(|d| (h, d))).collect()
 }
 
+/// Logo de 939 Host (el mismo que reciben los servidores nuevos).
+#[tauri::command]
+pub async fn server_logo_default(app: AppHandle, id: String) -> AppResult<()> {
+    host939_core::logo::set_default(&id)?;
+    if let Ok(n) = app.state::<crate::network::Cluster>().node().await { let _ = n.refresh_card(&id); }
+    app.state::<Manager>().changed(&id);
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn server_logo_clear(app: AppHandle, id: String) -> AppResult<()> {
     host939_core::logo::clear(&id)?;

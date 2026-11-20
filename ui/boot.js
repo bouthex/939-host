@@ -75,6 +75,9 @@ async function boot() {
     $('#modal-root').innerHTML = `<div class="overlay"><div class="dialog"><div class="row">${CINTA(48)}<h2>Cerrando 939 Host</h2></div><p>Pasando o guardando los servidores de forma ordenada. Puede tardar hasta un minuto y medio si otra PC está copiando el último estado. No apagues la PC todavía.</p><div class="bar indet"><i></i></div></div></div>`;
   });
   setupDragDrop();
+  // Volver con Alt+← o con el botón «atrás» del mouse, como en cualquier programa.
+  document.addEventListener('mouseup', (e) => { if (e.button === 3 && !dialogOpen) { e.preventDefault(); goBack(); } });
+  document.addEventListener('keydown', (e) => { if (e.altKey && e.key === 'ArrowLeft' && !dialogOpen && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '')) { e.preventDefault(); goBack(); } });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && dialogOpen) return;
     if ((e.ctrlKey || e.metaKey) && e.key === ',') { e.preventDefault(); go('settings'); }

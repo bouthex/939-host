@@ -8,8 +8,10 @@
   <script src="theme-boot.js"></script>
 </head>
 <body>
+  <!-- Presentación: tres caras de cubo que giran en perspectiva hasta formar «939». Solo transform/opacity,
+       no espera a nada: se va en cuanto la app terminó de cargar. Sin animación si se pide menos movimiento. -->
   <div class="splash" id="splash" aria-hidden="true">
-    <svg width="96" height="46" viewBox="-0.2 -0.2 40.9 19.4" aria-hidden="true"><path d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35M11.2 1.35H25.2V17.65H15.4M19.2 9.5H25.2M25.2 17.65H39.15V1.35H29.3V9.5H39.15" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <div class="sp-row"><span class="sp-cube" style="--i:0"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35"/></svg></span><span class="sp-cube" style="--i:1"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path d="M1.35 1.35H11.2V17.65H1.35M5.2 9.5H11.2"/></svg></span><span class="sp-cube" style="--i:2"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35"/></svg></span></div>
     <div class="bar indet"><i></i></div>
   </div>
   <div class="app">

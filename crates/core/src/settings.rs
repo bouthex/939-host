@@ -86,7 +86,7 @@ impl Default for AppSettings {
             lan_access: false,
             keep_awake_while_hosting: true,
             background_hint_shown: false,
-            start_sound: false,
+            start_sound: true,
             backup_cap_gb: 20,
         }
     }
@@ -174,4 +174,23 @@ pub fn apply_autostart(enabled: bool) -> AppResult<()> {
 /// ¿Corre instalado desde un paquete MSIX (Microsoft Store)?
 pub fn is_store_package(exe: &std::path::Path) -> bool {
     exe.to_string_lossy().to_ascii_lowercase().contains("\\windowsapps\\")
+}
+
+#[cfg(test)]
+mod pruebas_sonido {
+    use super::AppSettings;
+
+    #[test]
+    fn el_sonido_de_inicio_viene_activado_y_se_respeta_lo_guardado() {
+        assert!(AppSettings::default().start_sound, "instalación nueva: activado");
+        // Ajustes viejos sin el campo: toman el valor nuevo por defecto.
+        let viejo: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(viejo.start_sound);
+        // Quien lo desactivó lo sigue teniendo desactivado.
+        let apagado: AppSettings = serde_json::from_str(r#"{"startSound":false}"#).unwrap();
+        assert!(!apagado.start_sound);
+        let ida_y_vuelta: AppSettings =
+            serde_json::from_str(&serde_json::to_string(&apagado).unwrap()).unwrap();
+        assert!(!ida_y_vuelta.start_sound);
+    }
 }

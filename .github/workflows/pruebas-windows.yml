@@ -367,6 +367,17 @@ jobs:
           Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep 3
           Write-Output "4) Actualización desde la app: esperó al cierre, instaló, volvió a abrir; mundo intacto."
+          # 5) Acceso directo en el escritorio: por defecto sí; se puede desactivar y se recuerda.
+          $desk = [Environment]::GetFolderPath("Desktop") + "\939 Host.lnk"
+          if (!(Test-Path $desk)) { throw "Sin elegir nada debería haber acceso en el escritorio" }
+          Start-Process $inst -ArgumentList '/S', '/ESCRITORIO=0' -Wait
+          if (Test-Path $desk) { throw "Con /ESCRITORIO=0 quedó el acceso del escritorio" }
+          Start-Process $inst -ArgumentList '/S' -Wait
+          if (Test-Path $desk) { throw "La actualización no respetó que no se quería el acceso del escritorio" }
+          Start-Process $inst -ArgumentList '/S', '/ESCRITORIO=1' -Wait
+          if (!(Test-Path $desk)) { throw "Con /ESCRITORIO=1 no se creó el acceso del escritorio" }
+          Una-Sola "acceso del escritorio"
+          Write-Output "5) Escritorio: activado por defecto, se puede quitar y la elección se recuerda."
       - name: Desinstalar
         if: always()
         timeout-minutes: 5

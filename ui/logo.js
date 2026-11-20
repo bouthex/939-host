@@ -62,9 +62,11 @@ A['logo-edit'] = async () => {
   const v = state.server;
   const id = v.config.id;
   const cur = v.config.logo || '';
-  const ed = { mode: cur === 'custom' ? 'keep' : cur.startsWith('skin:') ? 'skin' : 'preset', preset: Number((cur.startsWith('preset:') ? cur : 'preset:0').split(':')[1]) || 0, skin: cur.startsWith('skin:') ? cur.slice(5) : null, up: null, tab: 'preset' };
+  const ed = { mode: cur === 'custom' ? 'keep' : cur.startsWith('skin:') ? 'skin' : cur.startsWith('preset:') ? 'preset' : '939', preset: Number((cur.startsWith('preset:') ? cur : 'preset:0').split(':')[1]) || 0, skin: cur.startsWith('skin:') ? cur.slice(5) : null, up: null, tab: 'preset' };
   let presetImgs = [];
+  let img939 = null;
   const final = () => {
+    if (ed.mode === '939') return img939;
     if (ed.mode === 'preset') return presetImgs[ed.preset] || null;
     if (ed.mode === 'skin') return skinFaces[ed.skin] || null;
     if (ed.mode === 'upload' && ed.up?.cropper.has()) return ed.up.cropper.canvas;
@@ -76,7 +78,7 @@ A['logo-edit'] = async () => {
         <div class="stack" style="gap:14px">
           <div class="seg" role="tablist"><button class="on" data-lm="preset" role="tab">Diseños</button><button data-lm="upload" role="tab">Subir imagen</button></div>
           <div id="lg-presets" class="stack" style="gap:10px">
-            <div class="logo-grid">${LOGO_PRESETS.map((_, i) => `<button class="lp${ed.mode === 'preset' && i === ed.preset ? ' on' : ''}" data-lp="${i}" aria-label="Diseño ${i + 1}">${presetSVG(i, 56)}</button>`).join('')}</div>
+            <div class="logo-grid"><button class="lp${ed.mode === '939' ? ' on' : ''}" data-l939 aria-label="Logo de 939 Host" title="Logo de 939 Host"><img src="logo-939.png" alt="" style="width:56px;height:56px;border-radius:12px"></button>${LOGO_PRESETS.map((_, i) => `<button class="lp${ed.mode === 'preset' && i === ed.preset ? ' on' : ''}" data-lp="${i}" aria-label="Diseño ${i + 1}">${presetSVG(i, 56)}</button>`).join('')}</div>
             <span class="xs t3">Skins del grupo</span>
             <div class="logo-grid">${SKIN_PRESETS.map((n) => `<button class="lp skin${ed.mode === 'skin' && ed.skin === n ? ' on' : ''}" data-ls="${esc(n)}" aria-label="Skin de ${esc(n)}" disabled><span class="bar indet" style="width:40px"><i></i></span><span class="lp-name">${esc(n)}</span></button>`).join('')}</div>
             <span class="xs t3" id="lg-skin-note"></span>
@@ -102,6 +104,7 @@ A['logo-edit'] = async () => {
         d.querySelector('#pv-md').innerHTML = big ? `<img src="${big}" alt="">` : icon('cube', 18);
         d.querySelector('#pv-mc').innerHTML = mc ? `<img src="${mc}" alt="">` : icon('cube', 22);
       };
+      img939 = await imgFromDataURL('logo-939.png').catch(() => null);
       presetImgs = await Promise.all(LOGO_PRESETS.map((_, i) => imgFromDataURL(`data:image/svg+xml;utf8,${encodeURIComponent(presetSVG(i, 256))}`).catch(() => null)));
       const sel = (btn) => { d.querySelectorAll('.lp').forEach((x) => x.classList.toggle('on', x === btn)); d.querySelector('#lg-keep')?.remove(); paint(); };
       d.querySelectorAll('[data-lm]').forEach((b) => b.addEventListener('click', () => {
@@ -113,6 +116,7 @@ A['logo-edit'] = async () => {
         paint();
       }));
       d.querySelectorAll('[data-lp]').forEach((b) => b.addEventListener('click', () => { ed.preset = Number(b.dataset.lp); ed.mode = 'preset'; sel(b); }));
+      d.querySelector('[data-l939]').addEventListener('click', (e) => { ed.mode = '939'; sel(e.currentTarget); });
       d.querySelectorAll('[data-ls]').forEach((b) => b.addEventListener('click', () => { ed.skin = b.dataset.ls; ed.mode = 'skin'; sel(b); }));
       ed.up = await wireUpload(d, 'lg', () => { if (ed.mode === 'upload') paint(); }, () => { ed.mode = 'upload'; d.querySelectorAll('.lp').forEach((x) => x.classList.remove('on')); paint(); });
       paint();
@@ -138,6 +142,11 @@ A['logo-edit'] = async () => {
   const src = final();
   if (!ok || !src) return;
   try {
+    if (ed.mode === '939') {
+      await invoke('server_logo_default', { id });
+      toast(isActive(v) ? 'Logo guardado. En Minecraft se ve tras reiniciar el servidor.' : 'Logo guardado');
+      refreshServer(); return;
+    }
     const big = await squarePNG(src, 256);
     const small = await squarePNG(src, 64, { pixelated: ed.mode === 'skin' });
     const kind = ed.mode === 'preset' ? `preset:${ed.preset}` : ed.mode === 'skin' ? `skin:${ed.skin}` : 'custom';

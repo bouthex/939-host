@@ -329,6 +329,8 @@ pub async fn duplicate(id: &str, new_name: &str, parts: &CopyParts, total_ram_mb
         accept_eula: src.eula_accepted_at.is_some(), import_world_path: None, optimize: vec![],
     };
     let mut cfg = instance::create(input, total_ram_mb).await?;
+    // La copia conserva el logo del original (si tenía uno).
+    if src.logo.is_some() && crate::logo::copy(id, &cfg.id).is_ok() { cfg.logo = src.logo.clone(); }
     let from = paths::server_run_dir(id);
     let to = paths::server_run_dir(&cfg.id);
     std::fs::create_dir_all(&to).map_err(|e| AppError::io("No se pudo crear la copia", e))?;

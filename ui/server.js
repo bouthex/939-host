@@ -79,7 +79,7 @@ function drawHeader() {
   } else {
     const pauseBtn = s.key === 'paused' ? btn('resume', 'play', 'Reanudar', { pri: true })
       : btn('pause', 'pause', 'Pausar', { disabled: s.key !== 'running' && s.key !== 'saving' || !v.pauseSupported, title: v.pauseSupported ? 'Congela el mundo con /tick freeze; nadie se desconecta' : 'Pausar necesita Minecraft 1.20.3 o posterior' });
-    ctl = `${pauseBtn}${btn('restart', 'restart', 'Reiniciar', { disabled: busy || s.key === 'starting' || !!v.countdown })}${btn('stop', 'stop', s.key === 'stopping' ? 'Deteniendo…' : 'Detener', { disabled: busy || !!v.countdown })}`;
+    ctl = `${pauseBtn}${btn('restart', 'restart', 'Reiniciar', { disabled: busy || s.key === 'starting' || !!v.countdown })}${btn('stop', 'stop', s.key === 'stopping' ? 'Deteniendo…' : 'Detener', { disabled: busy || !!pendingOps[c.id] || !!v.countdown })}`;
   }
   const changed = state.lastState && state.lastState.id === c.id && state.lastState.key !== s.key;
   state.lastState = { id: c.id, key: s.key };
@@ -161,8 +161,8 @@ A['req-cancel'] = async (el) => {
   refreshServer();
 };
 A.restart = (el) => stopFlow(el.dataset.id || state.params.id, 'restart');
-A.pause = async (el) => { el.disabled = true; try { await invoke('pause_server', { id: el.dataset.id }); toast('Mundo en pausa. Los jugadores siguen conectados.'); } catch (e) { fail(e); } refreshServer(); };
-A.resume = async (el) => { el.disabled = true; try { await invoke('resume_server', { id: el.dataset.id }); toast('Mundo reanudado'); } catch (e) { fail(e); } refreshServer(); };
+A.pause = async (el) => { el.disabled = true; el.setAttribute('aria-busy', 'true'); try { await invoke('pause_server', { id: el.dataset.id }); toast('Mundo en pausa. Los jugadores siguen conectados.'); } catch (e) { fail(e); } refreshServer(); };
+A.resume = async (el) => { el.disabled = true; el.setAttribute('aria-busy', 'true'); try { await invoke('resume_server', { id: el.dataset.id }); toast('Mundo reanudado'); } catch (e) { fail(e); } refreshServer(); };
 A['cd-cancel'] = async (el) => { try { await invoke('cancel_countdown', { id: el.dataset.id }); toast('Cancelado: el servidor sigue encendido'); } catch (e) { fail(e); } refreshServer(); };
 A['cd-now'] = async (el) => {
   const id = el.dataset.id;
@@ -549,7 +549,7 @@ tabDraw.settings = async (el) => {
       ${sec('general', 'General', `<div class="form">
         <label class="field">Nombre<input class="input" data-bind="name" maxlength="40" value="${esc(e.name)}"></label>
         <div class="field">Versión de Minecraft<div class="verrow"><span class="input ro">${loaderName(e.loader)} ${esc(e.mcVersion)}</span><button class="btn" data-a="ver-change" data-tone="cycle">${icon('sync', 15)}Cambiar versión</button></div><span class="hint">939 Host revisa qué implica el cambio para este servidor y te ofrece actualizarlo, hacer una copia o empezar de cero.</span></div>
-        <div class="field">Logo<div class="verrow">${srvLogo(state.server.logoUrl, 40)}<span class="grow sm t2">${e.logo ? (e.logo === 'custom' ? 'Imagen propia' : e.logo.startsWith('skin:') ? `Skin de ${esc(e.logo.slice(5))}` : 'Diseño de 939 Host') : 'Ícono genérico'}</span><button class="btn" data-a="logo-edit">${icon('image', 15)}Cambiar logo</button></div><span class="hint">Se ve en tus listas, en la Papelera y en la lista de servidores de Minecraft.</span></div>
+        <div class="field">Logo<div class="verrow">${srvLogo(state.server.logoUrl, 40)}<span class="grow sm t2">${e.logo ? (e.logo === '939' ? 'Logo de 939 Host' : e.logo === 'custom' ? 'Imagen propia' : e.logo.startsWith('skin:') ? `Skin de ${esc(e.logo.slice(5))}` : 'Diseño de 939 Host') : 'Ícono genérico'}</span><button class="btn" data-a="logo-edit">${icon('image', 15)}Cambiar logo</button></div><span class="hint">Se ve en tus listas, en la Papelera y en la lista de servidores de Minecraft.</span></div>
         <label class="field full">Descripción<input class="input" data-bind="description" maxlength="120" value="${esc(e.description)}"></label>
         <label class="field full">Mensaje del servidor (MOTD)<input class="input" data-bind="motd" maxlength="120" value="${esc(e.motd)}"></label></div>`)}
       ${sec('perf', 'Memoria y Java', `<div class="field"><div class="range-head"><span>Memoria (RAM)</span><span class="mono" id="mem-label">${fmtMB(e.memoryMb)}</span></div>

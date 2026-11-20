@@ -649,9 +649,12 @@ fn server_logo_reaches_players_and_survives_handover() {
     b.ok(&format!("setport {sid} 25852"));
     let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
     c.ok(&format!("join {t}"));
-    assert!(c.ok(&format!("card {sid}"))["logo"].is_null());
+    // Los servidores nuevos traen el logo de 939 Host: también llega a la PC que solo juega.
+    let logo_c = |c: &mut Node| c.ok(&format!("card {sid}"))["logo"].as_str().unwrap_or("").to_string();
+    wait("C recibe el logo de 939 Host", Duration::from_secs(20), || logo_c(&mut c).starts_with("data:image/png;base64,"));
+    let inicial = logo_c(&mut c);
     assert_eq!(a.ok(&format!("logo {sid}")).as_bool(), Some(true));
-    wait("C recibe el logo", Duration::from_secs(20), || c.ok(&format!("card {sid}"))["logo"].as_str().map(|l| l.starts_with("data:image/png;base64,")).unwrap_or(false));
+    wait("C recibe el logo nuevo", Duration::from_secs(20), || { let l = logo_c(&mut c); l.starts_with("data:image/png;base64,") && l != inicial });
     println!("✔ la PC que solo juega recibe el logo firmado por la propietaria");
     a.ok(&format!("start {sid}"));
     let s1 = a.ok(&format!("snapshot {sid}"));

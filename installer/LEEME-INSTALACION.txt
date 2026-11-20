@@ -5,7 +5,7 @@ Código abierto (licencia MIT): https://github.com/bouthex/939-host
 QUÉ HACE LA INSTALACIÓN
 - Instala 939 Host solo para tu usuario en %LOCALAPPDATA%\Programs\939 Host
   (no pide permisos de administrador).
-- Crea accesos en el menú Inicio y en el escritorio.
+- Crea un acceso en el menú Inicio y, si dejás marcada la casilla «Crear acceso directo en el escritorio» al terminar, también en el escritorio (la elección se recuerda al actualizar).
 - No modifica tu instalación de Minecraft. Solo si activás la "reconexión
   automática" en Configuración, agrega un mod al perfil que elijas (y se
   puede quitar desde el mismo lugar).

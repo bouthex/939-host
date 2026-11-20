@@ -220,8 +220,20 @@ async function refreshTrashCount() {
 }
 const guards = [];
 async function canLeave() { for (const g of guards) { if (!(await g())) return false; } return true; }
-async function go(route, params = {}) {
+/* Historial para «Volver»: se guarda dónde estaba la persona (pantalla, pestaña, sección de mods,
+   búsqueda y desplazamiento) al ir a otra pantalla desde un botón o enlace. Tocar una sección del
+   menú lateral empieza de cero, como siempre. */
+const navHistory = [];
+function here() {
+  return { route: state.route, params: state.params, tab: state.tab, sub: typeof md !== 'undefined' ? md.sub : null, scroll: main.scrollTop };
+}
+async function go(route, params = {}, opts = {}) {
   if (!(await canLeave())) return;
+  if (opts.root) navHistory.length = 0;
+  else if (!opts.back && state.route && (state.route !== route || JSON.stringify(params) !== JSON.stringify(state.params))) {
+    navHistory.push(here());
+    if (navHistory.length > 20) navHistory.shift();
+  }
   clearTimers();
   while (leaveHooks.length) { try { leaveHooks.pop()(); } catch { /* nada */ } }
   guards.length = 0;
@@ -229,7 +241,37 @@ async function go(route, params = {}) {
   paintNav();
   main.scrollTop = 0;
   await render();
+  paintBack();
+  if (opts.scroll) main.scrollTop = opts.scroll;
   main.firstElementChild?.classList.add('enter');
+}
+const ROUTE_LABEL = { servers: 'Servidores', friends: 'Servidores de amigos', people: 'Amigos', trash: 'Papelera', settings: 'Configuración', create: 'Crear servidor', repair: 'Reparación', modpack: 'Modpacks' };
+function backLabel(p) {
+  if (p.route === 'server') {
+    const name = (state.servers.find((s) => s.config.id === p.params?.id) || {}).config?.name || 'el servidor';
+    const tab = (typeof TABS !== 'undefined' ? TABS : []).find(([k]) => k === p.tab);
+    return tab && p.tab !== 'summary' ? `${tab[1]} de ${name}` : name;
+  }
+  return ROUTE_LABEL[p.route] || 'la pantalla anterior';
+}
+/* Flecha «Volver» arriba de la pantalla, solo si no repite lo que ya dice la ruta de navegación
+   (por ejemplo, no aparece en un servidor al que se llegó desde la lista de Servidores). */
+function paintBack() {
+  const p = navHistory[navHistory.length - 1];
+  if (!p) return;
+  const crumbs = main.querySelector('.page > .crumbs, .crumbs');
+  if (crumbs && p.route === 'servers' && ['server', 'create', 'modpack'].includes(state.route)) return;
+  if (main.querySelector('[data-a="back"]')) return;
+  const btn = `<button class="back-btn" data-a="back" title="Volver a ${esc(backLabel(p))}">${icon('back', 15)}<span class="ellipsis">${esc(backLabel(p))}</span></button>`;
+  if (crumbs) crumbs.insertAdjacentHTML('afterbegin', `${btn}<span class="back-sep" aria-hidden="true"></span>`);
+  else main.querySelector('.page')?.insertAdjacentHTML('afterbegin', `<div class="crumbs">${btn}</div>`);
+}
+async function goBack() {
+  const p = navHistory.pop();
+  if (!p) return;
+  state.tab = p.tab || 'summary';
+  if (p.sub && typeof md !== 'undefined') md.sub = p.sub;
+  await go(p.route, p.params, { back: true, scroll: p.scroll });
 }
 const routes = {};
 async function render() {
@@ -246,7 +288,13 @@ document.addEventListener('click', (e) => {
   const fn = A[el.dataset.a];
   if (fn) { e.preventDefault(); Promise.resolve(fn(el, e)).catch(fail); }
 });
-A.nav = (el) => { state.tab = 'summary'; if (el.dataset.route === 'modpack' && typeof mp !== 'undefined') Object.assign(mp, { target: null, detail: null }); go(el.dataset.route); };
+A.nav = (el) => {
+  state.tab = 'summary';
+  if (el.dataset.route === 'modpack' && typeof mp !== 'undefined') Object.assign(mp, { target: null, detail: null });
+  // El menú lateral empieza de cero; la ruta de navegación («Servidores / …») vuelve un paso.
+  go(el.dataset.route, {}, { root: !!el.closest('#nav') });
+};
+A.back = () => goBack();
 A.copy = async (el) => {
   try { await navigator.clipboard.writeText(el.dataset.text); } catch { toast('No se pudo copiar', 'error'); return; }
   toast(el.dataset.msg || 'Copiado');
@@ -360,8 +408,20 @@ async function refreshFootState() {
 }
 
 /* ───────── estados del servidor (8) ───────── */
+/* Pedidos que la persona acaba de hacer y que el servidor todavía no reflejó (por ejemplo, tocó
+   «Iniciar» y 939 Host está revisando el permiso de anfitrión y los mods antes de arrancar Java).
+   Se muestran enseguida y se borran apenas llega el estado real, o si el pedido falla. */
+const pendingOps = {};
+function markPending(id, what) { pendingOps[id] = { what, at: Date.now() }; }
+function clearPending(id) { delete pendingOps[id]; }
 function serverState(v) {
   if (!v) return { key: 'stopped', label: 'Detenido', shape: 'off' };
+  const pend = pendingOps[v.config.id];
+  if (pend) {
+    // El estado real ya cambió (o pasaron 2 minutos sin respuesta): se deja de mostrar el pedido.
+    if ((pend.what === 'start' && v.status !== 'stopped' && v.status !== 'crashed') || Date.now() - pend.at > 120000) clearPending(v.config.id);
+    else if (pend.what === 'start') return { key: 'starting', label: 'Iniciando servidor…', shape: 'ring', detail: 'Revisando que todo esté listo para arrancar' };
+  }
   if (v.installing) return { key: 'starting', label: 'Instalando', shape: 'ring' };
   if (!v.config.installed) return v.lastError ? { key: 'error', label: 'Instalación fallida', shape: 'tri' } : { key: 'starting', label: 'Preparando', shape: 'ring' };
   if (v.restarting) return { key: 'restarting', label: 'Reiniciando', shape: 'ring' };
