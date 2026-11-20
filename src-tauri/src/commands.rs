@@ -761,6 +761,10 @@ pub async fn storage_verify(app: AppHandle, id: String, key: String) -> AppResul
 #[tauri::command]
 pub fn storage_enforce(id: String) -> AppResult<Vec<String>> { instance::load(&id)?; Ok(host939_core::storage::enforce_cap(&id, host939_core::storage::cap_bytes())) }
 
+/// Aviso de una migración de datos que falló y se restauró (una vez).
+#[tauri::command]
+pub fn data_notice() -> Option<String> { crate::DATA_NOTICE.lock().unwrap().take() }
+
 /// Avisos de la última vez que 939 Host se cerró de forma no normal (cierre inesperado o apagado
 /// de Windows): qué pasó con cada servidor. Se muestran una vez.
 #[tauri::command]

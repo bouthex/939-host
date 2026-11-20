@@ -24,6 +24,14 @@ async function boot() {
 
   await setupOps();
   await listen('server-changed', (ev) => scheduleRefresh(ev.payload.id));
+  await listen('update-status', (ev) => {
+    refreshUpdatesCard(ev.payload);
+    // Aviso discreto una sola vez por versión lista; se instala desde Configuración → Actualizaciones.
+    if (ev.payload.status === 'lista' && state.updNotified !== ev.payload.available) {
+      state.updNotified = ev.payload.available;
+      toast(`939 Host ${ev.payload.available} está lista para instalar`, 'ok', 'Cuando quieras: Configuración → Actualizaciones. No se instala sola.');
+    }
+  });
   await listen('console-line', (ev) => { if (state.route === 'server' && state.tab === 'console' && state.params.id === ev.payload.id) appendConsole(ev.payload.line); });
   await listen('install-progress', (ev) => {
     const p = ev.payload; state.progress[p.id] = p;
@@ -81,6 +89,7 @@ async function boot() {
   setTimeout(() => $('#splash')?.remove(), 300);
   invoke('notify_ui_ready').catch(() => {});
   invoke('last_close_notes').then((notes) => { for (const n of notes || []) showLastClose(n); }).catch(() => {});
+  invoke('data_notice').then((m) => { if (m) dialog({ title: 'Datos de 939 Host', body: `<p>${esc(m)}</p>`, buttons: [{ label: 'Entendido', value: 'ok', kind: 'pri' }] }); }).catch(() => {});
 }
 
 /* Qué pasó con cada servidor la última vez que 939 Host se cerró de golpe o se apagó Windows. */

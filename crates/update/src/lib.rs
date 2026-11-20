@@ -16,4 +16,6 @@ pub mod publish;
 pub mod cng;
 
 pub use client::{Client, Decision, State};
+pub use reqwest;
+pub use chrono;
 pub use metadata::{Artifact, Envelope, Release, Root};

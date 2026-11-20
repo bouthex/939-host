@@ -297,7 +297,7 @@ jobs:
           Stop-Process $p -Force
       - name: Actualizar, reinstalar e instalación interrumpida
         if: ${{ !cancelled() }}
-        timeout-minutes: 8
+        timeout-minutes: 12
         shell: pwsh
         run: |
           Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -348,6 +348,25 @@ jobs:
           Una-Sola "instalación cortada y repetida"
           Arranca "instalación cortada y repetida"
           Write-Output "3) Instalación cortada y repetida: arranca, un acceso, una entrada, mundo intacto."
+          # 4) Actualización desde la app: el instalador espera a que 939 Host se cierre (/ESPERAR),
+          #    instala y lo vuelve a abrir (/REABRIR). Si la app nunca se cierra, no reemplaza nada.
+          $app = Start-Process $exe -PassThru
+          Start-Sleep 10
+          $antes = (Get-Item $exe).LastWriteTimeUtc
+          $p = Start-Process $inst -ArgumentList '/S', '/ESPERAR', '/REABRIR' -PassThru
+          Start-Sleep 8
+          if ($p.HasExited) { throw "Con /ESPERAR el instalador no esperó a que se cerrara 939 Host" }
+          if ((Get-Item $exe).LastWriteTimeUtc -ne $antes) { throw "Con /ESPERAR reemplazó 939 Host mientras seguía abierto" }
+          Stop-Process $app -Force
+          $p.WaitForExit(120000) | Out-Null
+          if (!$p.HasExited) { throw "El instalador no terminó después de cerrar 939 Host" }
+          Start-Sleep 8
+          $re = @(Get-Process 939Host -ErrorAction SilentlyContinue)
+          if ($re.Count -lt 1) { throw "Con /REABRIR no se volvió a abrir 939 Host" }
+          Una-Sola "actualización desde la app"
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          Write-Output "4) Actualización desde la app: esperó al cierre, instaló, volvió a abrir; mundo intacto."
       - name: Desinstalar
         if: always()
         timeout-minutes: 5

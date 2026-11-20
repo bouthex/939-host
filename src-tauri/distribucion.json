@@ -1,0 +1,5 @@
+{
+  "_comentario": "Configuración de actualizaciones. Mientras «raiz» y «url» estén vacías, las actualizaciones automáticas están desactivadas. Completarlas es una decisión del propietario (ver docs/ACTUALIZACIONES.md): la raíz es pública (publicar/raiz-1.json de 939publicar) y una vez distribuida no se puede retirar de las copias instaladas.",
+  "raiz": null,
+  "url": null
+}

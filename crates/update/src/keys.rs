@@ -41,7 +41,7 @@ impl PublicKey {
                 let Ok(vk) = VerifyingKey::from_sec1_bytes(&pk) else { return false };
                 let Ok(sig) = Signature::from_slice(sig) else { return false };
                 // Solo firmas con s bajo: una firma no se puede transformar en otra válida.
-                if sig.normalize_s().is_some() { return false; }
+                if sig.normalize_s() != sig { return false; }
                 vk.verify(msg, &sig).is_ok()
             }
             _ => false,
@@ -73,7 +73,7 @@ impl SecretKey {
     pub fn public(&self) -> PublicKey {
         match self {
             SecretKey::Ed25519(k) => PublicKey { scheme: "ed25519".into(), public: hex::encode(k.verifying_key().to_bytes()) },
-            SecretKey::P256(k) => PublicKey { scheme: "ecdsa-p256-sha256".into(), public: hex::encode(k.verifying_key().to_encoded_point(false).as_bytes()) },
+            SecretKey::P256(k) => PublicKey { scheme: "ecdsa-p256-sha256".into(), public: hex::encode(k.verifying_key().to_sec1_point(false).as_bytes()) },
         }
     }
     pub fn sign(&self, msg: &[u8]) -> Vec<u8> {
@@ -82,7 +82,7 @@ impl SecretKey {
             SecretKey::P256(k) => {
                 use p256::ecdsa::{signature::Signer, Signature};
                 let s: Signature = k.sign(msg);
-                s.normalize_s().unwrap_or(s).to_bytes().to_vec()
+                s.normalize_s().to_bytes().to_vec()
             }
         }
     }
@@ -102,7 +102,7 @@ impl Signer for SecretKey {
 /// Convierte una firma ECDSA P-256 cruda de CNG (r || s, 64 bytes) a la forma con s bajo.
 pub fn p256_low_s(raw: &[u8]) -> Result<Vec<u8>, String> {
     let sig = p256::ecdsa::Signature::from_slice(raw).map_err(|e| format!("firma P-256 inválida: {e}"))?;
-    Ok(sig.normalize_s().unwrap_or(sig).to_bytes().to_vec())
+    Ok(sig.normalize_s().to_bytes().to_vec())
 }
 
 /// Clave pública P-256 a partir de las coordenadas X e Y (como las exporta CNG).
@@ -138,11 +138,12 @@ mod tests {
 
     #[test]
     fn p256_con_s_alto_se_rechaza() {
-        use p256::elliptic_curve::ops::Neg;
         let k = SecretKey::generate_p256();
         let sig = p256::ecdsa::Signature::from_slice(&k.sign(b"x")).unwrap();
         let (r, s) = sig.split_scalars();
-        let high = p256::ecdsa::Signature::from_scalars(r, s.neg()).unwrap();
+        let neg: p256::Scalar = -*s.as_ref();
+        let high = p256::ecdsa::Signature::from_scalars(r.to_bytes(), neg.to_bytes()).unwrap();
+        assert_ne!(high, sig);
         assert!(!k.public().verify(b"x", &high.to_bytes()), "la versión maleable de una firma válida no se acepta");
     }
 }

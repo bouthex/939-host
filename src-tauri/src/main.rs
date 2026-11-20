@@ -7,6 +7,7 @@ mod commands;
 mod network;
 mod ops;
 mod shutdown;
+mod updates;
 mod v3;
 
 use host939_core::events::{Events, InstallProgress};
@@ -210,6 +211,23 @@ fn data_root() -> std::path::PathBuf {
         .join("939Host")
 }
 
+/// Aviso para la interfaz si una migración de datos falló y se restauró el respaldo.
+pub static DATA_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Datos de una versión más nueva de 939 Host: se avisa y se cierra sin tocar nada.
+fn newer_data_and_exit(found: u32, supported: u32) -> ! {
+    let msg = format!("Los datos de 939 Host de esta PC son de una versión más nueva (formato {found}; esta versión entiende hasta el {supported}).\n\nPara no dañarlos, esta versión no se abre. Instalá la versión más nueva de 939 Host o, si volviste atrás a propósito, restaurá el respaldo de la carpeta «respaldos-datos».");
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
+        let w = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        MessageBoxW(std::ptr::null_mut(), w(&msg).as_ptr(), w("939 Host").as_ptr(), MB_OK | MB_ICONWARNING);
+    }
+    #[cfg(not(windows))]
+    eprintln!("{msg}");
+    std::process::exit(3)
+}
+
 fn main() {
     // Guardián de los servidores (ver host939_core::guardian): sin ventana, sin red, antes de la
     // comprobación de instancia única.
@@ -223,6 +241,16 @@ fn main() {
             let wcfg = app.config().app.windows.iter().find(|w| w.label == "main").cloned().expect("ventana main");
             tauri::WebviewWindowBuilder::from_config(app.handle(), &wcfg)?.additional_browser_args(&browser_args()).build()?;
             paths::init(data_root()).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            // Formato de los datos: migra con respaldo, o no toca nada si son de una versión más nueva.
+            match host939_core::datos::ensure() {
+                host939_core::datos::Outcome::Newer { found, supported } => {
+                    newer_data_and_exit(found, supported);
+                }
+                host939_core::datos::Outcome::Restored { error, .. } => {
+                    *DATA_NOTICE.lock().unwrap() = Some(format!("No se pudieron actualizar los datos al formato de esta versión ({error}). Se restauró el respaldo y todo quedó como estaba; avisanos para revisarlo."));
+                }
+                _ => {}
+            }
             // Si 939 Host termina de golpe, el guardián detiene cada servidor guardando el mundo.
             if let Ok(exe) = std::env::current_exe() { host939_core::guardian::configure(exe); }
             // Apagado y cierre de sesión de Windows con servidores encendidos.
@@ -245,6 +273,8 @@ fn main() {
             }
             app.manage(network::Cluster::default());
             app.manage(ops::Ops::default());
+            // Actualizaciones (desactivadas hasta que el proyecto configure la distribución).
+            updates::start(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Abrir 939 Host", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Salir de 939 Host…", true, None::<&str>)?;
@@ -364,6 +394,11 @@ fn main() {
             commands::op_cancel,
             commands::play_start_sound,
             commands::last_close_notes,
+            commands::data_notice,
+            updates::update_status,
+            updates::update_check,
+            updates::update_channel,
+            updates::update_install,
             v3::image_read,
             v3::profile_photo_get,
             v3::profile_photo_set,

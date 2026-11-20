@@ -71,12 +71,42 @@ BrandingText "939 Host ${VERSION}"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "Spanish"
 
+Var Reopen
+
 Function .onInit
 !ifdef INNER
   CreateDirectory "$TEMP\939host-uninst"
   WriteUninstaller "$TEMP\939host-uninst\Desinstalar.exe"
   Quit
 !endif
+  ; Actualización pedida por 939 Host (/ESPERAR): la app ya terminó sus servidores y se está
+  ; cerrando; se espera hasta 2 minutos a que el proceso termine antes de comprobar.
+  StrCpy $Reopen "0"
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/REABRIR" $R1
+  ${IfNot} ${Errors}
+    StrCpy $Reopen "1"
+  ${EndIf}
+  ClearErrors
+  ${GetOptions} $R0 "/ESPERAR" $R1
+  ${IfNot} ${Errors}
+    StrCpy $R2 0
+    ${Do}
+      nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${APPEXE}" /NH'
+      Pop $0
+      Pop $1
+      ${StrStr} $2 $1 "${APPEXE}"
+      ${If} $2 == ""
+        ${Break}
+      ${EndIf}
+      IntOp $R2 $R2 + 1
+      ${If} $R2 > 120
+        ${Break}
+      ${EndIf}
+      Sleep 1000
+    ${Loop}
+  ${EndIf}
   ; 939 Host abierto (también en la bandeja, sin ventana): pedir que se cierre antes de actualizar.
   ; Se busca el proceso: con un servidor encendido, 939 Host puede seguir sin ventana.
   nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${APPEXE}" /NH'
@@ -156,6 +186,10 @@ Section "939 Host" SecMain
   ${AndIf} $2 == ""
     MessageBox MB_YESNO|MB_ICONINFORMATION "939 Host necesita Microsoft Edge WebView2, que no se encontró en esta PC. ¿Abrir la página oficial de descarga?" /SD IDNO IDNO +2
       ExecShell "open" "https://developer.microsoft.com/microsoft-edge/webview2/"
+  ${EndIf}
+  ; Actualización desde la app (/REABRIR): se vuelve a abrir al terminar.
+  ${If} $Reopen == "1"
+    Exec '"$INSTDIR\${APPEXE}"'
   ${EndIf}
 SectionEnd
 

@@ -2,7 +2,7 @@
 /* Configuración de 939 Host: General, Apariencia, Esta PC, Red, Privacidad y conexiones,
    Reconexión, Datos y Acerca de 939 Host. */
 
-const SSECS = [['general', 'General'], ['look', 'Apariencia'], ['pc', 'Esta PC'], ['net', 'Red'], ['privacy', 'Privacidad y conexiones'], ['reconnect', 'Reconexión'], ['data', 'Datos'], ['about', 'Acerca de 939 Host']];
+const SSECS = [['general', 'General'], ['look', 'Apariencia'], ['pc', 'Esta PC'], ['net', 'Red'], ['privacy', 'Privacidad y conexiones'], ['reconnect', 'Reconexión'], ['data', 'Datos'], ['updates', 'Actualizaciones'], ['about', 'Acerca de 939 Host']];
 const REPO = 'https://github.com/bouthex/939-host';
 let settingsTarget = null;
 function goSettings(sec) { settingsTarget = sec; if (state.route === 'settings') scrollToSection(); else go('settings'); }
@@ -17,10 +17,11 @@ const sw = (key, title, desc, extra = '') => `<label class="switch"><div class="
 
 routes.settings = async function renderSettings() {
   const s = state.info.settings;
-  const [hw, runtimes, profiles] = await Promise.all([
+  const [hw, runtimes, profiles, upd] = await Promise.all([
     state.hw ? Promise.resolve(state.hw) : invoke('hardware_snapshot').catch(() => null),
     invoke('list_runtimes').catch(() => []),
     invoke('client_profiles').catch(() => []),
+    invoke('update_status').catch(() => null),
   ]);
   state.hw = hw; state.clientProfiles = profiles;
   const a = hw?.assessment;
@@ -94,12 +95,14 @@ routes.settings = async function renderSettings() {
           <div><div class="sec" style="margin:8px 0 4px">Java instalado por 939 Host</div>${runtimes.length ? runtimes.map((r) => `<div class="kv"><span class="k">Java ${r.major}</span><span class="mono sm">${esc(r.version)} · ${fmtMB(r.sizeMb)}</span></div>`).join('') : '<span class="sm t3">Todavía ninguno. Se descarga solo al crear el primer servidor.</span>'}</div>
           <p class="xs t3" style="margin:0">939 Host no modifica tu instalación de Minecraft: los mundos importados se copian. La única excepción es la reconexión automática, y solo en el perfil que actives.</p></div></section>
 
+        <section class="section" id="set-updates"><h2>Actualizaciones</h2><div class="card pad stack" id="upd-card">${updatesCard(upd)}</div></section>
+
         <section class="section" id="set-about"><h2>Acerca de 939 Host</h2><div class="card about">
           <div class="about-head"><span class="about-mark">${CINTA(58)}</span>
             <div class="about-id"><span class="about-name">939 Host</span><span class="about-tag">Advanced hosting. Simplified.</span><span class="about-ver">Versión ${esc(state.info.version)} · Licencia MIT</span></div></div>
           <div class="about-foot"><span class="sm">Creado por <b>Archimak</b> y <b>Bout</b></span>
             <span class="xs t3">939 Host no es un producto oficial de Minecraft. No está aprobado por Mojang ni Microsoft, ni asociado con ellos. Minecraft es una marca de Mojang AB.</span></div></div>
-          <div class="card list">${[['Buscar actualizaciones', 'Página de versiones en GitHub', `${REPO}/releases`], ['Código fuente', 'GitHub', REPO], ['Licencias de terceros', '', `${REPO}/blob/main/THIRD_PARTY_LICENSES.html`], ['Política de privacidad', '', `${REPO}/blob/main/PRIVACY.md`], ['Política de firma de código', '', `${REPO}/blob/main/CODE_SIGNING_POLICY.md`]]
+          <div class="card list">${[['Versiones publicadas', 'Página de versiones en GitHub', `${REPO}/releases`], ['Código fuente', 'GitHub', REPO], ['Licencias de terceros', '', `${REPO}/blob/main/THIRD_PARTY_LICENSES.html`], ['Política de privacidad', '', `${REPO}/blob/main/PRIVACY.md`], ['Política de firma de código', '', `${REPO}/blob/main/CODE_SIGNING_POLICY.md`]]
             .map(([t, d, u]) => `<button class="li" data-a="link" data-url="${u}"><span class="grow">${t}</span><span class="sm t3">${d}</span>${icon('external', 15)}</button>`).join('')}</div></section>
       </div></div></div>`;
   scrollToSection();
@@ -201,3 +204,29 @@ A['sys-cleanup'] = async () => {
   try { const r = await invoke('system_cleanup'); toast(r.join(' · ')); } catch (e) { fail(e); }
   routes.settings();
 };
+
+/* Actualizaciones: estado, canal y acciones. Nunca se instala sin que la persona lo pida, y aun así
+   se espera a que no haya servidores encendidos ni operaciones en curso. */
+function updatesCard(u) {
+  if (!u) return '<span class="sm t3">No se pudo leer el estado de las actualizaciones.</span>';
+  if (!u.enabled) return `<div class="kv"><span class="k">Versión instalada</span><span class="mono sm">${esc(u.current)}</span></div><p class="sm t2" style="margin:0">${esc(u.message || 'Las actualizaciones automáticas todavía no están configuradas por el proyecto. Las versiones nuevas se instalan a mano.')}</p>`;
+  const pct = u.progress != null ? ` (${Math.round(u.progress * 100)} %)` : '';
+  return `<div class="kv"><span class="k">Versión instalada</span><span class="mono sm">${esc(u.current)}</span></div>
+    <div class="kv"><span class="k">Estado</span><span class="sm">${esc(u.message || '—')}${pct}</span></div>
+    ${u.lastCheck ? `<div class="kv"><span class="k">Última consulta</span><span class="sm t3">${esc(new Date(u.lastCheck).toLocaleString())}</span></div>` : ''}
+    <label class="switch"><div class="grow"><b>Recibir versiones Beta</b><span class="sm t2">Prueban novedades antes que nadie y pueden tener errores. Con esto apagado solo llegan versiones estables.</span></div><input type="checkbox" id="upd-beta" ${u.channel === 'beta' ? 'checked' : ''}></label>
+    <div class="btns"><button class="btn s" data-a="upd-check">Buscar ahora</button>${u.status === 'lista' ? '<button class="btn s pri" data-a="upd-install">Instalar ahora</button>' : ''}</div>
+    <p class="xs t3" style="margin:0">Cada versión viene firmada por el proyecto y se verifica antes de instalarla. La instalación conserva servidores, mundos, amigos y configuración.</p>`;
+}
+function refreshUpdatesCard(u) { const c = document.getElementById('upd-card'); if (c) c.innerHTML = updatesCard(u); }
+A['upd-check'] = async () => { try { refreshUpdatesCard(await invoke('update_check')); } catch (e) { fail(e); } };
+A['upd-install'] = async () => {
+  try {
+    const busy = await invoke('update_install');
+    if (busy.length) dialog({ title: 'Todavía no', body: `<p>Para no interrumpir nada, la actualización espera a que termine lo que está en curso:</p><ul>${busy.map((b) => `<li>${esc(b)}</li>`).join('')}</ul><p>Volvé a tocar «Instalar ahora» cuando esté libre.</p>`, buttons: [{ label: 'Entendido', value: 'ok', kind: 'pri' }] });
+  } catch (e) { fail(e); }
+};
+document.addEventListener('change', async (ev) => {
+  if (ev.target?.id !== 'upd-beta') return;
+  try { refreshUpdatesCard(await invoke('update_channel', { channel: ev.target.checked ? 'beta' : 'estable' })); } catch (e) { fail(e); }
+});

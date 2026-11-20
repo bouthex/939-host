@@ -6,7 +6,10 @@ use std::path::Path;
 use std::process::Command;
 
 fn run(args: &[&str]) -> (bool, String) {
-    let o = Command::new(env!("CARGO_BIN_EXE_939publicar")).args(args).output().unwrap();
+    // En la CI no hay nadie para confirmar el aviso de Windows: las claves de prueba se crean sin él.
+    let mut a: Vec<&str> = args.to_vec();
+    if matches!(args.first(), Some(&"iniciar") | Some(&"rotar")) { a.push("--sin-confirmacion-de-windows"); }
+    let o = Command::new(env!("CARGO_BIN_EXE_939publicar")).args(&a).stdin(std::process::Stdio::null()).output().unwrap();
     let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     (o.status.success(), text)
 }
