@@ -21,7 +21,7 @@
 - **Forge y NeoForge**: en 0.9.0 no se habían probado en vivo. En la rama en desarrollo ya arrancan en las pruebas reales de Windows.
 - **Cambiar la versión de Minecraft** no está en 0.9.0 (en desarrollo, ver abajo). Volver a una versión anterior con el mismo mundo nunca se hace sobre el servidor original: Minecraft no convierte mundos hacia atrás.
 - El ejecutable **no está firmado**. SmartScreen avisa y **Smart App Control (Windows 11) lo bloquea** sin opción de continuar.
-- No hay **actualizaciones automáticas** de 939 Host: se instala la versión nueva encima (el instalador conserva los datos).
+- Las **actualizaciones automáticas** están implementadas pero **desactivadas** hasta que el proyecto configure su distribución: se instala la versión nueva encima (el instalador conserva los datos).
 - El mundo completo se copia a cada coanfitriona la primera vez (por ejemplo, 2,5 GB en nuestro modpack de prueba); después solo viajan los cambios.
 
 ## En desarrollo (rama `rediseno-v3`, todavía sin versión publicada)
@@ -49,7 +49,8 @@ Límites conocidos de esas funciones:
 ## Pendiente para una próxima versión
 
 - Firma de código del ejecutable.
-- Actualizador integrado.
+- Activar el actualizador integrado (ya implementado): falta que el propietario cree su identidad de publicación y elija dónde distribuir.
+- Direcciones para jugadores sin 939 Host (ver DIRECCIONES-PUBLICAS.md).
 - Descubrimiento de PCs del grupo en la red local (mDNS) para no depender de direcciones guardadas cuando cambia la IP y no hay relays.
 - Compresión de los bloques de sincronización que no sean regiones (las regiones ya vienen comprimidas).
 - Panel de historial del grupo (quién hosteó, traspasos, recuperaciones).

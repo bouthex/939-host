@@ -512,6 +512,9 @@ pub fn prune(id: &str) -> usize {
     let mut removed = 0;
     let mut autos: Vec<SnapshotInfo> = list(id).into_iter().filter(|s| s.kind == "auto").collect();
     autos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    // El automático más reciente nunca se borra por antigüedad: un servidor que no se usó en más de
+    // 8 semanas no puede quedarse sin su último punto (es también la base de la sincronización).
+    let newest = autos.first().map(|s| s.id.clone());
     for s in autos {
         let Ok(t) = chrono::DateTime::parse_from_rfc3339(&s.created_at) else { continue };
         let age = now.signed_duration_since(t);
@@ -521,7 +524,7 @@ pub fn prune(id: &str) -> usize {
             else if age < chrono::Duration::weeks(8) { Some(format!("w{}", t.format("%G%V"))) }
             else { Some("drop".into()) };
         let protected = crate::storage::protected(id).contains(&format!("snap:{}", s.id));
-        let keep = protected || match bucket { None => true, Some(b) if b == "drop" => false, Some(b) => keep_buckets.insert(b) };
+        let keep = protected || Some(&s.id) == newest.as_ref() || match bucket { None => true, Some(b) if b == "drop" => false, Some(b) => keep_buckets.insert(b) };
         if !keep && std::fs::remove_file(snap_path(id, &s.id)).is_ok() { removed += 1; }
     }
     if removed > 0 { gc(id); }
@@ -591,6 +594,22 @@ mod tests {
         std::fs::write(run.join("world/session.lock"), b"x").unwrap();
         std::fs::write(run.join("server.properties"), b"motd=a").unwrap();
         id
+    }
+
+    #[test]
+    fn un_servidor_sin_usar_conserva_su_ultimo_punto() {
+        let id = setup();
+        let mut ids = vec![];
+        for weeks in [20i64, 12, 10] {
+            let mut snap = read_snapshot(&id, &capture(&id, "", "auto", "26.2").unwrap().id).unwrap();
+            snap.info.created_at = (chrono::Local::now() - chrono::Duration::weeks(weeks)).to_rfc3339();
+            write_snapshot(&id, &snap).unwrap();
+            ids.push(snap.info.id.clone());
+        }
+        prune(&id);
+        let left: Vec<String> = list(&id).into_iter().map(|s| s.id).collect();
+        assert_eq!(left, vec![ids[2].clone()], "queda solo el más reciente, aunque tenga 10 semanas");
+        assert!(verify(&id, &ids[2]).is_ok(), "y sus bloques siguen ahí");
     }
 
     #[test]
