@@ -801,3 +801,24 @@ details.tech[open] > summary::before { content: '▾ '; }
 .steps { margin-left: 4px; }
 .vrow .icons-row, .vrow .bar.sat { width: 198px; flex: none; }
 .xp .bar { flex: 0 1 198px; }
+/* Inventario: casilleros más grandes y, sin ícono, el nombre completo (hasta 3 líneas). */
+.grid9 { grid-template-columns: repeat(9, 52px); gap: 5px; }
+.slot { width: 52px; height: 52px; }
+.slot img { width: 36px; height: 36px; }
+.slot .nm.full { padding: 3px; font-size: 9.5px; line-height: 1.12; font-weight: 550; color: var(--text2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; hyphens: auto; }
+.slot .nm.unk-q { font-size: 18px; color: var(--text3); }
+.slotcol .slot, .body3 .slot { width: 52px; height: 52px; }
+.inv-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.inv-group { font: 600 11px var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--text3); margin: 10px 0 4px; }
+.inv-group:first-child { margin-top: 0; }
+.inv-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; color: var(--text); cursor: pointer; font: inherit; }
+.inv-row:hover { background: var(--hover); }
+.inv-row.on { border-color: var(--text); }
+.inv-row .grow { display: flex; flex-direction: column; }
+.inv-row .ic { width: 32px; height: 32px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); display: grid; place-items: center; flex: none; color: var(--text3); font-weight: 600; }
+.inv-row.unk .ic { border-style: dashed; background: transparent; }
+.inv-row .ic img { width: 26px; height: 26px; image-rendering: pixelated; object-fit: cover; object-position: top; }
+.dur-l { width: 54px; height: 3px; background: var(--line2); border-radius: 2px; overflow: hidden; flex: none; }
+.dur-l i { display: block; height: 100%; background: var(--text); }
+.slot .nm.full { font-family: var(--font); font-size: 9px; hyphens: manual; overflow-wrap: break-word; word-break: normal; }
+.inv-wrap .seg { align-self: flex-start; }

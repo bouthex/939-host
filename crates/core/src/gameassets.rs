@@ -22,6 +22,19 @@ const PREFIXES: &[&str] = &[
     "assets/minecraft/textures/gui/sprites/hud/",
     "assets/minecraft/textures/gui/sprites/container/slot/",
     "assets/minecraft/textures/mob_effect/",
+    // Objetos que el juego dibuja en 3D (escudo, cofres, camas, cabezas…): no tienen imagen plana
+    // de ítem, así que la interfaz recorta una cara de su textura.
+    "assets/minecraft/textures/entity/shield_base_nopattern.png",
+    "assets/minecraft/textures/entity/shield/base_nopattern.png",
+    "assets/minecraft/textures/entity/chest/",
+    "assets/minecraft/textures/entity/bed/",
+    "assets/minecraft/textures/entity/skeleton/skeleton.png",
+    "assets/minecraft/textures/entity/skeleton/wither_skeleton.png",
+    "assets/minecraft/textures/entity/zombie/zombie.png",
+    "assets/minecraft/textures/entity/creeper/creeper.png",
+    "assets/minecraft/textures/entity/piglin/piglin.png",
+    "assets/minecraft/textures/entity/player/wide/steve.png",
+    "assets/minecraft/textures/entity/steve.png",
 ];
 
 static LOCKS: Lazy<Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>> = Lazy::new(Default::default);
@@ -30,7 +43,42 @@ fn valid_version(v: &str) -> bool { !v.is_empty() && v.len() <= 40 && v.bytes().
 
 pub fn dir(version: &str) -> PathBuf { paths::cache().join("game-assets").join(version) }
 
-pub fn ready(version: &str) -> bool { valid_version(version) && dir(version).join(".completo").exists() }
+/// La caché está completa (versión 2: incluye las texturas de los objetos 3D).
+pub fn ready(version: &str) -> bool { valid_version(version) && dir(version).join(".completo2").exists() }
+
+/// Cliente de esa versión ya instalado en el Minecraft de esta PC (por el Launcher o por
+/// «Preparar para jugar»): las imágenes salen de ahí, sin descargar nada.
+pub fn local_client(version: &str) -> Option<PathBuf> {
+    if !valid_version(version) { return None; }
+    let p = crate::clientsetup::minecraft_dir()?.join("versions").join(version).join(format!("{version}.jar"));
+    p.is_file().then_some(p)
+}
+
+/// Nombres en español del Minecraft instalado (índice de recursos local), si está.
+fn local_lang(version: &str) -> Option<Vec<u8>> {
+    let mc = crate::clientsetup::minecraft_dir()?;
+    let vj: serde_json::Value = serde_json::from_slice(&std::fs::read(mc.join("versions").join(version).join(format!("{version}.json"))).ok()?).ok()?;
+    let idx_id = vj.pointer("/assetIndex/id")?.as_str()?;
+    if !valid_version(idx_id) { return None; }
+    let idx: serde_json::Value = serde_json::from_slice(&std::fs::read(mc.join("assets/indexes").join(format!("{idx_id}.json"))).ok()?).ok()?;
+    let hash = idx.pointer("/objects/minecraft~1lang~1es_es.json/hash")?.as_str()?;
+    if hash.len() != 40 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+    let b = std::fs::read(mc.join("assets/objects").join(&hash[..2]).join(hash)).ok()?;
+    (crate::net::sha1_bytes(&b) == hash.to_ascii_lowercase()).then_some(b)
+}
+
+/// Prepara las imágenes desde el cliente instalado en esta PC, sin conectarse a nada.
+pub fn ensure_local(version: &str) -> AppResult<bool> {
+    if ready(version) { return Ok(true); }
+    let Some(jar) = local_client(version) else { return Ok(false) };
+    let out = dir(version);
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out).map_err(|e| AppError::io("No se pudo crear la caché", e))?;
+    extract(&jar, &out)?;
+    if let Some(l) = local_lang(version) { let _ = std::fs::write(out.join("es_es.json"), l); }
+    std::fs::write(out.join(".completo2"), version).map_err(|e| AppError::io("No se pudo guardar la caché", e))?;
+    Ok(true)
+}
 
 /// Extrae del jar del cliente solo las imágenes que usa la interfaz.
 pub fn extract(jar: &Path, out: &Path) -> AppResult<usize> {
@@ -61,6 +109,8 @@ pub async fn ensure(version: &str, mut progress: impl FnMut(&str, f64)) -> AppRe
     let lock = LOCKS.lock().unwrap().entry(version.to_string()).or_default().clone();
     let _g = lock.lock().await;
     if ready(version) { return Ok(()); }
+    // Primero el Minecraft instalado en esta PC: sin descargas.
+    if ensure_local(version)? { progress("Listo", 1.0); return Ok(()); }
     let out = dir(version);
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).map_err(|e| AppError::io("No se pudo crear la caché", e))?;
@@ -98,7 +148,7 @@ pub async fn ensure(version: &str, mut progress: impl FnMut(&str, f64)) -> AppRe
             }
         }
     }
-    std::fs::write(out.join(".completo"), version).map_err(|e| AppError::io("No se pudo guardar la caché", e))?;
+    std::fs::write(out.join(".completo2"), version).map_err(|e| AppError::io("No se pudo guardar la caché", e))?;
     progress("Listo", 1.0);
     Ok(())
 }
@@ -119,6 +169,11 @@ pub fn resolve(version: &str, key: &str) -> Option<PathBuf> {
         "hud" => vec![format!("gui/sprites/hud/{name}.png")],
         "effect" => { if name.contains('/') { return None; } vec![format!("mob_effect/{name}.png")] }
         "slot" => { if name.contains('/') { return None; } vec![format!("gui/sprites/container/slot/{name}.png")] }
+        // Textura de entidad (para recortar el ícono de un objeto 3D en la interfaz).
+        "tex" => {
+            if !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'/')) { return None; }
+            vec![format!("entity/{name}.png")]
+        }
         _ => return None,
     };
     candidates.into_iter().map(|c| base.join(c)).find(|p| p.is_file())
@@ -154,14 +209,15 @@ mod tests {
         let jar = tmp.path().join("c.jar");
         let mut z = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
         let o: zip::write::SimpleFileOptions = Default::default();
-        for f in ["assets/minecraft/textures/item/diamond_sword.png", "assets/minecraft/textures/block/stone.png", "assets/minecraft/textures/gui/sprites/hud/heart/full.png", "assets/minecraft/textures/entity/zombie.png", "net/minecraft/Main.class", "assets/minecraft/textures/item/../../evil.png"] {
+        for f in ["assets/minecraft/textures/item/diamond_sword.png", "assets/minecraft/textures/block/stone.png", "assets/minecraft/textures/gui/sprites/hud/heart/full.png", "assets/minecraft/textures/entity/zombie.png", "assets/minecraft/textures/entity/shield_base_nopattern.png", "assets/minecraft/textures/entity/chest/normal.png", "net/minecraft/Main.class", "assets/minecraft/textures/item/../../evil.png"] {
             z.start_file(f, o).unwrap();
             z.write_all(b"\x89PNG").unwrap();
         }
         z.finish().unwrap();
         let out = tmp.path().join("out");
-        assert_eq!(extract(&jar, &out).unwrap(), 3);
+        assert_eq!(extract(&jar, &out).unwrap(), 5);
         assert!(out.join("item/diamond_sword.png").exists());
-        assert!(!out.join("entity").exists());
+        assert!(out.join("entity/shield_base_nopattern.png").exists() && out.join("entity/chest/normal.png").exists());
+        assert!(!out.join("entity/zombie.png").exists(), "solo las texturas de objetos 3D");
     }
 }

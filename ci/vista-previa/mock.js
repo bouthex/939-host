@@ -34,12 +34,18 @@
       inventory: [{ slot: 0, id: 'minecraft:diamond_sword', count: 1, damage: 100, maxDamage: 1561, enchantments: [['minecraft:sharpness', 3]], customName: null },
         { slot: 1, id: 'gemas:rubi', count: 12, damage: null, maxDamage: null, enchantments: [], customName: null },
         { slot: 2, id: 'gemas:sin_icono', count: 3, damage: null, maxDamage: null, enchantments: [], customName: null },
-        { slot: 3, id: 'otromod:cosa_rara', count: 1, damage: null, maxDamage: null, enchantments: [], customName: null }],
+        { slot: 3, id: 'otromod:cosa_rara', count: 1, damage: null, maxDamage: null, enchantments: [], customName: null },
+        { slot: 4, id: 'minecraft:shield', count: 1, damage: 30, maxDamage: 336, enchantments: [], customName: null },
+        { slot: 5, id: 'minecraft:chest', count: 8, damage: null, maxDamage: null, enchantments: [], customName: null },
+        { slot: 6, id: 'minecraft:oak_planks', count: 64, damage: null, maxDamage: null, enchantments: [], customName: null },
+        { slot: 7, id: 'minecraft:enchanted_golden_apple', count: 2, damage: null, maxDamage: null, enchantments: [], customName: null }],
       selectedSlot: 0, ender: [], effects: [], stats: { playTimeTicks: 720000, deaths: 3, mobKills: 41 },
       history: { sessions: 2, totalSecs: 5400, firstSeen: '2026-11-01T10:00:00-03:00', lastSeen: '2026-11-19T21:30:00-03:00', otherNames: ['Viejo'],
         recent: [{ join: '2026-11-19T20:00:00-03:00', leave: '2026-11-19T21:30:00-03:00', secs: 5400, cut: false }, { join: '2026-11-01T10:00:00-03:00', leave: '2026-11-01T10:00:00-03:00', secs: 0, cut: true }] } },
     mod_items: { 'gemas:rubi': { known: true, name: 'Rubí', modName: 'Gemas Brillantes', icon: 'logo-939.png' }, 'gemas:sin_icono': { known: true, name: 'Polvo de rubí', modName: 'Gemas Brillantes', icon: null }, 'otromod:cosa_rara': { known: false, name: null, modName: null, icon: null } },
-    game_assets_status: { enabled: false, ready: false },
+    game_assets_status: { enabled: true, ready: true, version: '1.21.4' },
+    game_sprites: { 'tex:shield_base_nopattern': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAk0lEQVR4Xu3YsQ2CUBSGUTRWDOEk1g5jwTAUDmPtJA5BKxUWkmBMbvPzzmkJL/DdW72uo22H5ffvw+X9T4rb+Py8m+yY/PEVTt+HvPrr5rnn6bH5PE3zGyBA2spWE6C6aBoB0iZWTYDqomkESJtYNQGqi6YRIG1i1QSoLppmdSO0txufX5rfAAAAAAAAAAAAAGC/ZoSKCP4ApGiNAAAAAElFTkSuQmCC', 'tex:chest/normal': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAeElEQVR4Xu3YMRGAMAwFUEANM4ZAARMymFAAhphxAx7CZcj1vb3N9afT7zoAAADa00effK7TGzm7HHd4ZoYh49JKBFBpWxmaDwAAAIAWheupfR5Dldh2PeGZGZrvAwSQ8a0qEUClbWUQQEaqlQig0rYAAAAAAPjpA5mzCB3vg61qAAAAAElFTkSuQmCC', 'item:diamond_sword': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAV0lEQVR4XmNgGHIg4M6z/8iOZiLFBzDNyIYQbQCypg0qUowwi4kyAJdmECBoAD7NBA0gpBmvAcRoxmkAsZqxGkCKZgwDSNWMYgA5muEGkKsZBaCncboBAN0MNFv+2/8gAAAAAElFTkSuQmCC' },
+    game_names: { 'item:shield': 'Escudo', 'block:chest': 'Cofre', 'item:diamond_sword': 'Espada de diamante', 'block:oak_planks': 'Tablones de roble', 'item:enchanted_golden_apple': 'Manzana dorada encantada', 'enchantment:sharpness': 'Filo' },
     external_status: { allowed: true, shared: true, canChange: true, onlineMode: true, whitelist: false, lanAccess: false, consent: true, mapping: true, myPort: 25565,
       entrances: [{ node: 'n0', name: 'Esta PC', online: true, isMe: true, info: { state: 'comprobada', detail: 'Comprobada desde otra PC del grupo: Minecraft 1.21.4 responde en 38 ms.', addr: '181.45.3.2:25565', addrV6: null, local: '192.168.1.20:25565', method: 'upnp', checkedAt: '2026-11-20T03:00:00-03:00' } },
         { node: 'n2', name: 'Kaki', online: true, isMe: false, info: { state: 'cgnat', detail: 'El router abrió el puerto, pero su IP de Internet (100.70.1.4) es compartida por tu proveedor (CGNAT): desde Internet no se llega a esta PC. Otra PC del grupo puede ser la entrada.', addr: null, method: 'upnp' } }],
@@ -47,7 +53,7 @@
     client_prepare: { profileName: '939 Host · Supervivencia con amigos', versionId: 'fabric-loader-0.16.9-1.21.4', gameDir: 'C:\\Users\\vos\\AppData\\Roaming\\.minecraft\\939 Host\\Supervivencia con amigos', modsInstalled: 12, previousMods: 'mods anteriores', serverOnly: ['Chunky'], installedVersion: true, installedLoader: true },
     player_edit_access: { allowed: true, reason: null, liveHealth: true, liveFeed: true, liveXp: true }, modrinth_modpacks: { hits: [], total: 0 },
   };
-  const OBJ = new Set(['get_server', 'world_info', 'files_list', 'snapshots_list', 'alias_status', 'app_info', 'share_status', 'storage_usage', 'game_assets_status', 'modrinth_modpacks', 'cf_status', 'alias_status', 'profile_photo_get', 'player_edit_access', 'player_detail', 'mod_items', 'external_status', 'client_prepare']);
+  const OBJ = new Set(['get_server', 'world_info', 'files_list', 'snapshots_list', 'alias_status', 'app_info', 'share_status', 'storage_usage', 'game_assets_status', 'modrinth_modpacks', 'cf_status', 'alias_status', 'profile_photo_get', 'player_edit_access', 'player_detail', 'mod_items', 'external_status', 'client_prepare', 'game_assets_status', 'game_sprites', 'game_names']);
   const NUL = new Set(['data_notice', 'start_server', 'stop_server', 'server_logo_default', 'server_logo_set', 'server_logo_clear', 'player_adjust', 'player_kill']);
   const listeners = {};
   window.__TAURI__ = {

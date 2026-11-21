@@ -141,7 +141,54 @@ const itemName = (id) => {
   if (isModded(id)) { const m = media.mods[id]; return m?.name || prettyId(id); }
   const b = bare(id); return media.names?.[`item:${b}`] || media.names?.[`block:${b}`] || b.replace(/_/g, ' ');
 };
-const itemImg = (id) => (isModded(id) ? (modInfo(id)?.icon || null) : sprite(`item:${bare(id)}`));
+const itemImg = (id) => (isModded(id) ? (modInfo(id)?.icon || null) : (sprite(`item:${bare(id)}`) || icon3d(bare(id))));
+
+/* Objetos que Minecraft dibuja en 3D (escudo, cofres, camas, cabezas): no traen imagen plana de
+   ítem. Se arma un ícono recortando la cara que se ve de su textura. */
+const BED_COLORS = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'light_gray', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black'];
+function special3d(id) {
+  if (id === 'shield') return { tex: ['shield_base_nopattern', 'shield/base_nopattern'], parts: [[2, 2, 12, 22]] };
+  const chest = { chest: 'chest/normal', trapped_chest: 'chest/trapped', ender_chest: 'chest/ender' }[id];
+  if (chest) return { tex: [chest], parts: [[14, 14, 14, 5], [14, 33, 14, 10]] };
+  const bed = id.match(/^(.+)_bed$/);
+  if (bed && BED_COLORS.includes(bed[1])) return { tex: [`bed/${bed[1]}`], parts: [[6, 6, 16, 16]] };
+  const head = { skeleton_skull: ['skeleton/skeleton'], wither_skeleton_skull: ['skeleton/wither_skeleton'], zombie_head: ['zombie/zombie'], creeper_head: ['creeper/creeper'], player_head: ['player/wide/steve', 'steve'] }[id];
+  if (head) return { tex: head, parts: [[8, 8, 8, 8]], overlay: id === 'player_head' || id === 'zombie_head' ? [40, 8, 8, 8] : null };
+  if (id === 'piglin_head') return { tex: ['piglin/piglin'], parts: [[8, 8, 10, 8]] };
+  return null;
+}
+const built3d = {};
+function icon3d(id) {
+  const sp = special3d(id);
+  if (!sp) return null;
+  const v = assetsVersion(), k = `${v}|${id}`;
+  if (k in built3d) return built3d[k];
+  const src = sp.tex.map((t) => sprite(`tex:${t}`)).find(Boolean);
+  const pending = sp.tex.some((t) => media.sprites[`${v}|tex:${t}`] === undefined);
+  if (!src) { if (!pending) built3d[k] = null; return null; }
+  built3d[k] = null;
+  const img = new Image();
+  img.onload = () => {
+    const sc = img.width / 64;
+    const w = Math.max(...sp.parts.map((p) => p[2])), h = sp.parts.reduce((a, p) => a + p[3], 0);
+    const c = document.createElement('canvas');
+    c.width = 32; c.height = 32;
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    const f = Math.min(30 / w, 30 / h);
+    let y = (32 - h * f) / 2;
+    for (const [px, py, pw, ph] of sp.parts) {
+      const x = (32 - pw * f) / 2;
+      g.drawImage(img, px * sc, py * sc, pw * sc, ph * sc, x, y, pw * f, ph * f);
+      if (sp.overlay) g.drawImage(img, sp.overlay[0] * sc, sp.overlay[1] * sc, sp.overlay[2] * sc, sp.overlay[3] * sc, x, y, pw * f, ph * f);
+      y += ph * f;
+    }
+    built3d[k] = c.toDataURL('image/png');
+    repaintProfile();
+  };
+  img.src = src;
+  return null;
+}
 const effectName = (id) => media.names?.[`effect:${bare(id)}`] || bare(id).replace(/_/g, ' ');
 const enchName = (id) => media.names?.[`enchantment:${bare(id)}`] || bare(id).replace(/_/g, ' ');
 
@@ -360,7 +407,7 @@ function slotHTML(item, opts = {}) {
   const name = item.customName || itemName(item.id);
   const label = unknown ? `${name} (mod no instalado: ${item.id.split(':')[0]})` : mi?.modName ? `${name} · ${mi.modName}` : name;
   return `<button class="slot has ${unknown ? 'unk' : ''} ${opts.sel ? 'sel' : ''} ${pl.picked === key ? 'picked' : ''}" data-a="pick-item" data-key="${esc(key)}" title="${esc(label)}${item.count > 1 ? ` ×${item.count}` : ''}" aria-label="${esc(label)}${item.count > 1 ? `, ${item.count}` : ''}">
-    ${img ? `<img src="${img}" alt="">` : unknown ? '<span class="nm" aria-hidden="true">?</span>' : `<span class="nm">${esc(abbr(name))}</span>`}
+    ${img ? `<img src="${img}" alt="">` : unknown ? '<span class="nm unk-q" aria-hidden="true">?</span>' : `<span class="nm full" lang="es">${esc(name)}</span>`}
     ${item.count > 1 ? `<span class="ct">${item.count}</span>` : ''}${dur != null && dur < 1 ? `<span class="dur"><i style="width:${Math.round(dur * 100)}%"></i></span>` : ''}</button>`;
 }
 function findItem(d, key) {
@@ -383,14 +430,43 @@ function itemDetail(d) {
     ${it.enchantments.length ? `<div><div class="sec" style="margin-bottom:4px">Encantamientos</div>${it.enchantments.map(([e, l]) => `<div class="kv"><span>${esc(enchName(e))}</span><span class="mono">${roman(l)}</span></div>`).join('')}</div>` : ''}
     ${it.customName ? `<div class="xs t3">Nombre puesto en un yunque. Original: ${esc(itemName(it.id))}</div>` : ''}</div>`;
 }
+/* Vista de lista: cada objeto con su nombre completo, cantidad, durabilidad y encantamientos. */
+pl.invView = 'grid';
+A['inv-view'] = (el) => { pl.invView = el.dataset.v; paintProfile(); };
+function viewToggle() {
+  return `<div class="seg" role="group" aria-label="Vista del inventario">${[['grid', 'Casilleros'], ['list', 'Lista']].map(([k, l]) => `<button class="${pl.invView === k ? 'on' : ''}" data-a="inv-view" data-v="${k}" aria-pressed="${pl.invView === k}">${l}</button>`).join('')}</div>`;
+}
+function itemRows(groups) {
+  const rows = groups.flatMap(([label, list]) => list.filter((x) => x.item).length ? [`<div class="inv-group">${esc(label)}</div>`, ...list.filter((x) => x.item).map(({ item, key, note }) => {
+    const img = itemImg(item.id);
+    const mi = isModded(item.id) ? media.mods[item.id] : null;
+    const unknown = mi && !mi.known;
+    const name = item.customName || itemName(item.id);
+    const dur = item.maxDamage && item.damage != null ? Math.max(0, 1 - item.damage / item.maxDamage) : null;
+    const sub = [note, unknown ? `mod no instalado (${item.id.split(':')[0]})` : mi?.modName ? mi.modName : null, item.enchantments?.length ? item.enchantments.map(([e, l]) => `${enchName(e)}${l > 1 ? ` ${roman(l)}` : ''}`).join(', ') : null].filter(Boolean).join(' · ');
+    return `<button class="inv-row ${pl.picked === key ? 'on' : ''} ${unknown ? 'unk' : ''}" data-a="pick-item" data-key="${esc(key)}">
+      <span class="ic">${img ? `<img src="${img}" alt="">` : unknown ? '?' : ''}</span>
+      <span class="grow" style="min-width:0"><span class="b">${esc(name)}</span>${sub ? `<span class="xs t3">${esc(sub)}</span>` : ''}</span>
+      ${dur != null && dur < 1 ? `<span class="dur-l" title="Durabilidad ${Math.round(dur * 100)} %"><i style="width:${Math.round(dur * 100)}%"></i></span>` : ''}
+      <span class="mono sm">${item.count > 1 ? `×${item.count}` : ''}</span></button>`;
+  })] : []);
+  return rows.length ? `<div class="inv-list">${rows.join('')}</div>` : '<span class="sm t3">Vacío.</span>';
+}
 function invBody(d) {
   const at = (s) => d.inventory.find((i) => i.slot === s) || null;
   const eq = d.equipment;
   const main = []; for (let s = 9; s < 36; s++) main.push(slotHTML(at(s)));
   const hot = []; for (let s = 0; s < 9; s++) hot.push(slotHTML(at(s), { sel: d.selectedSlot === s }));
   const e = (it, slot, ph, label) => slotHTML(it ? { ...it, slot } : null, { group: 'eq', ph, label });
+  if (pl.invView === 'list') {
+    const eqs = [[eq.head, 103, 'Casco'], [eq.chest, 102, 'Pechera'], [eq.legs, 101, 'Pantalones'], [eq.feet, 100, 'Botas'], [eq.offhand, -106, 'Mano secundaria']].map(([it, sl, note]) => ({ item: it ? { ...it, slot: sl } : null, key: `eq:${sl}`, note }));
+    const hotL = []; for (let sl = 0; sl < 9; sl++) hotL.push({ item: at(sl), key: `inv:${sl}`, note: d.selectedSlot === sl ? 'en la mano' : `casillero ${sl + 1}` });
+    const mainL = []; for (let sl = 9; sl < 36; sl++) mainL.push({ item: at(sl), key: `inv:${sl}` });
+    return `<div class="inv-wrap"><div class="stack">${viewToggle()}${itemRows([['Equipo', eqs], ['Barra rápida', hotL], ['Inventario', mainL]])}</div>${itemDetail(d)}</div>`;
+  }
   return `<div class="inv-wrap">
     <div class="stack">
+      ${viewToggle()}
       <div class="body3"><div class="figure" id="pf-figure"><span class="avatar lg" style="border:0;background:none">${esc(initials(d.name))}</span></div>
         <div class="slotcol">${e(eq.head, 103, 'helmet', 'Casco')}${e(eq.chest, 102, 'chestplate', 'Pechera')}${e(eq.legs, 101, 'leggings', 'Pantalones')}${e(eq.feet, 100, 'boots', 'Botas')}</div>
         <div class="stack" style="gap:6px;justify-content:flex-end;align-self:flex-end"><span class="xs t3">Mano secundaria</span>${e(eq.offhand, -106, 'shield', 'Mano secundaria')}</div></div>
@@ -401,7 +477,11 @@ function invBody(d) {
 }
 function enderBody(d) {
   const cells = []; for (let s = 0; s < 27; s++) cells.push(slotHTML(d.ender.find((i) => i.slot === s) || null, { group: 'ender' }));
-  return `<div class="inv-wrap"><div class="stack"><div class="grid9">${cells.join('')}</div><span class="xs t3">${d.ender.length ? `${d.ender.length} de 27 casilleros ocupados.` : 'Vacío.'}</span></div>${itemDetail(d)}</div>`;
+  if (pl.invView === 'list') {
+    const L = []; for (let sl = 0; sl < 27; sl++) L.push({ item: d.ender.find((i) => i.slot === sl) || null, key: `ender:${sl}` });
+    return `<div class="inv-wrap"><div class="stack">${viewToggle()}${itemRows([['Cofre de ender', L]])}</div>${itemDetail(d)}</div>`;
+  }
+  return `<div class="inv-wrap"><div class="stack">${viewToggle()}<div class="grid9">${cells.join('')}</div><span class="xs t3">${d.ender.length ? `${d.ender.length} de 27 casilleros ocupados.` : 'Vacío.'}</span></div>${itemDetail(d)}</div>`;
 }
 function statsBody(d) {
   const s = d.stats;

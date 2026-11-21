@@ -194,24 +194,30 @@ pub struct AssetsStatus { pub enabled: bool, pub ready: bool, pub version: Strin
 #[derive(Serialize, Clone)]
 struct AssetsProgress<'a> { version: &'a str, message: &'a str, fraction: f64 }
 
+fn assets_status(version: String) -> AssetsStatus {
+    // Con el Minecraft de esta versión instalado, las imágenes salen de ahí (sin descargar nada).
+    let ready = gameassets::ready(&version) || gameassets::ensure_local(&version).unwrap_or(false);
+    AssetsStatus { enabled: settings::load().game_assets_enabled || ready, ready, version }
+}
+
 #[tauri::command]
-pub fn game_assets_status(version: String) -> AssetsStatus {
-    AssetsStatus { enabled: settings::load().game_assets_enabled, ready: gameassets::ready(&version), version }
+pub async fn game_assets_status(version: String) -> AppResult<AssetsStatus> {
+    blocking(move || Ok(assets_status(version))).await
 }
 
 /// Descarga (una vez por versión) las imágenes del juego desde Mojang a esta PC.
 #[tauri::command]
 pub async fn game_assets_prepare(app: AppHandle, version: String) -> AppResult<AssetsStatus> {
-    if !settings::load().game_assets_enabled { return Ok(game_assets_status(version)); }
+    if !settings::load().game_assets_enabled { return blocking(move || Ok(assets_status(version))).await; }
     let v = version.clone();
     gameassets::ensure(&version, |m, f| { let _ = app.emit("assets-progress", AssetsProgress { version: &v, message: m, fraction: f }); }).await?;
-    Ok(game_assets_status(version))
+    blocking(move || Ok(assets_status(version))).await
 }
 
 /// Imágenes pedidas por clave (`item:diamond_sword`, `hud:heart/full`, `effect:speed`, `slot:helmet`).
 #[tauri::command]
 pub async fn game_sprites(version: String, keys: Vec<String>) -> AppResult<HashMap<String, String>> {
-    if !settings::load().game_assets_enabled || !gameassets::ready(&version) { return Ok(HashMap::new()); }
+    if !gameassets::ready(&version) { return Ok(HashMap::new()); }
     blocking(move || {
         let mut out = HashMap::new();
         for k in keys.into_iter().take(400) {
@@ -234,7 +240,6 @@ pub async fn mod_items(id: String, ids: Vec<String>) -> AppResult<HashMap<String
 /// Nombres en español de ítems y efectos (del idioma oficial del juego descargado).
 #[tauri::command]
 pub async fn game_names(version: String) -> AppResult<HashMap<String, String>> {
-    if !settings::load().game_assets_enabled { return Ok(HashMap::new()); }
     blocking(move || Ok(gameassets::names(&version))).await
 }
 
