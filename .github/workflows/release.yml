@@ -1,8 +1,12 @@
 name: Release
 
-# Publica una versión. Dos formas:
+# Publica una versión OFICIAL (la única que reciben las apps por actualización automática). Dos formas:
 #  - subir una etiqueta vX.Y.Z que coincida con src-tauri/tauri.conf.json, o
 #  - Actions → Release → Run workflow (desde main): crea la etiqueta vX.Y.Z sobre ese commit.
+# El commit tiene que tener «Pruebas en Windows» en verde. La firma de la actualización
+# (estable.json) se hace en el entorno protegido «publicacion»: GitHub espera la aprobación del
+# propietario antes de usar la clave, y sin esa aprobación no se publica nada.
+# Ver docs/ACTUALIZACIONES.md → «Publicar una versión oficial».
 on:
   push:
     tags: ["v*.*.*"]
@@ -21,10 +25,25 @@ jobs:
       - name: Pruebas del núcleo, la red P2P y el grupo
         run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster --features host939-cluster/pruebas
 
+  # Todas las pruebas reales de Windows de este mismo commit tienen que haber pasado.
+  pruebas-windows:
+    name: Pruebas en Windows aprobadas para este commit
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    steps:
+      - name: Buscar la ejecución aprobada
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pruebas-windows.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=1" --jq '.workflow_runs[0].html_url // empty')"
+          [ -n "$run" ] || { echo "::error::Este commit no tiene «Pruebas en Windows» en verde: no se publica."; exit 1; }
+          echo "Pruebas en Windows aprobadas: $run"
+
   compilar:
     name: Compilar Windows x64
     runs-on: ubuntu-24.04
-    needs: pruebas
+    needs: [pruebas, pruebas-windows]
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -33,6 +52,7 @@ jobs:
         id: version
         run: |
           v="$(scripts/version.sh)"
+          case "$v" in *-*) echo "::error::Solo se publican versiones estables (sin «-beta»)."; exit 1;; esac
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::La etiqueta $GITHUB_REF_NAME no coincide con la versión $v"; exit 1; }
           else
@@ -70,9 +90,11 @@ jobs:
             dist/payload/WebView2Loader.dll
 
   publicar:
-    name: Publicar release
+    name: Firmar la actualización y publicar
     runs-on: ubuntu-24.04
     needs: compilar
+    # Entorno protegido: la clave de publicación solo se entrega con la aprobación del propietario.
+    environment: publicacion
     permissions:
       contents: write        # crear la release y subir archivos
       id-token: write        # atestación de procedencia
@@ -83,6 +105,20 @@ jobs:
         with:
           name: entrega
           path: dist
+      - name: Firmar la actualización (estable.json)
+        env:
+          H939_CLAVE_PUBLICACION: ${{ secrets.H939_CLAVE_PUBLICACION }}
+          VERSION: ${{ needs.compilar.outputs.version }}
+        run: |
+          [ -n "$H939_CLAVE_PUBLICACION" ] || { echo "::error::Falta el secreto H939_CLAVE_PUBLICACION en el entorno «publicacion»: no se publica nada."; exit 1; }
+          rustup toolchain install
+          cargo build --locked --release -p host939-update --features propietario --bin 939publicar
+          datos="$(sed -n 's/^pub const DATA_VERSION: u32 = \([0-9]*\);/\1/p' crates/core/src/datos.rs)"
+          siguientes=(); for r in $(ls actualizaciones/raiz-*.json | sort -V | tail -n +2); do siguientes+=(--raiz-siguiente "$r"); done
+          target/release/939publicar firmar-ci --carpeta . --raiz src-tauri/distribucion.json "${siguientes[@]}" \
+            --artefactos dist --version "$VERSION" --datos "$datos" --notas "939 Host $VERSION" --salida dist
+          target/release/939publicar verificar --raiz-inicial actualizaciones/raiz-1.json --publicacion dist/estable.json
+          cp actualizaciones/raiz-*.json dist/
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
@@ -95,5 +131,7 @@ jobs:
         run: |
           scripts/notas-release.sh "$VERSION" > notas.md
           if [ "$GITHUB_REF_TYPE" = tag ]; then destino=(--verify-tag); else destino=(--target "$GITHUB_SHA"); fi
-          gh release create "v$VERSION" --title "939 Host $VERSION" --notes-file notas.md "${destino[@]}" \
-            dist/939Host-$VERSION-instalador.exe dist/939Host-$VERSION-portable.zip dist/SHA256SUMS.txt
+          # --latest: la dirección de actualizaciones (releases/latest/download) apunta a esta.
+          gh release create "v$VERSION" --title "939 Host $VERSION" --notes-file notas.md "${destino[@]}" --latest \
+            dist/939Host-$VERSION-instalador.exe dist/939Host-$VERSION-portable.zip dist/SHA256SUMS.txt \
+            dist/estable.json dist/raiz-*.json

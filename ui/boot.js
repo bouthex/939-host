@@ -25,6 +25,20 @@ function splashDone() {
   setTimeout(() => { sp.classList.add('out'); setTimeout(() => sp.remove(), 520); }, wait);
 }
 
+/* Espera (como mucho `ms`) a que la consulta de actualizaciones del arranque tenga resultado. */
+function waitUpdateResult(ms) {
+  return new Promise((res) => {
+    const t0 = performance.now();
+    const tick = () => {
+      const u = state.upd;
+      if (u && u.status !== 'buscando') return res(u);
+      if (performance.now() - t0 > ms) return res(null);
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+}
+
 async function boot() {
   splashStep('Leyendo tu configuración…');
   $('#quit-btn').innerHTML = icon('logout', 16);
@@ -42,12 +56,10 @@ async function boot() {
   await setupOps();
   await listen('server-changed', (ev) => scheduleRefresh(ev.payload.id));
   await listen('update-status', (ev) => {
+    state.upd = ev.payload;
     refreshUpdatesCard(ev.payload);
-    // Aviso discreto una sola vez por versión lista; se instala desde Configuración → Actualizaciones.
-    if (ev.payload.status === 'lista' && state.updNotified !== ev.payload.available) {
-      state.updNotified = ev.payload.available;
-      toast(`939 Host ${ev.payload.available} está lista para instalar`, 'ok', 'Cuando quieras: Configuración → Actualizaciones. No se instala sola.');
-    }
+    updOnStatus(ev.payload);
+    paintUpdateBar(ev.payload);
   });
   await listen('console-line', (ev) => { if (state.route === 'server' && state.tab === 'console' && state.params.id === ev.payload.id) appendConsole(ev.payload.line); });
   await listen('install-progress', (ev) => {
@@ -104,10 +116,24 @@ async function boot() {
   refreshRequests();
   splashStep('Cargando tus servidores…');
   await go('servers');
-  splashStep('Listo');
+  // Actualizaciones: la versión recién instalada confirma que abrió bien (si no, el vigía vuelve a la
+  // anterior). Si hay una versión nueva, se espera un instante el resultado de la consulta del
+  // arranque, sin pasar el tiempo de la presentación más que lo justo.
+  const notice = await invoke('update_confirm').catch(() => null);
+  let upd = await invoke('update_status').catch(() => null);
+  if (notice?.kind === 'ok') splashStep(`Actualización completada · 939 Host ${notice.version}`);
+  else if (upd?.status === 'buscando') {
+    splashStep('Buscando actualizaciones…');
+    upd = await waitUpdateResult(Math.min(2500, Math.max(800, 2300 - (performance.now() - splashT0)))) || upd;
+  }
+  const autoUpdate = upd && ['descargando', 'verificando', 'lista'].includes(upd.status) && upd.available !== upd.failed;
+  if (!autoUpdate && notice?.kind !== 'ok') splashStep('Listo');
   // Momento en que la app queda usable (para medir el arranque en las pruebas).
   window.__h939Ready = performance.timeOrigin + performance.now();
   splashDone();
+  if (autoUpdate) openUpdateScreen(upd, true);
+  else paintUpdateBar(upd);
+  if (notice || upd?.notice) showUpdateNotice(notice || upd.notice, upd);
   invoke('notify_ui_ready').catch(() => {});
   invoke('last_close_notes').then((notes) => { for (const n of notes || []) showLastClose(n); }).catch(() => {});
   invoke('data_notice').then((m) => { if (m) dialog({ title: 'Datos de 939 Host', body: `<p>${esc(m)}</p>`, buttons: [{ label: 'Entendido', value: 'ok', kind: 'pri' }] }); }).catch(() => {});

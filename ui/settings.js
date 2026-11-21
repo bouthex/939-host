@@ -207,28 +207,28 @@ A['sys-cleanup'] = async () => {
   routes.settings();
 };
 
-/* Actualizaciones: estado, canal y acciones. Nunca se instala sin que la persona lo pida, y aun así
-   se espera a que no haya servidores encendidos ni operaciones en curso. */
+/* Actualizaciones: automáticas desde las releases oficiales del proyecto. Al abrir, si hay una
+   versión nueva, se descarga, se verifica y se instala sola; con la app en uso se instala cuando la
+   persona toca «Actualizar ahora». Nunca con servidores encendidos ni operaciones en curso. */
 function updatesCard(u) {
   if (!u) return '<span class="sm t3">No se pudo leer el estado de las actualizaciones.</span>';
-  if (!u.enabled) return `<div class="kv"><span class="k">Versión instalada</span><span class="mono sm">${esc(u.current)}</span></div><p class="sm t2" style="margin:0">${esc(u.message || 'Las actualizaciones automáticas todavía no están configuradas por el proyecto. Las versiones nuevas se instalan a mano.')}</p>`;
-  const pct = u.progress != null ? ` (${Math.round(u.progress * 100)} %)` : '';
-  return `<div class="kv"><span class="k">Versión instalada</span><span class="mono sm">${esc(u.current)}</span></div>
+  const ver = `<div class="kv"><span class="k">Versión instalada</span><span class="mono sm">${esc(u.current)}${u.mode === 'portable' ? ' · portable' : ''}</span></div>`;
+  if (!u.enabled) return `${ver}<p class="sm t2" style="margin:0">${esc(u.message || 'Las actualizaciones automáticas no están configuradas en esta compilación.')}</p>`;
+  const pct = u.progress != null && ['descargando', 'verificando'].includes(u.status) ? ` (${Math.round(u.progress * 100)} %)` : '';
+  const failed = u.failed && u.failed === u.available
+    ? `<p class="sm" style="margin:0;color:var(--danger)">La actualización a ${esc(u.failed)} no se pudo completar y se volvió a la versión anterior (tus datos están intactos).</p>` : '';
+  const ready = u.status === 'lista';
+  return `${ver}
     <div class="kv"><span class="k">Estado</span><span class="sm">${esc(u.message || '—')}${pct}</span></div>
-    ${u.lastCheck ? `<div class="kv"><span class="k">Última consulta</span><span class="sm t3">${esc(new Date(u.lastCheck).toLocaleString())}</span></div>` : ''}
-    <label class="switch"><div class="grow"><b>Recibir versiones Beta</b><span class="sm t2">Prueban novedades antes que nadie y pueden tener errores. Con esto apagado solo llegan versiones estables.</span></div><input type="checkbox" id="upd-beta" ${u.channel === 'beta' ? 'checked' : ''}></label>
-    <div class="btns"><button class="btn s" data-a="upd-check">Buscar ahora</button>${u.status === 'lista' ? '<button class="btn s pri" data-a="upd-install">Instalar ahora</button>' : ''}</div>
-    <p class="xs t3" style="margin:0">Cada versión viene firmada por el proyecto y se verifica antes de instalarla. La instalación conserva servidores, mundos, amigos y configuración.</p>`;
+    ${u.lastCheck ? `<div class="kv"><span class="k">Última comprobación</span><span class="sm t3">${esc(new Date(u.lastCheck).toLocaleString())}</span></div>` : ''}
+    ${failed}
+    <div class="btns"><button class="btn s" data-a="upd-check" ${u.status === 'buscando' ? 'disabled' : ''}>Buscar actualizaciones</button>${ready ? `<button class="btn s pri" data-a="upd-now">${u.failed === u.available ? 'Reintentar la actualización' : 'Actualizar ahora'}</button>` : ''}</div>
+    <p class="xs t3" style="margin:0">Solo se ofrecen las versiones oficiales publicadas por el proyecto en GitHub, firmadas y verificadas (SHA-256) antes de instalarlas. Se actualiza solo el programa: servidores, mundos, perfil y configuración no se tocan. Si la versión nueva no abriera, se vuelve sola a la anterior.${u.mode === 'portable' ? ' En la portable se reemplazan sus archivos en su propia carpeta.' : ''}</p>`;
 }
 function refreshUpdatesCard(u) { const c = document.getElementById('upd-card'); if (c) c.innerHTML = updatesCard(u); }
-A['upd-check'] = async () => { try { refreshUpdatesCard(await invoke('update_check')); } catch (e) { fail(e); } };
-A['upd-install'] = async () => {
-  try {
-    const busy = await invoke('update_install');
-    if (busy.length) dialog({ title: 'Todavía no', body: `<p>Para no interrumpir nada, la actualización espera a que termine lo que está en curso:</p><ul>${busy.map((b) => `<li>${esc(b)}</li>`).join('')}</ul><p>Volvé a tocar «Instalar ahora» cuando esté libre.</p>`, buttons: [{ label: 'Entendido', value: 'ok', kind: 'pri' }] });
-  } catch (e) { fail(e); }
+A['upd-check'] = async () => {
+  const b = document.querySelector('[data-a="upd-check"]');
+  if (b) { b.disabled = true; b.textContent = 'Buscando…'; }
+  try { refreshUpdatesCard(await invoke('update_check')); } catch (e) { fail(e); }
 };
-document.addEventListener('change', async (ev) => {
-  if (ev.target?.id !== 'upd-beta') return;
-  try { refreshUpdatesCard(await invoke('update_channel', { channel: ev.target.checked ? 'beta' : 'estable' })); } catch (e) { fail(e); }
-});
+

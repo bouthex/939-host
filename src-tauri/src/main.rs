@@ -8,6 +8,7 @@ mod network;
 mod ops;
 mod shutdown;
 mod updates;
+mod vigia;
 mod v3;
 
 use host939_core::events::{Events, InstallProgress};
@@ -232,6 +233,15 @@ fn main() {
     // Guardián de los servidores (ver host939_core::guardian): sin ventana, sin red, antes de la
     // comprobación de instancia única.
     if std::env::args().nth(1).as_deref() == Some("--guardian") { host939_core::guardian::run(); }
+    // Vigía de una actualización (ver vigia.rs): sin ventana, antes de la instancia única.
+    if std::env::args().nth(1).as_deref() == Some("--vigilar-actualizacion") {
+        let a: Vec<String> = std::env::args().collect();
+        let (Some(state), Some(pid)) = (a.get(2), a.get(3).and_then(|p| p.parse().ok())) else { std::process::exit(2) };
+        vigia::run(state.into(), pid);
+    }
+    // Solo pruebas: una versión nueva que no abre, para comprobar la vuelta atrás automática.
+    #[cfg(feature = "pruebas")]
+    if std::env::args().any(|a| a == "--tras-actualizar") && std::env::var_os("H939_PRUEBA_FALLAR_TRAS_ACTUALIZAR").is_some() { std::process::exit(3); }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_dialog::init())
@@ -273,7 +283,7 @@ fn main() {
             }
             app.manage(network::Cluster::default());
             app.manage(ops::Ops::default());
-            // Actualizaciones (desactivadas hasta que el proyecto configure la distribución).
+            // Actualizaciones: consulta enseguida y cada 6 horas (la apertura no espera).
             updates::start(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Abrir 939 Host", true, None::<&str>)?;
@@ -403,6 +413,8 @@ fn main() {
             updates::update_check,
             updates::update_channel,
             updates::update_install,
+            updates::update_confirm,
+            updates::update_notice_seen,
             v3::image_read,
             v3::profile_photo_get,
             v3::profile_photo_set,

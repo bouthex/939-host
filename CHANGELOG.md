@@ -1,5 +1,12 @@
 # Registro de cambios
 
+### 1.1.0 (rama rediseno-v3, sin release)
+- Actualizaciones automáticas desde las releases oficiales de GitHub: detección al abrir y cada 6 horas, descarga reanudable con progreso real, verificación de firma y SHA-256, instalación sola al abrir (o «Actualizar ahora» con la app en uso), reinicio y confirmación de la versión nueva.
+- Vuelta atrás real: respaldo verificado de los archivos del programa y un vigía que restaura la versión anterior si la nueva no instala o no abre. Los datos nunca se tocan.
+- Portable: se actualiza en su propia carpeta (o explica si la carpeta no se puede escribir).
+- Pantalla de actualización con los cubos de la presentación y los estados reales; respeta «menos movimiento».
+- Publicación con aprobación del propietario: el workflow `Release` exige las pruebas de Windows en verde y firma en el entorno protegido `publicacion`.
+
 ### Rediseño v3 — fase final (rama rediseno-v3, sin release)
 - Administrador de archivos local y remoto (protocolo P2P propio en la PC anfitriona): rutas confinadas, mundo protegido con el servidor encendido, sin sobrescribir sin pedirlo, Papelera, transferencias en partes con cancelación. Probado entre dos PCs Windows reales.
 - CurseForge por su API oficial (requiere clave; respeta el permiso de distribución de cada autor). Sin clave no se pudo probar en vivo.

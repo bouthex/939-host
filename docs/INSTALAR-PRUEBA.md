@@ -115,6 +115,6 @@ En **Grupo** se ve si la conexión es «directa» o «por relay» (el relay solo
 
 ## Actualizaciones
 
-En esta versión las actualizaciones automáticas están **desactivadas** (Configuración → Actualizaciones lo
-indica): el proyecto todavía no configuró su distribución. Las versiones nuevas se instalan encima, a mano,
-igual que esta.
+Desde la 1.1.0, 939 Host se actualiza solo con cada versión **oficial** que publique el proyecto
+(Configuración → Actualizaciones muestra el estado). Las versiones de prueba como esta no se reciben
+por actualización: se instalan encima, a mano, igual que esta, y se conservan todos los datos.

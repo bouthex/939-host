@@ -21,7 +21,7 @@
 - **Forge y NeoForge**: en 0.9.0 no se habían probado en vivo. En la rama en desarrollo ya arrancan en las pruebas reales de Windows.
 - **Cambiar la versión de Minecraft** no está en 0.9.0 (en desarrollo, ver abajo). Volver a una versión anterior con el mismo mundo nunca se hace sobre el servidor original: Minecraft no convierte mundos hacia atrás.
 - El ejecutable **no está firmado**. SmartScreen avisa y **Smart App Control (Windows 11) lo bloquea** sin opción de continuar.
-- Las **actualizaciones automáticas** están implementadas pero **desactivadas** hasta que el proyecto configure su distribución: se instala la versión nueva encima (el instalador conserva los datos).
+- **Actualizaciones automáticas** desde la 1.1.0. Las versiones anteriores (0.9.0 y la de prueba 1.0.0) no consultan: hay que instalar la 1.1.0 una vez a mano, encima (se conservan los datos). La primera release oficial firmada con la clave real todavía no se publicó.
 - El mundo completo se copia a cada coanfitriona la primera vez (por ejemplo, 2,5 GB en nuestro modpack de prueba); después solo viajan los cambios.
 
 ## En desarrollo (rama `rediseno-v3`, todavía sin versión publicada)

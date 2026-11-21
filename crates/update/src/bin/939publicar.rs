@@ -128,6 +128,72 @@ fn main() {
     let dir = PathBuf::from(arg(&args, "--carpeta").unwrap_or_else(|| if cmd == "verificar" { ".".into() } else { die("falta --carpeta <carpeta-del-propietario>") }));
     let state_path = dir.join("propietario.json");
     match cmd.as_str() {
+        // Publicación desde GitHub (ver docs/ACTUALIZACIONES.md, «Publicar una versión»): la clave de
+        // publicación vive como secreto de un entorno protegido de GitHub que solo se usa con la
+        // aprobación del propietario; la de recuperación, fuera de la PC, firma las raíces.
+        "iniciar-ci" => {
+            let raiz = dir.join("raiz-1.json");
+            if raiz.exists() { die("esta carpeta ya tiene una raíz"); }
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e));
+            let mut seed = [0u8; 32];
+            getrandom::getrandom(&mut seed).unwrap();
+            let recovery = SecretKey::ed25519_from_seed(&seed);
+            let mut ci_seed = [0u8; 32];
+            getrandom::getrandom(&mut ci_seed).unwrap();
+            let ci = SecretKey::ed25519_from_seed(&ci_seed);
+            let code = data_encoding::BASE32_NOPAD.encode(&seed);
+            let grouped: Vec<String> = code.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).to_string()).collect();
+            let text = format!(
+                "939 Host — clave de recuperación de las actualizaciones\n\n\
+                 Sirve para recuperar el control de las actualizaciones si la clave de publicación de GitHub\n\
+                 se perdiera o quedara expuesta (con ella se firma una raíz nueva y la anterior queda revocada).\n\
+                 Quien la tenga puede tomar el control de las actualizaciones: guardala FUERA de la PC (impresa\n\
+                 y en un pendrive guardado en otro lugar) y borrá este archivo de la PC y de las descargas.\n\n\
+                 Identificador: {}\nCLAVE: {}\n",
+                recovery.public().key_id(), grouped.join("-"));
+            write(&dir.join("RECUPERACION-939Host-guardar-fuera-de-la-PC.txt"), text.as_bytes());
+            let root = publish::root(1, publish::expires_in(3650), &[recovery.public()], 1, &[ci.public()], 1);
+            let signed = publish::sign_root(&root, &[&recovery]).unwrap_or_else(|e| die(e));
+            Root::trusted_initial(&signed).unwrap_or_else(|e| die(format!("la raíz generada no se verifica: {e}")));
+            write(&raiz, &signed);
+            write(&dir.join("clave-publicacion.secreta"), hex::encode(ci_seed).as_bytes());
+            println!("✔ raíz 1 (recuperación {}…, publicación {}…)", &recovery.public().key_id()[..12], &ci.public().key_id()[..12]);
+        }
+        "firmar-ci" => {
+            let seed = std::env::var("H939_CLAVE_PUBLICACION").unwrap_or_else(|_| die("falta la clave de publicación (H939_CLAVE_PUBLICACION)"));
+            let seed: [u8; 32] = hex::decode(seed.trim()).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| die("la clave de publicación no tiene el formato esperado"));
+            let key = SecretKey::ed25519_from_seed(&seed);
+            let root_path = PathBuf::from(arg(&args, "--raiz").unwrap_or_else(|| die("falta --raiz <distribucion.json o raiz-N.json>")));
+            let root_bytes = std::fs::read(&root_path).unwrap_or_else(|e| die(format!("{}: {e}", root_path.display())));
+            // distribucion.json trae la raíz dentro de «raiz»; también se acepta la raíz sola.
+            let root_bytes = serde_json::from_slice::<serde_json::Value>(&root_bytes).ok().and_then(|v| v.get("raiz").cloned()).filter(|v| !v.is_null()).map(|v| serde_json::to_vec(&v).unwrap()).unwrap_or(root_bytes);
+            let mut root = Root::trusted_initial(&root_bytes).unwrap_or_else(|e| die(format!("raíz inválida: {e}")));
+            for extra in args.iter().enumerate().filter(|(_, a)| *a == "--raiz-siguiente").filter_map(|(i, _)| args.get(i + 1)) {
+                root = root.verify_next(&std::fs::read(extra).unwrap_or_else(|e| die(e))).unwrap_or_else(|e| die(format!("{extra}: {e}")));
+            }
+            if !root.release.keyids.contains(&key.public().key_id()) { die("la clave de publicación no es la que autoriza esta raíz"); }
+            let version = arg(&args, "--version").unwrap_or_else(|| die("falta --version"));
+            let v = semver::Version::parse(&version).unwrap_or_else(|e| die(format!("versión inválida: {e}")));
+            let channel = if v.pre.is_empty() { "estable" } else { "beta" };
+            let art_dir = PathBuf::from(arg(&args, "--artefactos").unwrap_or_else(|| die("falta --artefactos")));
+            let mut artifacts = vec![];
+            for n in [format!("939Host-{version}-instalador.exe"), format!("939Host-{version}-portable.zip")] {
+                let b = std::fs::read(art_dir.join(&n)).unwrap_or_else(|e| die(format!("falta {n}: {e}")));
+                artifacts.push(Artifact { name: n, size: b.len() as u64, sha256: sha_hex(&b) });
+            }
+            let now = chrono::Utc::now();
+            let release = Release {
+                kind: "release".into(), channel: channel.into(), seq: now.timestamp() as u64, published: now,
+                expires: now + chrono::Duration::days(arg(&args, "--dias").and_then(|d| d.parse().ok()).unwrap_or(730)),
+                version: version.clone(), data_version: arg(&args, "--datos").and_then(|d| d.parse().ok()).unwrap_or(1),
+                rollback: false, artifacts, notes: arg(&args, "--notas").unwrap_or_default(),
+            };
+            let signed = publish::sign_release(&release, &[&key]).unwrap_or_else(|e| die(e));
+            root.verify_release(&signed, now).unwrap_or_else(|e| die(format!("la publicación firmada no se verifica: {e}")));
+            let out = PathBuf::from(arg(&args, "--salida").unwrap_or_else(|| dir.display().to_string()));
+            write(&out.join(format!("{channel}.json")), &signed);
+            println!("✔ {channel}.json firmado: 939 Host {version} (secuencia {})", release.seq);
+        }
         "iniciar" => {
             if state_path.exists() { die("esta carpeta ya tiene una identidad de publicación (usá «rotar» para cambiar de clave)"); }
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e));

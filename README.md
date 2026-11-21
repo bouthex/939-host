@@ -126,6 +126,7 @@ con − y +, o matar a un jugador conectado, con lo que Minecraft permite de ver
 | **Versiones** | Cambiar la versión de Minecraft con copia previa verificada y opción de volver atrás. |
 | **Modpacks** | Crear un servidor desde un `.mrpack` o un modpack de Modrinth. |
 | **Otros launchers** | Exportar el perfil como `.mrpack` para Modrinth App, Prism Launcher y similares. |
+| **Actualizaciones** | Automáticas desde las versiones oficiales: al abrir detecta, descarga, verifica la firma y el SHA-256, instala y reinicia. Si la versión nueva no abre, vuelve sola a la anterior. Los datos no se tocan. |
 
 <p align="center">
   <img src="docs/img/app-papelera.png" width="49%" alt="Papelera: servidores borrados, días que quedan para restaurarlos">
@@ -178,13 +179,13 @@ funciona.
 ## Estado del proyecto
 
 La versión publicada es la **0.9.0**. La rama
-[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.0.0** (próxima versión), probada en
+[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.1.0** (próxima versión), probada en
 Windows reales (servidores, dos PCs en lugares distintos y un cliente real de Minecraft), pero
 **todavía no está publicada**. Las capturas de esta página son de esa versión, con datos de ejemplo.
 
 En la 0.9.0 ya están: crear y administrar servidores, mods de Modrinth, puntos de restauración y
 compartir entre PCs. Preparar para jugar, la conexión por IP, las fichas de jugadores e
-inventarios con mods y lo demás de esta página llegan con la 1.0.0.
+inventarios con mods, las actualizaciones automáticas y lo demás de esta página llegan con la 1.1.0.
 
 **Necesita configuración aparte:** CurseForge funciona solo con una clave de su API oficial
 ([cómo conseguirla](docs/MANUAL.md#curseforge)). Lo que todavía no hace está en
@@ -236,6 +237,9 @@ Verificación de descargas, actualización y desinstalación: [Instalación](doc
   permitir conexiones sin 939 Host o quitar a alguien del grupo se comprueba en el programa.
 - **Sin cuentas ni telemetría**. 939 Host nunca pide ni guarda la contraseña de Microsoft.
 - **Descargas verificadas** por su hash (Mojang, Fabric, Forge, NeoForge, Modrinth y Java).
+- **Actualizaciones firmadas**: solo se instalan las versiones oficiales firmadas con la clave del
+  proyecto (la app trae la parte pública). Una compilación de prueba, un archivo cambiado o una
+  dirección distinta se rechazan. Detalles: [Actualizaciones](docs/ACTUALIZACIONES.md).
 - **Tu Minecraft queda a salvo**: cada servidor usa su propia carpeta de juego y los mods que había
   se guardan aparte; el archivo de perfiles del Launcher se copia antes de tocarlo.
 - Más: [Privacidad](PRIVACY.md) · [Seguridad](SECURITY.md) · [Limitaciones](docs/LIMITACIONES.md).
@@ -271,6 +275,15 @@ No. No hay servidores pagos ni suscripciones: el servidor corre en las PCs del g
 
 No mezcla nada: cada servidor tiene su carpeta y su perfil «939 Host · …» en el Launcher. Tus
 perfiles y mods de siempre quedan como estaban.
+</details>
+
+<details><summary><b>¿Cómo se actualiza?</b></summary>
+
+Solo. Desde la 1.1.0, al abrir 939 Host busca la última versión oficial; si hay una, la descarga, la
+verifica y la instala, y vuelve a abrir. Servidores, mundos, perfil y configuración quedan como
+estaban. Nunca se actualiza con un servidor encendido. Si estás usando la app, aparece un aviso
+«Actualizar ahora». Quien tenga una versión anterior a la 1.1.0 tiene que instalar la 1.1.0 una vez a
+mano, encima de la que tenga.
 </details>
 
 <details><summary><b>Windows me muestra un aviso al abrirlo</b></summary>

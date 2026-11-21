@@ -20,5 +20,6 @@ echo "ℹ IPs privadas literales en el ejecutable: ${ips:-ninguna}"
 if [ "$mode" = "--release" ]; then
   check 'H939_E2E_DEVTOOLS_PORT|remote-debugging-port' "puerto de depuración de WebView2"
   check 'H939_TEST_(SLOW|FAIL)' "ganchos de prueba"
+  check 'H939_ACTUALIZACIONES_PRUEBA|H939_PRUEBA_VERSION_INSTALADA|H939_PRUEBA_FALLAR_TRAS_ACTUALIZAR' "fuente o versión de prueba de las actualizaciones"
 fi
 exit $fail

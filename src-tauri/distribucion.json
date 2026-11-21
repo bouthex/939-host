@@ -1,5 +1,14 @@
 {
-  "_comentario": "Configuración de actualizaciones. Mientras «raiz» y «url» estén vacías, las actualizaciones automáticas están desactivadas. Completarlas es una decisión del propietario (ver docs/ACTUALIZACIONES.md): la raíz es pública (publicar/raiz-1.json de 939publicar) y una vez distribuida no se puede retirar de las copias instaladas.",
-  "raiz": null,
-  "url": null
+  "_comentario": "Configuración de actualizaciones: raíz pública de confianza (raíz 1) y dirección de distribución (GitHub Releases, última versión oficial). Las claves privadas NO están acá: la de publicación es un secreto del entorno protegido «publicacion» de GitHub y la de recuperación la guarda el propietario fuera de la PC. Ver docs/ACTUALIZACIONES.md.",
+  "raiz": {
+    "type": "root",
+    "payload": "ewogICJ0eXBlIjogInJvb3QiLAogICJ2ZXJzaW9uIjogMSwKICAiZXhwaXJlcyI6ICIyMDM2LTExLTE4VDIyOjMwOjUxLjM0NDA1NTQ1M1oiLAogICJrZXlzIjogewogICAgIjZkNzk0MWZjNTBlMGE2ZWIwYThiMmI3YmVlY2NmNGU3Zjg3OTAyOTJmOGY2MmE3MjU4ZTY4NDg1Y2VlZGUzNWMiOiB7CiAgICAgICJzY2hlbWUiOiAiZWQyNTUxOSIsCiAgICAgICJwdWJsaWMiOiAiNDNkM2NiMWRhYmZhOGE5Mjk2ZDRlMjY4YjM3MGIxY2U3MGQzODIxMDk1M2UxNjQyZDQ5ZTE0ZGM4NjFkZTNhOSIKICAgIH0sCiAgICAiYjZlZjYyYzA4ZGIwMzgyYjMwZjdhOGYyYTVmY2I5MmIyODZmZmE5NzdlNmQwZWI0N2UzNjk2MTNmY2Q1NGFmMyI6IHsKICAgICAgInNjaGVtZSI6ICJlZDI1NTE5IiwKICAgICAgInB1YmxpYyI6ICJiMThlNWFlYzljMjBjMWQwYmMwMDEzM2NiMDNlNzJiMjk3OWJkOGZhZjQ1YWE0MDg5MjhmMTZiNTcyZDFmZmZkIgogICAgfQogIH0sCiAgInJvb3QiOiB7CiAgICAia2V5aWRzIjogWwogICAgICAiNmQ3OTQxZmM1MGUwYTZlYjBhOGIyYjdiZWVjY2Y0ZTdmODc5MDI5MmY4ZjYyYTcyNThlNjg0ODVjZWVkZTM1YyIKICAgIF0sCiAgICAidGhyZXNob2xkIjogMQogIH0sCiAgInJlbGVhc2UiOiB7CiAgICAia2V5aWRzIjogWwogICAgICAiYjZlZjYyYzA4ZGIwMzgyYjMwZjdhOGYyYTVmY2I5MmIyODZmZmE5NzdlNmQwZWI0N2UzNjk2MTNmY2Q1NGFmMyIKICAgIF0sCiAgICAidGhyZXNob2xkIjogMQogIH0KfQ==",
+    "signatures": [
+      {
+        "keyid": "6d7941fc50e0a6eb0a8b2b7beeccf4e7f8790292f8f62a7258e68485ceede35c",
+        "sig": "a56be8766b020948ea69373302d61443a7254e3c7bbe908f4ce609cca2515fb6e3b4fcdf7971ef7f5fdc366485086306e1ebc62cae539f959c8c26355bbde80a"
+      }
+    ]
+  },
+  "url": "https://github.com/bouthex/939-host/releases/latest/download"
 }

@@ -38,6 +38,26 @@ jobs:
       - name: Sin secretos en el ejecutable
         run: scripts/verificar-secretos.sh target/x86_64-pc-windows-gnu/release/939Host.exe
       - run: scripts/empaquetar.sh "$(scripts/version.sh)"
+      # Distribución de PRUEBA para la actualización automática: raíz y clave generadas acá y
+      # descartadas al terminar (nunca la clave real). Firma el instalador y la portable de esta
+      # compilación como si fueran una release.
+      - name: Distribución de prueba firmada (clave descartable)
+        run: |
+          cargo build --locked -p host939-update --features propietario --bin 939publicar
+          k="$(mktemp -d)"
+          target/debug/939publicar iniciar-ci --carpeta "$k"
+          mkdir -p dist-prueba
+          H939_CLAVE_PUBLICACION="$(cat "$k/clave-publicacion.secreta")" target/debug/939publicar firmar-ci --carpeta . \
+            --raiz "$k/raiz-1.json" --artefactos dist --version "$(scripts/version.sh)" --salida dist-prueba
+          cp "$k/raiz-1.json" dist-prueba/
+          python3 -c "import json,sys;json.dump({'raiz':json.load(open(sys.argv[1])),'url':'http://127.0.0.1:8939'},open('dist-prueba/distribucion.json','w'))" "$k/raiz-1.json"
+          rm -rf "$k"
+          ls -la dist-prueba
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: distribucion-prueba
+          path: dist-prueba
+          retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: 939Host-windows-prueba
@@ -232,7 +252,10 @@ jobs:
     name: App instalada en Windows (interfaz real)
     runs-on: windows-2025
     needs: compilar
-    timeout-minutes: 60
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -267,6 +290,30 @@ jobs:
           $s | ConvertTo-Json -Depth 20 | Set-Content "$root\settings.json" -Encoding utf8
           (Get-FileHash "$root\identity\node.key").Hash | Set-Content v090\identidad.txt
           Write-Output "v0.9.0 instalada y usada: identidad y preferencias guardadas"
+      # La versión de prueba 1.0.0 (la que tienen instalada las PCs del equipo): se instala encima
+      # de v0.9.0 y se usa, para probar después la actualización desde ella sin perder datos.
+      - name: Instalar la versión de prueba 1.0.0 encima y usarla
+        timeout-minutes: 6
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 44940480301 --repo "${{ github.repository }}" -n 939Host-version-de-prueba -D v100 2>&1 | Out-Null
+          $old = Get-ChildItem v100\939Host-1.0.0-instalador.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$old) { Write-Output "::warning::El artefacto de la versión de prueba 1.0.0 ya no está disponible (vencido); se sigue desde v0.9.0."; exit 0 }
+          $want = ((Get-Content v100\SHA256SUMS.txt | Where-Object { $_ -match '939Host-1.0.0-instalador.exe' }) -split '\s+')[0]
+          if ((Get-FileHash $old.FullName).Hash -ne $want.ToUpper()) { throw "El instalador de 1.0.0 no coincide con su SHA-256" }
+          Start-Process $old.FullName -ArgumentList '/S' -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "1.0.0 se cerró al abrir sobre los datos de v0.9.0" }
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          $v = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\939Host").DisplayVersion
+          if ($v -ne "1.0.0") { throw "Se esperaba 1.0.0 instalada y figura $v" }
+          if ((Get-FileHash "$env:LOCALAPPDATA\939Host\identity\node.key").Hash -ne (Get-Content v090\identidad.txt).Trim()) { throw "1.0.0 cambió la identidad" }
+          Write-Output "✔ 1.0.0 instalada sobre v0.9.0 y usada: identidad intacta"
       - name: Instalar sin administrador (silencioso)
         shell: pwsh
         run: |
@@ -279,7 +326,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install playwright==1.48.0 pillow psutil
-      - name: Actualización desde v0.9.0 conserva identidad y preferencias
+      - name: Actualización desde v0.9.0 y 1.0.0 conserva identidad y preferencias
         shell: pwsh
         run: |
           $root = "$env:LOCALAPPDATA\939Host"
@@ -424,6 +471,31 @@ jobs:
           if (!(Test-Path $desk)) { throw "Con /ESCRITORIO=1 no se creó el acceso del escritorio" }
           Una-Sola "acceso del escritorio"
           Write-Output "5) Escritorio: activado por defecto, se puede quitar y la elección se recuerda."
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        if: ${{ !cancelled() }}
+        with:
+          name: distribucion-prueba
+          path: dist-prueba
+      - name: Actualización automática real (detección, descarga, verificación, instalación, vuelta atrás, portable)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          OUT: capturas-actualizacion
+        run: |
+          Get-Process 939Host, java -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          python ci/windows/actualizacion_e2e.py
+          $code = $LASTEXITCODE
+          if (Test-Path "$env:LOCALAPPDATA\939Host\actualizacion\registro.txt") { Write-Output "== registro del vigía"; Get-Content "$env:LOCALAPPDATA\939Host\actualizacion\registro.txt" -Tail 80 }
+          exit $code
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: capturas-actualizacion
+          path: capturas-actualizacion
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Desinstalar
         if: always()
         timeout-minutes: 5
