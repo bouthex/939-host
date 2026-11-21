@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Sube cuando cambia la forma de indexar: los índices guardados se rehacen.
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 2;
 const MAX_ENTRY: u64 = 2 * 1024 * 1024;
 const MAX_NESTED: u64 = 24 * 1024 * 1024;
 const MAX_PNG: u64 = 512 * 1024;
@@ -95,8 +95,9 @@ fn mod_display_name<R: Read + Seek>(z: &mut zip::ZipArchive<R>) -> Option<String
     for f in ["META-INF/neoforge.mods.toml", "META-INF/mods.toml"] {
         if let Some(b) = read_entry(z, f, 256 * 1024) {
             let t = String::from_utf8_lossy(&b);
-            static RE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r#"(?m)^\s*displayName\s*=\s*["']([^"'\r\n]{1,80})["']"#).unwrap());
-            if let Some(c) = RE.captures(&t) { return Some(c[1].trim().to_string()); }
+            // Comillas dobles o simples, cada una con su cierre (el nombre puede tener apóstrofos).
+            static RE: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r#"(?m)^\s*displayName\s*=\s*(?:"([^"\r\n]{1,80})"|'([^'\r\n]{1,80})')"#).unwrap());
+            if let Some(c) = RE.captures(&t) { return c.get(1).or(c.get(2)).map(|m| m.as_str().trim().to_string()); }
         }
     }
     None
@@ -381,6 +382,9 @@ mod tests {
         jar(&neo, &[("META-INF/neoforge.mods.toml", b"displayName='Contenedor'"), ("META-INF/jarjar/dentro.jar", &inner)]);
         let i = index_jar(&neo).unwrap();
         assert_eq!(i.names["dentro:llave"], "Key");
+        let apos = t.path().join("apos.jar");
+        jar(&apos, &[("META-INF/mods.toml", b"displayName=\"Farmer's Delight\"\n")]);
+        assert_eq!(index_jar(&apos).unwrap().mod_name, "Farmer's Delight");
         assert_eq!(i.icons["dentro:llave"], "META-INF/jarjar/dentro.jar!/assets/dentro/textures/item/llave.png");
         assert_eq!(read_icon(&neo, &i.icons["dentro:llave"]).as_deref(), Some(PNG));
         // Un archivo que no es zip, o roto: sin índice y sin pánico.

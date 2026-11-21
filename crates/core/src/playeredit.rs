@@ -185,7 +185,8 @@ pub fn apply_online(mgr: &Manager, cfg: &ServerConfig, name: &str, e: &Edit, who
     let got_hp = after.as_ref().and_then(|v| v.get("Health")).and_then(|x| x.as_f64());
     let mut msg = format!("Listo para {name}");
     if let (Some(want), Some(got)) = (e.health, got_hp) {
-        if (want - got).abs() > 0.25 { msg = format!("Se aplicó, pero {name} quedó con {} de vida (pedido {}): sus efectos o su absorción lo cambian.", fmt(got), fmt(want)); }
+        // Hasta 1 punto de diferencia es la regeneración natural del juego mientras se lee.
+        if (want - got).abs() > 1.0 { msg = format!("Se aplicó, pero {name} quedó con {} de vida (pedido {}): sus efectos o su absorción lo cambian.", fmt(got), fmt(want)); }
     }
     audit(&cfg.id, &format!("jugador-editado {name} (conectado): {}", describe(e)), who);
     Ok(msg)
