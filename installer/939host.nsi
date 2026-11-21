@@ -15,7 +15,7 @@ ${UnStrStr}
 !define APPNAME "939 Host"
 !define APPEXE "939Host.exe"
 !ifndef VERSION
-  !define VERSION "0.9.0"
+  !define VERSION "1.0.0"
 !endif
 !ifndef SRCDIR
   !define SRCDIR "payload"

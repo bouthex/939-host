@@ -23,7 +23,11 @@ pub fn external_allowed(id: &str) -> Option<bool> {
 pub fn lan_effective(id: &str) -> bool { settings::load().lan_access && external_allowed(id) != Some(false) }
 
 /// ¿Esta PC abre la entrada pública para este servidor?
-pub fn internet_entrance(id: &str) -> bool { settings::load().public_entrance && external_allowed(id) == Some(true) }
+pub fn internet_entrance(id: &str) -> bool {
+    settings::load().public_entrance && external_allowed(id) == Some(true)
+        // Resguardo: si esta PC tiene el servidor y está sin modo online, no se abre.
+        && instance::load(id).map(|c| c.online_mode).unwrap_or(true)
+}
 
 fn ports_path() -> std::path::PathBuf { paths::root().join("entrada-publica.json") }
 

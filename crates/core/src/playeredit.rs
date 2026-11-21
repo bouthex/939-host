@@ -164,10 +164,19 @@ pub fn apply_online(mgr: &Manager, cfg: &ServerConfig, name: &str, e: &Edit, who
     if (e.food.is_some() && !feed_ok) || (e.xp_level.is_some() && !xp_ok) { return Err(AppError::invalid("Esta versión de Minecraft no tiene los comandos necesarios. Hacelo con el jugador desconectado.")); }
     let send = |c: &str| mgr.send_command(&cfg.id, c);
     if let Some(h) = e.health {
-        // Curar del todo y quitar lo que sobra con un daño que no reduce la armadura ni los efectos.
-        send(&format!("effect give {name} minecraft:instant_health 1 28 true"))?;
-        let diff = max_hp - h;
-        if diff > 0.0 { send(&format!("damage {name} {:.2} minecraft:generic_kill", diff))?; }
+        // Si hay que subir la vida: curación (Minecraft la aplica en el tick siguiente, así que se
+        // espera y se vuelve a leer). Después se quita lo que sobra con un daño que no reducen la
+        // armadura ni los efectos.
+        let mut cur = before.get("Health").and_then(|x| x.as_f64()).unwrap_or(max_hp);
+        if h > cur + 0.01 {
+            send(&format!("effect give {name} minecraft:instant_health 1 28 true"))?;
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(150));
+                if let Some(v) = read().ok().and_then(|v| v.get("Health").and_then(|x| x.as_f64())) { cur = v; if cur >= h - 0.01 { break; } }
+            }
+        }
+        let diff = cur - h;
+        if diff > 0.01 { send(&format!("damage {name} {:.2} minecraft:generic_kill", diff))?; }
     }
     if e.food == Some(20) { send(&format!("effect give {name} minecraft:saturation 1 255 true"))?; }
     if let Some(x) = e.xp_level { send(&format!("xp set {name} {x} levels"))?; }

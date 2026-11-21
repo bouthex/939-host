@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "host939"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "host939-cluster"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2180,7 +2180,7 @@ dependencies = [
 
 [[package]]
 name = "host939-core"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "host939-p2p"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "data-encoding",
@@ -2220,7 +2220,7 @@ dependencies = [
 
 [[package]]
 name = "host939-update"
-version = "0.9.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",

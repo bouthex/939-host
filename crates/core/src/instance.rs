@@ -344,6 +344,11 @@ pub fn update(mgr: &Manager, mut patch: ServerConfig, total_ram_mb: u64) -> AppR
     patch.identity = current.identity.clone();
     patch.eula_accepted_at = current.eula_accepted_at.clone();
     patch.name = patch.name.trim().to_string();
+    // El interruptor de conexiones sin 939 Host se cambia solo con su propio comando.
+    patch.external_access = current.external_access;
+    if !patch.online_mode && crate::access::external_allowed(&patch.id) == Some(true) {
+        return Err(AppError::invalid("Primero apagá «Permitir conexiones sin 939 Host»: sin «Verificar cuentas con Mojang», cualquiera podría entrar desde Internet con el nombre de un operador."));
+    }
     validate(&patch, total_ram_mb)?;
     save(&patch)?;
     if patch.installed { properties::write_for(&patch)?; }

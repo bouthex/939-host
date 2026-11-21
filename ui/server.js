@@ -695,6 +695,7 @@ const ENT_STATE = { preparando: 'Preparando', abierta: 'Abierta, sin comprobar',
 function publicRow(id) {
   loadExt(id);
   const x = EXT[id]?.v;
+  if (!x && EXT[id] && !EXT[id].loading) return '';
   if (!x) return `<div class="kv"><span class="k">Sin 939 Host</span><span class="sm t3">Cargando…</span></div>`;
   let val;
   if (x.allowed === false) val = '<span class="sm t2">Bloqueado: solo se entra con 939 Host</span>';

@@ -107,7 +107,7 @@ firmados por la PC propietaria.
 ## Estado del proyecto
 
 La versión publicada es la **0.9.0**. La rama
-[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la próxima versión, probada en
+[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.0.0** (próxima versión), probada en
 Windows reales (servidores, dos PCs en lugares distintos y un cliente real de Minecraft), pero
 **todavía no está publicada**. Las capturas de esta página son de esa versión.
 

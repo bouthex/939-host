@@ -11,10 +11,10 @@
     { node: 'n2', name: 'Kaki', online: false, playing: null, available: false, unread: 0, avatar: null, sharedGroups: [] }],
     requests: [{ node: 'n3', name: 'Lucía' }], notices: [], blocked: 0 };
   const T = {
-    app_info: { version: '0.9.0', dataDir: 'C:\\Users\\usuario\\AppData\\Local\\939Host', node: { nodeId: 'abc', shortId: 'ABC' }, settings: D.settings },
+    app_info: { version: '1.0.0', dataDir: 'C:\\Users\\usuario\\AppData\\Local\\939Host', node: { nodeId: 'abc', shortId: 'ABC' }, settings: D.settings },
     list_servers: servers, get_server: servers[0], friends_view: friends, trash_list: [],
     friend_chat: [{ fromMe: false, text: '¿Jugamos hoy?', at: now, delivered: true }, { fromMe: true, text: 'Dale, a las 21', at: now, delivered: true }],
-    share_status: { enabled: false, group: null, invites: [], routePort: null, relays: true, nodeId: 'abc', privateMode: false, recoverySet: false, recoveryPending: false, successor: null, succession: null, pendingMods: [], trustCohostMods: false }, update_status: { enabled: false, channel: 'estable', current: '0.9.0', status: 'desactivado', message: 'Las actualizaciones automáticas todavía no están configuradas por el proyecto. Las versiones nuevas se instalan a mano.' },
+    share_status: { enabled: false, group: null, invites: [], routePort: null, relays: true, nodeId: 'abc', privateMode: false, recoverySet: false, recoveryPending: false, successor: null, succession: null, pendingMods: [], trustCohostMods: false }, update_status: { enabled: false, channel: 'estable', current: '1.0.0', status: 'desactivado', message: 'Las actualizaciones automáticas todavía no están configuradas por el proyecto. Las versiones nuevas se instalan a mano.' },
     hardware_snapshot: { cpuModel: 'Procesador de prueba', physicalCores: 8, logicalCores: 16, cpuMhz: 3600, ramTotalMb: 16384, ramAvailableMb: 9000, os: 'Windows 11', hostName: 'PC', disks: [{ name: 'C:', totalGb: 476, freeGb: 210 }], benchmark: null, assessment: { rating: 'Buena para alojar', reasons: ['16 GB de memoria'], recommendedServerRamMb: 4096, maxServerRamMb: 8192 } },
     hardware_live: { cpuPercent: 12, ramAvailableMb: 9000 },
     list_runtimes: [], save_settings: D.settings, client_profiles: [], remote_list: [], hosting_servers: [], host_requests_pending: [], last_close_notes: [], profile_photo_get: {},

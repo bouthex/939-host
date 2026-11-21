@@ -147,6 +147,35 @@ Prism Launcher o ATLauncher y crea un perfil aparte, sin tocar tu Minecraft de s
 permiso de administrador una vez para agregarla. Es **interna**: funciona en las PCs con 939 Host que la
 crean, no es una dirección pública de Internet.
 
+### Jugadores sin 939 Host (conexión por IP)
+
+En el resumen del servidor, fila **Sin 939 Host → Configurar**:
+
+1. La PC propietaria activa **Permitir conexiones sin 939 Host**. Necesita «Verificar cuentas
+   con Mojang» encendido. Solo controla quién entra a **jugar**: quien entra por IP no puede
+   alojar, administrar ni tomar el control. Apagado, solo se entra con 939 Host.
+2. Al menos una PC del grupo activa **Recibir jugadores de Internet en esta PC** (también en
+   Configuración → Privacidad y conexiones). Esa PC es la «entrada»: abre el puerto del router
+   sola (UPnP, NAT-PMP o PCP) y lleva a los jugadores a la PC que aloja en ese momento. Quien
+   entra por ahí ve la IP pública de esa PC.
+3. La dirección para compartir aparece en la fila (con botón para copiar). «Funciona» quiere
+   decir que otra PC del grupo entró desde su conexión. Si dice CGNAT o «No se llega desde
+   Internet», esa PC no sirve de entrada: probá con otra PC del grupo o abrí el puerto a mano
+   (la app dice cuál y hacia qué IP).
+
+La dirección no cambia cuando cambia la PC que aloja, pero sí si cambia la IP pública de la
+entrada. Para una dirección fija podés guardar un **nombre propio** (dominio o DNS dinámico tuyo).
+Recomendado: lista blanca encendida. Más detalles en [DIRECCIONES-PUBLICAS.md](DIRECCIONES-PUBLICAS.md).
+
+### Jugadores: datos, historial y cambios
+
+En **Jugadores** cada persona aparece una sola vez aunque haya cambiado de nombre. La ficha
+muestra vida, hambre, experiencia, inventario (con nombres e íconos de los ítems de mods, leídos
+de los mods instalados; los de mods que ya no están se marcan) y las sesiones que 939 Host vio
+en la consola. La PC propietaria puede cambiar vida, hambre, saturación y nivel: con el jugador
+desconectado, valores exactos (se guarda una copia del archivo antes); conectado, lo que
+Minecraft permite con comandos (vida exacta desde 1.19.4, llenar el hambre, nivel).
+
 ### CurseForge
 CurseForge exige una clave de su API oficial para que otras apps busquen y descarguen.
 
