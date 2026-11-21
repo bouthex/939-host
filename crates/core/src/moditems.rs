@@ -394,8 +394,8 @@ mod tests {
 
     #[test]
     fn servidor_distingue_mod_instalado_y_desconocido() {
-        let t = tempfile::tempdir().unwrap();
-        let _ = paths::init(t.path().to_path_buf());
+        // Carpeta que no se borra al terminar: la raíz es una sola para todas las pruebas.
+        let _ = paths::init(std::env::temp_dir().join(format!("h939-items-{}", std::process::id())));
         let id = format!("items-{}", std::process::id());
         let mods = paths::server_run_dir(&id).join("mods");
         std::fs::create_dir_all(&mods).unwrap();

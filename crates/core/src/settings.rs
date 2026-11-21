@@ -47,6 +47,12 @@ pub struct AppSettings {
     /// Permitir que otras PCs de la red local entren directo al servidor (sin 939 Host). Apagado,
     /// el servidor de Minecraft escucha solo en esta PC (127.0.0.1) y se juega por 939 Host.
     pub lan_access: bool,
+    /// Esta PC acepta ser «entrada pública»: recibe jugadores de Internet (sin 939 Host) para los
+    /// servidores que lo permiten y los lleva a la PC que aloja. Muestra la IP pública de esta PC
+    /// a esos jugadores: por eso es una decisión de cada PC y viene apagado.
+    pub public_entrance: bool,
+    /// Pedir al router que abra el puerto de la entrada (UPnP, NAT-PMP o PCP).
+    pub public_entrance_mapping: bool,
     /// Mientras esta PC aloja un servidor encendido, Windows no la suspende (la pantalla sí se
     /// puede apagar). Un servidor no puede seguir funcionando en una PC suspendida.
     pub keep_awake_while_hosting: bool,
@@ -84,6 +90,8 @@ impl Default for AppSettings {
             private_mode: false,
             invite_hours: 24,
             lan_access: false,
+            public_entrance: false,
+            public_entrance_mapping: true,
             keep_awake_while_hosting: true,
             background_hint_shown: false,
             start_sound: true,

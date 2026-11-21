@@ -52,6 +52,7 @@ pub fn payload(server: &str, s: &ShareConfig) -> Vec<u8> {
     if !s.mc_ops_revoked.is_empty() { v["mcOpsRevoked"] = serde_json::json!(s.mc_ops_revoked); }
     if !s.mc_ops_base.is_empty() { v["mcOpsBase"] = serde_json::json!(s.mc_ops_base); }
     if s.mc_ops_init { v["mcOpsInit"] = serde_json::json!(true); }
+    if let Some(x) = s.external_access { v["externalAccess"] = serde_json::json!(x); }
     canonical(&v)
 }
 

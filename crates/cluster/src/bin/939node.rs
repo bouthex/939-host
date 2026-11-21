@@ -303,6 +303,12 @@ async fn main() {
                     }
                     Ok(serde_json::json!(cfg.id))
                 }
+                "online" => {
+                    let mut c = instance::load(&p(1)).map_err(|e| e.message)?;
+                    c.online_mode = p(2) == "1";
+                    instance::save(&c).map_err(|e| e.message)?;
+                    Ok(serde_json::json!(true))
+                }
                 "setport" => {
                     let mut c = instance::load(&p(1)).map_err(|e| e.message)?;
                     c.port = p(2).parse().map_err(|_| "puerto inválido".to_string())?;
@@ -378,6 +384,12 @@ async fn main() {
                 "release" => node.release(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
                 "take" => node.take_here(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "status" => Ok(serde_json::to_value(node.status(&p(1)).await).unwrap()),
+                // Conexión por IP: interruptor de la propietaria, decisión de esta PC y entradas.
+                "external" => node.set_external_access(&p(1), p(2) == "1").map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "consent" => { let mut st = host939_core::settings::load(); st.public_entrance = p(1) == "1"; host939_core::settings::save(&st).map_err(|e| e.message)?; node.sync_entrances().await; Ok(serde_json::json!(true)) }
+                "entport" => host939_core::access::set_entrance_port(&p(1), p(2).parse().unwrap_or(0)).map(|_| serde_json::json!(true)).map_err(|e| e.message),
+                "entrance" => { node.sync_entrances().await; Ok(serde_json::to_value(node.entrance_info(&p(1))).unwrap()) }
+                "entrances" => Ok(serde_json::to_value(node.entrances(&p(1))).unwrap()),
                 "route" => node.open_route(&p(1), p(2).parse().unwrap_or(0)).await.map(|port| serde_json::json!(port)).map_err(|e| e.to_string()),
                 "online" => Ok(serde_json::json!(if fake { local.is_running(&p(1)) } else { local.mgr.runtime(&p(1)).lock().unwrap().status() == RunStatus::Running })),
                 "running" => Ok(serde_json::json!(local.is_running(&p(1)))),

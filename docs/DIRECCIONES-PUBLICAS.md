@@ -1,8 +1,88 @@
-# Direcciones personalizadas para jugadores sin 939 Host (§16) — PENDIENTE DE INFRAESTRUCTURA
+# Conexión por IP para jugadores sin 939 Host
 
-Estado: **no implementado y no prometido.** Es un requisito fundamental del producto y sigue
-abierto. Este documento separa lo que existe hoy de lo que falta, y fija las condiciones que debe
-cumplir una solución antes de implementarla.
+Estado (20/11/2026): **implementado** con entradas públicas en PCs del grupo. Lo que sigue en
+este documento después de «Historial» es la investigación anterior, que se conserva.
+
+## Cómo funciona
+
+1. **Interruptor por servidor** «Permitir conexiones sin 939 Host» (resumen del servidor →
+   Sin 939 Host → Configurar). Lo decide solo la propietaria; en servidores compartidos va en la
+   lista firmada (`externalAccess`), así que ninguna otra PC puede encenderlo. No se puede
+   encender con el modo sin conexión de Minecraft (cualquiera entraría con el nombre de un OP).
+2. **Entradas**: cada PC del grupo decide si acepta ser entrada («Recibir jugadores de Internet
+   en esta PC», apagado por defecto porque muestra su IP pública). Una entrada escucha en su IP
+   local, en un puerto propio por servidor (25565 por defecto), y pide al router que lo abra:
+   UPnP (con el nombre «939 Host» y renovación cada 20 min) o, si no hay, NAT-PMP/PCP. Si nada
+   funciona, muestra cómo abrir el puerto a mano.
+3. **Reenvío a la anfitriona actual**: cada jugador que entra se lleva por el mismo camino que
+   usan los jugadores con 939 Host (`route_one`: directo o por el túnel cifrado del grupo, con
+   relays si hace falta). La dirección no cambia cuando cambia la PC que aloja, y una anfitriona
+   detrás de CGNAT igual recibe jugadores siempre que alguna entrada sea alcanzable.
+4. **Comprobación real**: otra PC del grupo en línea hace un ping de estado de Minecraft a la
+   entrada (como la lista de servidores del juego) al abrirla y cada 10 minutos. La interfaz
+   muestra «Funciona», «Abierta, sin comprobar», «No se llega desde Internet» o «CGNAT».
+5. **Dirección para compartir**: la de una entrada comprobada y en línea (IPv4 pública:puerto).
+   Si la propietaria tiene un dominio o DNS dinámico propio, puede guardarlo como «nombre propio»
+   y se muestra en su lugar (939 Host no lo crea ni lo administra).
+
+## Separación de permisos (dónde se aplica cada uno)
+
+| Acceso | Quién | Dónde se hace cumplir |
+|---|---|---|
+| Jugar (Minecraft) sin 939 Host | Cualquiera con la dirección, si el interruptor está encendido | La entrada solo existe con el permiso firmado y la PC que consiente; se vuelve a mirar en cada conexión. Minecraft escucha solo en `127.0.0.1` cuando el interruptor está apagado (`server-ip`). Lista blanca y modo online los aplica Minecraft. |
+| Administración desde 939 Host | Integrantes según su rol | Protocolo P2P con identidad ed25519 y lista firmada. La entrada pública no tiene ningún camino hacia él: solo reenvía bytes al puerto de Minecraft de ese servidor. |
+| Alojar el servidor | Propietaria y coanfitrionas | Permiso de anfitrión firmado (época, votos); un jugador externo no es integrante. |
+| Identidad de las instalaciones | Cada PC | Clave del nodo P2P; la propietaria firma la lista de integrantes. |
+
+Saltarse el interruptor: con el interruptor apagado no hay escucha pública en ninguna PC y
+Minecraft no acepta conexiones de la red. Modificar el cliente de Minecraft no da nada: del
+otro lado solo está el servidor de juego. Límite inherente: un integrante del grupo, que ya
+tiene acceso por el túnel, siempre podría reenviar su propio acceso a otra persona (como prestar
+una cuenta); ningún sistema lo puede impedir del todo.
+
+Límites contra abuso en cada entrada: 8 conexiones a la vez y 40 por minuto por IP, 256 en
+total. Las comprobaciones que pide otra PC solo van a IPs públicas y puertos ≥ 1024, con límite
+por PC (no sirven para escanear redes).
+
+## Redes domésticas: qué funciona y qué no
+
+- **Router con UPnP/NAT-PMP/PCP**: se abre solo. Es lo más común en routers hogareños.
+- **Router sin apertura automática**: funciona si se abre el puerto a mano (la app indica cuál
+  y hacia qué IP local).
+- **CGNAT** (IP compartida por el proveedor, frecuente en redes móviles y algunos proveedores
+  de fibra o cable): desde Internet no se llega a esa PC. Se detecta (rango 100.64/10 o IP
+  privada en el lado WAN del router) y se avisa. Otra PC del grupo con conexión común puede ser
+  la entrada.
+- **IPv6**: si la PC tiene una IPv6 global se escucha también ahí y se muestra; depende del
+  firewall del router, que muchas veces bloquea conexiones entrantes.
+- **Firewall de Windows**: la primera vez Windows pregunta si 939 Host puede recibir conexiones.
+  939 Host no crea reglas ni desactiva protecciones: decide la persona.
+- **Cambio de IP pública**: la dirección mostrada se actualiza sola (la entrada vuelve a
+  consultar al router y se comprueba cada 10 minutos), pero quien tenía la IP vieja tiene que usar
+  la nueva. Para una dirección que no cambie hace falta un nombre propio (DNS dinámico o dominio).
+- **Ninguna entrada alcanzable**: no hay conexión por IP. No se promete lo contrario.
+
+## Costos y servicios externos
+
+Ninguno. No hay servidores del proyecto, cuentas, tarjetas ni claves. Se usa el router de cada
+casa (UPnP/NAT-PMP/PCP, con bibliotecas que ya estaban en el árbol de dependencias por iroh) y la
+red P2P que el grupo ya usaba (relays públicos gratuitos de n0 solo cuando no hay camino directo,
+como antes). Alternativas evaluadas y no incorporadas: servicios de relay de terceros (ver la
+auditoría abajo), DNS dinámico obligatorio (exige cuenta: queda como «nombre propio» opcional),
+y un servidor con IP fija (desde unos 4–6 EUR por mes): la misma arquitectura lo admitiría como
+una PC más del grupo que solo hace de entrada, pero implica un gasto que decide el propietario.
+
+## Pruebas
+
+- Automatizadas con varias PCs simuladas (`multi_node::conexion_por_ip_sin_939_host`, también en
+  la CI de Windows): interruptor apagado, solo la propietaria lo enciende, nunca con modo sin
+  conexión, entrada en una PC que solo juega, comprobación desde otra PC, basura y pedidos de
+  administración por la entrada, cambio de anfitriona con la misma dirección, reinicio de la
+  anfitriona, apagado efectivo y jugadores con 939 Host sin cambios.
+- **No probado**: routers reales (UPnP/NAT-PMP/PCP), conexiones desde otra red de Internet,
+  CGNAT real y IPv6 real. Hay que verificarlo en la prueba real antes de publicar.
+
+## Historial
 
 ## Qué existe hoy (y qué no hace)
 

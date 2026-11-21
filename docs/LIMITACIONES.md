@@ -50,7 +50,7 @@ Límites conocidos de esas funciones:
 
 - Firma de código del ejecutable.
 - Activar el actualizador integrado (ya implementado): falta que el propietario cree su identidad de publicación y elija dónde distribuir.
-- Direcciones para jugadores sin 939 Host (ver DIRECCIONES-PUBLICAS.md).
+- Conexión por IP: verificar con routers reales (UPnP/NAT-PMP/PCP), desde otra red y con CGNAT real (ver DIRECCIONES-PUBLICAS.md). Una dirección que no cambie con la IP pública necesita un nombre propio (DNS dinámico o dominio).
 - Descubrimiento de PCs del grupo en la red local (mDNS) para no depender de direcciones guardadas cuando cambia la IP y no hay relays.
 - Compresión de los bloques de sincronización que no sean regiones (las regiones ya vienen comprimidas).
 - Panel de historial del grupo (quién hosteó, traspasos, recuperaciones).

@@ -205,8 +205,8 @@ mod tests {
 
     #[test]
     fn graba_y_cierra_sesiones_abiertas() {
-        let t = tempfile::tempdir().unwrap();
-        let _ = paths::init(t.path().to_path_buf());
+        // Carpeta que no se borra al terminar: la raíz es una sola para todas las pruebas.
+        let _ = paths::init(std::env::temp_dir().join(format!("h939-ses-{}", std::process::id())));
         let id = format!("sesiones-{}", std::process::id());
         std::fs::create_dir_all(paths::server_run_dir(&id)).unwrap();
         let mut o = Open::default();

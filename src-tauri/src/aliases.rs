@@ -156,3 +156,98 @@ pub async fn system_cleanup(app: AppHandle) -> AppResult<Vec<String>> {
     if has_block { alias_apply_hosts().await?; done.push("Direcciones .939host quitadas del archivo hosts".into()); } else { done.push("El archivo hosts no tenía direcciones de 939 Host".into()); }
     Ok(done)
 }
+
+/* ───────── Conexión por IP para jugadores sin 939 Host ───────── */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntranceView { node: String, name: String, online: bool, is_me: bool, info: host939_cluster::EntranceInfo }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalStatus {
+    /// `Some(true)` permitido, `Some(false)` bloqueado, `None` sin decidir.
+    allowed: Option<bool>,
+    shared: bool,
+    /// Esta PC puede cambiar el interruptor (es la propietaria o el servidor es solo de esta PC).
+    can_change: bool,
+    online_mode: bool,
+    whitelist: bool,
+    lan_access: bool,
+    /// Esta PC acepta ser entrada pública.
+    consent: bool,
+    mapping: bool,
+    my_port: u16,
+    entrances: Vec<EntranceView>,
+    /// Dirección para compartir: la de una entrada comprobada y en línea, si hay.
+    best: Option<String>,
+    best_verified: bool,
+    /// Nombre propio (dominio o túnel) que guardó la propietaria, si hay.
+    public_name: Option<String>,
+}
+
+#[tauri::command]
+pub async fn external_status(app: AppHandle, id: String) -> AppResult<ExternalStatus> {
+    let cfg = instance::load(&id)?;
+    let share = network::load_share(&id);
+    let st = host939_core::settings::load();
+    let node = app.state::<Cluster>().node().await.ok().cloned();
+    let me = node.as_ref().map(|n| n.id()).unwrap_or_default();
+    let can_change = !share.enabled || share.member(&me).map(|m| m.role == "propietario").unwrap_or(false);
+    let mut entrances: Vec<EntranceView> = node.as_ref().map(|n| n.entrances(&id)).unwrap_or_default().into_iter()
+        .map(|(node, name, online, info)| EntranceView { is_me: node == me, node, name, online, info }).collect();
+    // Primero las comprobadas y en línea; después las abiertas; las de esta PC desempatan.
+    let rank = |e: &EntranceView| -> u8 { match (e.online, e.info.state.as_str(), e.info.addr.is_some()) { (true, "comprobada", true) => 0, (true, "abierta", true) => 1, (_, _, true) => 2, _ => 3 } };
+    entrances.sort_by_key(|e| (rank(e), !e.is_me));
+    let best = entrances.first().filter(|e| rank(e) <= 1).and_then(|e| e.info.addr.clone());
+    let best_verified = entrances.first().map(|e| rank(e) == 0).unwrap_or(false);
+    Ok(ExternalStatus {
+        allowed: host939_core::access::external_allowed(&id), shared: share.enabled, can_change, online_mode: cfg.online_mode, whitelist: cfg.whitelist,
+        lan_access: st.lan_access, consent: st.public_entrance, mapping: st.public_entrance_mapping, my_port: host939_core::access::entrance_port(&id),
+        entrances, best, best_verified, public_name: alias::public::get(&id),
+    })
+}
+
+/// Interruptor «Permitir conexiones sin 939 Host». Solo controla quién entra a jugar: no da
+/// permisos de 939 Host ni para alojar. En servidores compartidos va firmado por la propietaria.
+#[tauri::command]
+pub async fn external_set(app: AppHandle, id: String, allow: bool) -> AppResult<()> {
+    let mut cfg = instance::load(&id)?;
+    let share = network::load_share(&id);
+    let cl = app.state::<Cluster>();
+    let who;
+    if share.enabled {
+        let n = cl.node().await?;
+        n.set_external_access(&id, allow).map_err(|e| AppError::new("forbidden", e.to_string()))?;
+        who = n.id();
+    } else {
+        if allow && !cfg.online_mode { return Err(AppError::invalid("Primero activá «Verificar cuentas con Mojang» (modo online): sin eso, cualquiera podría entrar con el nombre de un operador.")); }
+        cfg.external_access = Some(allow);
+        instance::save(&cfg)?;
+        who = "esta PC".into();
+    }
+    host939_core::playeredit::audit(&id, if allow { "conexiones-sin-939host: permitidas" } else { "conexiones-sin-939host: bloqueadas" }, &who);
+    // La red local cambia en server.properties (se aplica al reiniciar); la entrada, ya.
+    let _ = host939_core::properties::write_for(&instance::load(&id)?);
+    if let Ok(n) = cl.node().await { n.sync_entrances().await; }
+    Ok(())
+}
+
+/// Esta PC acepta (o deja de aceptar) ser entrada pública desde Internet.
+#[tauri::command]
+pub async fn entrance_consent(app: AppHandle, consent: bool, mapping: Option<bool>) -> AppResult<()> {
+    let mut st = host939_core::settings::load();
+    st.public_entrance = consent;
+    if let Some(m) = mapping { st.public_entrance_mapping = m; }
+    host939_core::settings::save(&st)?;
+    if let Ok(n) = app.state::<Cluster>().node().await { n.sync_entrances().await; }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn entrance_port_set(app: AppHandle, id: String, port: u16) -> AppResult<()> {
+    instance::load(&id)?;
+    host939_core::access::set_entrance_port(&id, port)?;
+    if let Ok(n) = app.state::<Cluster>().node().await { n.sync_entrances().await; }
+    Ok(())
+}

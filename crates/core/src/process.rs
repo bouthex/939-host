@@ -449,7 +449,7 @@ impl Manager {
         let occ = crate::ports::occupant(cfg.port, &self.own_processes());
         let others: Vec<u16> = crate::instance::list_configs().into_iter().filter(|c| c.id != cfg.id).map(|c| c.port).collect();
         let next = crate::ports::free_near(cfg.port, &others);
-        if crate::settings::load().lan_access {
+        if crate::access::lan_effective(&cfg.id) {
             return Err(AppError::new("port", format!(
                 "El puerto {} lo usa {}. Tocá «Reparar» para pasar este servidor a {}. Como está activado el acceso desde la red local, quien entre directo por IP va a tener que usar el puerto nuevo.",
                 cfg.port, occ.describe(), next.map(|p| p.to_string()).unwrap_or_else(|| "otro puerto libre".into()))));

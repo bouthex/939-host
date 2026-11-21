@@ -45,6 +45,11 @@ pub struct ServerIdentity {
 #[serde(rename_all = "camelCase")]
 pub struct ServerConfig {
     pub id: String,
+    /// «Permitir conexiones sin 939 Host» (servidores no compartidos; los compartidos lo llevan en
+    /// la lista firmada). `None` = sin decidir: se mantiene lo de antes (solo la red local, si la
+    /// PC lo permite).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_access: Option<bool>,
     pub name: String,
     /// Logo propio del servidor: `preset:<n>` (diseños de 939 Host) o `custom` (imagen subida,
     /// guardada como `logo.png`). `None` = el ícono genérico.

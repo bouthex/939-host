@@ -239,6 +239,31 @@ jobs:
       - name: Verificar SHA-256
         shell: bash
         run: cd dist && sha256sum -c <(grep -v payload/ SHA256SUMS.txt)
+      - name: Instalar la versión publicada (v0.9.0) para probar la actualización desde ella
+        timeout-minutes: 6
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.9.0 --repo "${{ github.repository }}" --pattern "*instalador*.exe" --pattern "SHA256SUMS.txt" --dir v090
+          $old = (Get-ChildItem v090\*.exe | Select-Object -First 1).FullName
+          $want = (Get-Content v090\SHA256SUMS.txt | Where-Object { $_ -match [regex]::Escape((Split-Path $old -Leaf)) }) -split '\s+' | Select-Object -First 1
+          if ((Get-FileHash $old).Hash -ne $want.ToUpper()) { throw "El instalador publicado de v0.9.0 no coincide con su SHA-256" }
+          Start-Process $old -ArgumentList '/S' -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "v0.9.0 se cerró al abrir" }
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          $root = "$env:LOCALAPPDATA\939Host"
+          if (!(Test-Path "$root\identity\node.key")) { throw "v0.9.0 no creó su identidad" }
+          # Una preferencia elegida por la persona, para ver que la actualización la conserva.
+          $s = if (Test-Path "$root\settings.json") { Get-Content "$root\settings.json" -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
+          $s | Add-Member -NotePropertyName consoleFontSize -NotePropertyValue 15 -Force
+          $s | ConvertTo-Json -Depth 20 | Set-Content "$root\settings.json" -Encoding utf8
+          (Get-FileHash "$root\identity\node.key").Hash | Set-Content v090\identidad.txt
+          Write-Output "v0.9.0 instalada y usada: identidad y preferencias guardadas"
       - name: Instalar sin administrador (silencioso)
         shell: pwsh
         run: |
@@ -251,6 +276,21 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install playwright==1.48.0 pillow psutil
+      - name: Actualización desde v0.9.0 conserva identidad y preferencias
+        shell: pwsh
+        run: |
+          $root = "$env:LOCALAPPDATA\939Host"
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "La versión nueva se cerró al abrir sobre los datos de v0.9.0" }
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          if ((Get-FileHash "$root\identity\node.key").Hash -ne (Get-Content v090\identidad.txt).Trim()) { throw "La actualización cambió la identidad de la PC (se perdería el grupo)" }
+          $s = Get-Content "$root\settings.json" -Raw | ConvertFrom-Json
+          if ($s.consoleFontSize -ne 15) { throw "La actualización perdió una preferencia del usuario" }
+          if (!(Test-Path "$root\version-datos")) { throw "No quedó registrada la versión de los datos" }
+          Write-Output "✔ v0.9.0 → nueva: identidad intacta, preferencia conservada, datos versionados ($(Get-Content $root\version-datos))"
       - name: Abrir la app y usarla como una persona
         timeout-minutes: 35
         shell: pwsh

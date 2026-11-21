@@ -681,30 +681,80 @@ A['member-op'] = async (el) => {
   drawTab();
 };
 
-/* ── Jugadores sin 939 Host ── */
+/* ── Jugadores sin 939 Host: interruptor de la propietaria, entradas desde Internet y dirección ── */
 const PUBLIC = {};
-function publicRow(id) {
-  if (PUBLIC[id] === undefined) { PUBLIC[id] = null; invoke('public_address_get', { id }).then((a) => { PUBLIC[id] = a || ''; if (state.route === 'server' && state.params.id === id && state.tab === 'summary') drawTab(); }).catch(() => {}); }
-  const a = PUBLIC[id];
-  return `<div class="kv"><span class="k">Sin 939 Host</span><span class="row" style="gap:6px">${a ? `<span class="mono">${esc(a)}</span><button class="btn s icon ghost" data-a="copy" data-text="${esc(a)}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button>` : '<span class="sm t3">Sin dirección pública</span>'}<button class="btn s ghost" data-a="public-edit" data-id="${esc(id)}">${a ? 'Cambiar' : 'Cómo hacerlo'}</button></span></div>`;
+const EXT = {};
+function loadExt(id, force = false) {
+  const e = EXT[id];
+  if (!force && e && (e.loading || Date.now() - e.at < 8000)) return;
+  EXT[id] = { ...(e || {}), loading: true, at: Date.now() };
+  invoke('external_status', { id }).then((v) => { EXT[id] = { v, at: Date.now() }; if (state.route === 'server' && state.params.id === id && state.tab === 'summary') drawTab(); })
+    .catch(() => { EXT[id] = { v: null, at: Date.now() }; });
 }
-A['public-edit'] = async (el) => {
+const ENT_STATE = { preparando: 'Preparando', abierta: 'Abierta, sin comprobar', comprobada: 'Funciona', 'sin-acceso': 'No se llega desde Internet', cgnat: 'IP compartida por el proveedor (CGNAT)', error: 'Error' };
+function publicRow(id) {
+  loadExt(id);
+  const x = EXT[id]?.v;
+  if (!x) return `<div class="kv"><span class="k">Sin 939 Host</span><span class="sm t3">Cargando…</span></div>`;
+  let val;
+  if (x.allowed === false) val = '<span class="sm t2">Bloqueado: solo se entra con 939 Host</span>';
+  else if (x.allowed !== true) val = `<span class="sm t2">${x.lanAccess ? 'Solo desde tu red local' : 'Solo con 939 Host'}</span>`;
+  else {
+    const addr = x.publicName || x.best;
+    val = addr ? `<span class="mono">${esc(addr)}</span><button class="btn s icon ghost" data-a="copy" data-text="${esc(addr)}" data-msg="Dirección copiada" aria-label="Copiar dirección">${icon('copy', 14)}</button>${x.publicName ? '' : `<span class="xs t3">${x.bestVerified ? 'comprobada' : 'sin comprobar'}</span>`}`
+      : '<span class="sm t2">Permitido, pero sin entrada desde Internet todavía</span>';
+  }
+  return `<div class="kv"><span class="k">Sin 939 Host</span><span class="row wrap" style="gap:6px;justify-content:flex-end">${val}<button class="btn s ghost" data-a="ext-open" data-id="${esc(id)}">Configurar</button></span></div>`;
+}
+function entranceRows(x) {
+  if (!x.entrances.length) return `<div class="li"><div class="grow sm t2">Ninguna PC del grupo es entrada todavía. ${x.consent ? 'Esta PC acepta serlo: se abre cuando el permiso esté activado.' : 'Activá «Recibir jugadores de Internet en esta PC» abajo o en la PC que prefieras.'}</div></div>`;
+  return x.entrances.map((e) => `<div class="li"><div class="grow stack" style="gap:2px">
+      <div class="row wrap" style="gap:8px"><b>${esc(e.isMe ? 'Esta PC' : e.name)}</b><span class="chip s ${e.info.state === 'comprobada' ? 'fill' : ''}">${esc(ENT_STATE[e.info.state] || e.info.state)}</span>${e.online ? '' : '<span class="chip s">Desconectada</span>'}</div>
+      ${e.info.addr ? `<span class="mono sm">${esc(e.info.addr)}</span>` : ''}
+      <span class="sm t2">${esc(e.info.detail || '')}</span>
+      ${e.isMe && e.info.addrV6 ? `<span class="xs t3">También por IPv6: <span class="mono">${esc(e.info.addrV6)}</span> (depende del firewall de tu router)</span>` : ''}
+      ${e.isMe && e.info.local && e.info.state === 'sin-acceso' ? `<span class="xs t3">Para abrirlo a mano: reenviá el puerto TCP ${esc(e.info.local.split(':').pop())} hacia <span class="mono">${esc(e.info.local.split(':')[0])}</span> en tu router.</span>` : ''}
+    </div>${e.info.addr ? `<button class="btn s icon ghost" data-a="copy" data-text="${esc(e.info.addr)}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button>` : ''}</div>`).join('');
+}
+A['ext-open'] = async (el) => {
   const id = el.dataset.id;
-  let val = PUBLIC[id] || '';
+  let x;
+  try { x = await invoke('external_status', { id }); } catch (e) { fail(e); return; }
+  const allowed = x.allowed === true;
+  let name = x.publicName || '', port = x.myPort, wantAllow = allowed, wantConsent = x.consent;
   const r = await dialog({ title: 'Jugadores sin 939 Host', wide: true,
-    body: `<p>Las direcciones <b>.939host</b> y la conexión del grupo funcionan entre PCs con 939 Host: viajan cifradas y nadie del grupo ve la IP de tu casa (con el modo privado, ni siquiera entre ustedes).</p>
-      <p>Para que entre alguien <b>sin</b> 939 Host, su Minecraft tiene que llegar a una dirección pública. Eso necesita un punto de entrada en Internet, y 939 Host no lo trae incluido porque costaría dinero o expondría tu conexión. Opciones:</p>
-      <div class="list card">
-        <div class="li"><div class="grow"><b>Servicio de túnel con tu propia cuenta (recomendado)</b><div class="sm t2">Por ejemplo playit.gg (plan gratuito). Te da un nombre como <span class="mono">algo.joinmc.link</span>; tu IP queda oculta detrás del servicio. Ese servicio ve los datos de conexión (quién se conecta y cuándo) y tenés que tener su programa abierto. Soporta TCP y UDP (sirve para el chat de voz si agregás el puerto de voz).</div></div></div>
-        <div class="li"><div class="grow"><b>Tu dominio propio</b><div class="sm t2">Un registro SRV <span class="mono">_minecraft._tcp.mc.tudominio.com</span> que apunte al nombre de tu túnel te deja usar <span class="mono">mc.tudominio.com</span>. El dominio tiene costo anual.</div></div></div>
-        <div class="li"><div class="grow"><b>Abrir un puerto en el router</b><div class="sm t2">No lo recomendamos: muestra la IP de tu casa a quien se conecte. 939 Host nunca lo hace solo. Además hay que activar «Acceso por LAN» en Ajustes (sin eso el servidor solo escucha en esta PC).</div></div></div>
+    body: `<div class="stack" style="gap:14px">
+      <div class="card" style="padding:0 20px"><label class="switch" ${x.canChange ? '' : 'style="cursor:default"'}><div class="grow"><b>Permitir conexiones sin 939 Host</b>
+        <span class="sm t2">Encendido: cualquiera con la dirección puede <b>jugar</b> con su Minecraft normal, sin instalar nada ni tener cuenta de 939 Host. No puede alojar el servidor, administrarlo desde 939 Host ni tomar el control. Apagado: solo entran quienes tienen 939 Host; el grupo y el alojamiento siguen igual.</span>
+        ${x.canChange ? '' : '<span class="sm t3">Lo decide la PC propietaria.</span>'}</div>
+        <input type="checkbox" id="ext-allow" ${allowed ? 'checked' : ''} ${x.canChange ? '' : 'disabled'} aria-label="Permitir conexiones sin 939 Host"></label></div>
+      ${!x.onlineMode ? `<div class="note">${icon('alert')}<div class="grow"><b>Necesita «Verificar cuentas con Mojang»</b><span class="sm t2">Sin el modo online, cualquiera podría entrar con el nombre de un operador. Activalo en Ajustes → Jugadores y red.</span></div></div>` : ''}
+      ${x.onlineMode && !x.whitelist && allowed ? `<div class="note">${icon('info')}<div class="grow"><span class="sm t2">Recomendado: activá la lista blanca para que solo entren las cuentas que agregues, aunque la dirección circule.</span></div></div>` : ''}
+      <div class="stack" style="gap:8px"><div class="sec">Entradas desde Internet</div>
+        <div class="list card">${entranceRows(x)}</div>
+        <span class="xs t3">Una entrada es una PC del grupo que recibe a esos jugadores y los lleva a la PC que aloja en ese momento: la dirección no cambia cuando cambia la anfitriona. Cada entrada la prueba otra PC del grupo desde su conexión. Si tu proveedor usa CGNAT o el router no abre puertos, desde Internet no se llega a esa PC: otra PC del grupo puede ser la entrada.</span></div>
+      <div class="card" style="padding:0 20px">
+        <label class="switch"><div class="grow"><b>Recibir jugadores de Internet en esta PC</b><span class="sm t2">Quien entre por acá ve la IP pública de esta PC. Solo se reenvía al juego. Vale para todos los servidores que lo permitan.</span></div><input type="checkbox" id="ext-consent" ${x.consent ? 'checked' : ''} aria-label="Recibir jugadores de Internet en esta PC"></label>
+        <div class="switch" style="cursor:default"><div class="grow"><b>Puerto público en esta PC</b><span class="sm t2">Con 25565 los jugadores no escriben puerto. Otro número se agrega a la dirección (por ejemplo, <span class="mono">…:25566</span>).</span></div><input class="input mono" type="number" id="ext-port" min="1024" max="65535" value="${port}" style="width:110px" aria-label="Puerto público"></div>
       </div>
-      <p class="sm t2" style="margin-top:10px"><b>Un nombre no oculta la IP por sí solo.</b> Si tu dominio o un DNS dinámico apunta directo a tu casa, cualquiera que lo resuelva ve tu IP. Solo un servicio de túnel la oculta.</p>
-      <label class="field" style="margin-top:12px">Dirección pública que te dio tu servicio (opcional)<input class="input mono" id="pub-in" value="${esc(val)}" maxlength="200" spellcheck="false" placeholder="por ejemplo, mundo.joinmc.link"><span class="hint">939 Host la muestra en este servidor y en la ficha del grupo; no comprueba que funcione ni que oculte tu IP. No se aceptan IP numéricas.</span></label>`,
-    buttons: [...(val ? [{ label: 'Quitar', value: 'clear' }] : []), { label: 'Guardar', value: 'save', kind: 'pri' }],
-    onMount: (d) => { const i = d.querySelector('#pub-in'); i.addEventListener('input', () => { val = i.value; }); } });
-  if (!r) return;
-  try { PUBLIC[id] = (await invoke('public_address_set', { id, address: r === 'clear' ? null : val })) || ''; toast(PUBLIC[id] ? 'Dirección pública guardada' : 'Dirección pública quitada'); } catch (e) { fail(e); }
+      <label class="field">Nombre propio (opcional)<input class="input mono" id="pub-in" value="${esc(name)}" maxlength="200" spellcheck="false" placeholder="por ejemplo, mc.midominio.com"><span class="hint">Si tenés un dominio o un DNS dinámico que apunte a la entrada (o un servicio de túnel propio), se muestra en lugar de la IP. 939 Host no lo crea ni comprueba que apunte bien.</span></label>
+    </div>`,
+    buttons: [{ label: 'Guardar', value: 'save', kind: 'pri' }],
+    onMount: (d) => {
+      d.querySelector('#pub-in').addEventListener('input', (e) => { name = e.target.value; });
+      d.querySelector('#ext-port').addEventListener('input', (e) => { port = Number(e.target.value); });
+      d.querySelector('#ext-allow').addEventListener('change', (e) => { wantAllow = e.target.checked; });
+      d.querySelector('#ext-consent').addEventListener('change', (e) => { wantConsent = e.target.checked; });
+    } });
+  if (r !== 'save') return;
+  try {
+    if (x.canChange && wantAllow !== allowed) await invoke('external_set', { id, allow: wantAllow });
+    if (wantConsent !== x.consent) { await invoke('entrance_consent', { consent: wantConsent, mapping: null }); state.info.settings.publicEntrance = wantConsent; }
+    if (port !== x.myPort) await invoke('entrance_port_set', { id, port });
+    if ((name || '') !== (x.publicName || '')) await invoke('public_address_set', { id, address: name.trim() || null });
+    toast('Guardado');
+  } catch (e) { fail(e); }
+  loadExt(id, true);
   drawTab();
 };
 

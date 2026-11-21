@@ -23,6 +23,8 @@ pub mod friends;
 pub mod moving;
 pub mod signed;
 pub mod wire;
+mod entrance;
+pub use entrance::EntranceInfo;
 
 use anyhow::{anyhow, bail, Context, Result};
 use host939_core::lease::{self, Lease, LeaseKind, LeaseState};
@@ -170,6 +172,8 @@ enum Req {
     Succession { server: String, claim: serde_json::Value },
     /// Pide la foto de perfil con esa huella (solo entre integrantes del grupo).
     Avatar { server: String, hash: String },
+    /// «Probá mi entrada pública desde tu conexión» (ping de estado de Minecraft).
+    ProbeEntrance { server: String, addr: String },
 }
 
 impl Req {
@@ -177,7 +181,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } => server,
         }
     }
 }
@@ -220,6 +224,9 @@ pub struct Info {
     /// Puerto UDP de voz (Simple Voice Chat) del servidor encendido en esta PC.
     #[serde(default)]
     pub voice_port: Option<u16>,
+    /// Entrada pública de esta PC para el servidor (jugadores sin 939 Host), si la tiene abierta.
+    #[serde(default)]
+    pub entrance: Option<EntranceInfo>,
 }
 
 /// Estado del servidor que ven todas las PCs del grupo (el de la PC que lo aloja).
@@ -237,6 +244,8 @@ enum Resp {
     Leases { leases: Vec<Lease> },
     /// Foto de perfil (PNG en base64).
     Avatar { png: String },
+    /// Resultado de probar una entrada pública.
+    Probe { ok: bool, detail: String },
     Err { msg: String },
 }
 
@@ -335,6 +344,10 @@ struct Inner {
     unread: Mutex<HashMap<String, usize>>,
     /// Conexiones de voz abiertas por PC (con tope).
     voice_slots: Mutex<HashMap<String, usize>>,
+    /// Entradas públicas abiertas en esta PC, por servidor (ver `entrance`).
+    entrances: Mutex<HashMap<String, entrance::Open>>,
+    /// Comprobaciones de entradas pedidas por otras PCs.
+    probe_limit: Mutex<RateLimit>,
 }
 
 /// Estado de un servidor compartido tal como lo ve esta PC (para la interfaz).
@@ -540,6 +553,7 @@ impl GroupNode {
             ctrl_limit: Mutex::new(RateLimit::new(CTRL_PER_MIN, 20_000)), sync_now_limit: Mutex::new(RateLimit::new(12, 200)),
             data_limit: Mutex::new(RateLimit::new(3000, 50_000)),
             friends_live: Default::default(), unread: Default::default(), voice_slots: Default::default(),
+            entrances: Default::default(), probe_limit: Mutex::new(RateLimit::new(6, 120)),
             serve_tx,
         });
         {
@@ -569,6 +583,7 @@ impl GroupNode {
                 let servers = network::shared_servers();
                 futures_util::future::join_all(servers.iter().map(|s| n2.tick(s))).await;
                 for s in &servers { n2.auto_answer(s); }
+                n2.sync_entrances().await;
                 tokio::time::sleep(n2.inner.timing.poll).await;
             }
         });
@@ -596,6 +611,7 @@ impl GroupNode {
     pub async fn shutdown(&self) {
         self.inner.stopping.store(true, std::sync::atomic::Ordering::Relaxed);
         for (_, t) in self.inner.routes.lock().await.drain() { t.abort(); }
+        self.inner.entrances.lock().unwrap().clear();
         let _ = self.router.shutdown().await;
     }
 
@@ -1027,6 +1043,21 @@ impl GroupNode {
         let mut s = network::load_share(server);
         s.auto_failover = auto_failover;
         s.handover_on_quit = handover_on_quit;
+        self.inner.commit(server, &mut s)
+    }
+
+    /// «Permitir conexiones sin 939 Host»: solo la propietaria, firmado y enviado a todo el grupo.
+    /// Encenderlo exige el modo online de Minecraft: sin él, cualquiera podría entrar con el nombre
+    /// de un operador.
+    pub fn set_external_access(&self, server: &str, allow: bool) -> Result<()> {
+        if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede decidir quién entra sin 939 Host."); }
+        if allow {
+            if let Ok(c) = host939_core::instance::load(server) {
+                if !c.online_mode { bail!("Primero activá «Verificar cuentas con Mojang» (modo online): sin eso, cualquiera podría entrar desde Internet con el nombre de un operador."); }
+            }
+        }
+        let mut s = network::load_share(server);
+        s.external_access = Some(allow);
         self.inner.commit(server, &mut s)
     }
 
@@ -1948,6 +1979,7 @@ impl Inner {
             avatar: host939_core::avatar::own_hash(),
             state: String::new(), state_detail: String::new(), players: 0,
             voice_port: if self.local.is_running(server) && lease::read(server).map(|l| l.held_by(&self.me)).unwrap_or(false) { host939_core::voice::port(server, self.local.mc_port(server)) } else { None },
+            entrance: self.entrance_info(server),
         };
         let (state, state_detail, players) = self.state_of(server);
         let base = Info { state, state_detail, players, ..base };
@@ -2802,6 +2834,7 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
                 None => Resp::Err { msg: "Esa foto ya no está.".into() },
             }
         }
+        Req::ProbeEntrance { addr, .. } => inner.probe_for(remote, &addr).await,
         Req::Nudge { .. } => {
             // Una conexión nueva hacia esa PC, que se cierra enseguida (solo sirve para que su
             // transporte vuelva a elegir el camino). Sin caché: tiene que ser una conexión nueva.

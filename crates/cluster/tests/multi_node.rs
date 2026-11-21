@@ -912,3 +912,97 @@ fn consumo_en_reposo() {
     std::thread::sleep(Duration::from_secs(10));
     medir("grupo y amigos, servidor encendido", &ps, 120);
 }
+
+/// ¿Responde algo como Minecraft en ese puerto? (Como la lista de servidores del juego, sin 939 Host.)
+fn ping_externo(port: u16) -> Option<String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let c = tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(("127.0.0.1", port))).await.ok()?.ok()?;
+        tokio::time::timeout(Duration::from_secs(8), host939_cluster::moving::status(c)).await.ok()?.ok()
+    })
+}
+
+/// Conexión por IP para jugadores sin 939 Host: interruptor de la propietaria, entrada pública en
+/// una PC que no aloja, traspaso de anfitriona con la misma dirección, apagado efectivo e intentos
+/// de administración desde afuera. (Simulado en una PC: «Internet» es 127.0.0.1.)
+#[test]
+fn conexion_por_ip_sin_939_host() {
+    let tmp = tempfile::tempdir().unwrap();
+    let env = [("H939_ENTRANCE_BIND", "127.0.0.1")];
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &env);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &env);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &env);
+    let sid = a.ok("create Abierto 25861").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25862"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    c.ok(&format!("join {t}"));
+    wait("que los tres se vean", Duration::from_secs(20), || [&mut a, &mut b, &mut c].iter_mut().all(|n| n.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 3));
+    a.ok(&format!("start {sid}"));
+    // C (una PC que solo juega) acepta ser entrada pública en el puerto 25871.
+    c.ok(&format!("entport {sid} 25871"));
+    c.ok("consent 1");
+    // 3) Interruptor sin encender: nadie sin 939 Host entra.
+    assert!(c.ok(&format!("entrance {sid}")).is_null(), "sin permiso de la propietaria no se abre la entrada");
+    assert!(ping_externo(25871).is_none());
+    println!("✔ sin el permiso de la propietaria no hay entrada para jugadores sin 939 Host");
+    // 10) Una PC que no es la propietaria no puede encenderlo (ni siendo coanfitriona).
+    assert!(b.err(&format!("external {sid} 1")).contains("propietaria"));
+    assert!(c.err(&format!("external {sid} 1")).contains("propietaria"));
+    // Modo sin conexión: se niega a abrir (cualquiera entraría con el nombre de un operador).
+    assert!(a.err(&format!("external {sid} 1")).contains("modo online"));
+    a.ok(&format!("online {sid} 1"));
+    a.ok(&format!("external {sid} 1"));
+    println!("✔ solo la propietaria lo enciende, y nunca con el modo sin conexión");
+    // 2) Encendido: un Minecraft sin 939 Host entra por la entrada de C y llega a A.
+    wait("C abre la entrada", Duration::from_secs(20), || !c.ok(&format!("entrance {sid}")).is_null());
+    wait("entrada de C lleva a A", Duration::from_secs(20), || ping_externo(25871).map(|s| s.contains("hosteado por A")).unwrap_or(false));
+    wait("otra PC comprueba la entrada", Duration::from_secs(30), || c.ok(&format!("entrance {sid}"))["state"] == "comprobada");
+    let e = c.ok(&format!("entrance {sid}"));
+    assert_eq!(e["addr"], "127.0.0.1:25871");
+    println!("✔ entrada pública en C comprobada desde otra PC: {}", e["detail"]);
+    // La propietaria ve la entrada de C (para mostrar la dirección).
+    wait("A ve la entrada de C", Duration::from_secs(20), || a.ok(&format!("entrances {sid}")).as_array().map(|v| v.iter().any(|x| x[3]["addr"] == "127.0.0.1:25871")).unwrap_or(false));
+    // 10) Lo que llega por la entrada es solo Minecraft: basura o un pedido «de administración»
+    // termina en el servidor de juego y nada cambia en el grupo.
+    {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", 25871)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let _ = s.write_all(b"{\"t\":\"external\",\"server\":\"x\",\"allow\":false}\n939host/ctrl/1\r\nGET / HTTP/1.1\r\n\r\n");
+        let mut buf = [0u8; 256];
+        let _ = s.read(&mut buf);
+    }
+    assert_eq!(a.ok(&format!("running {sid}")).as_bool(), Some(true));
+    assert!(ping_externo(25871).unwrap_or_default().contains("hosteado por A"), "la entrada sigue igual");
+    println!("✔ basura y pedidos de administración por la entrada no hacen nada: solo llega Minecraft");
+    // 4) Cambio de anfitriona: la misma dirección ahora lleva a B.
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    a.ok(&format!("handover {sid} {}", b.ok("id").as_str().unwrap()));
+    wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("la misma dirección lleva a B", Duration::from_secs(20), || ping_externo(25871).map(|s| s.contains("hosteado por B")).unwrap_or(false));
+    println!("✔ cambio de anfitriona A→B: la dirección pública no cambió");
+    // 5) Reinicio de la anfitriona: mientras está apagado, el juego muestra el motivo; al volver,
+    // la misma dirección funciona sola.
+    b.ok(&format!("stop {sid}"));
+    wait("aviso con el servidor apagado", Duration::from_secs(20), || ping_externo(25871).map(|s| !s.contains("hosteado por")).unwrap_or(false));
+    b.ok(&format!("start {sid}"));
+    wait("vuelve tras el reinicio", Duration::from_secs(20), || ping_externo(25871).map(|s| s.contains("hosteado por B")).unwrap_or(false));
+    println!("✔ reinicio de la anfitriona: aviso mientras está apagado y la misma dirección al volver");
+    // 3) La propietaria lo apaga: la entrada se cierra en todas las PCs.
+    a.ok(&format!("external {sid} 0"));
+    wait("C cierra la entrada", Duration::from_secs(30), || c.ok(&format!("entrance {sid}")).is_null() && ping_externo(25871).is_none());
+    println!("✔ apagado: sin entrada para jugadores sin 939 Host");
+    // 1) Los jugadores con 939 Host siguen entrando como siempre (por el túnel del grupo).
+    let port_c = c.ok(&format!("route {sid} 41931")).as_u64().unwrap() as u16;
+    assert!(slp(port_c).contains("hosteado por B"));
+    // Y la PC que dejó de consentir no reabre aunque se vuelva a permitir.
+    c.ok("consent 0");
+    a.ok(&format!("external {sid} 1"));
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(c.ok(&format!("entrance {sid}")).is_null() && ping_externo(25871).is_none());
+    println!("✔ con 939 Host se sigue entrando; una PC que no acepta ser entrada no la abre");
+}

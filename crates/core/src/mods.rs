@@ -466,7 +466,7 @@ mod tests {
         let _ = paths::init(std::env::temp_dir().join("939host-unit-tests"));
         let id = format!("t{}", rand_id());
         std::fs::create_dir_all(paths::server_run_dir(&id)).unwrap();
-        ServerConfig {
+        ServerConfig { external_access: None,
             id, name: "T".into(), logo: None, description: String::new(), mc_version: "26.2".into(), loader: Loader::Fabric, loader_version: None, java_major: 25, java_required: 25, java_choice: None,
             memory_mb: 2048, jvm_profile: JvmProfile::Balanced, extra_jvm_args: String::new(), port: 25565, max_players: 8, motd: String::new(),
             online_mode: true, whitelist: true, difficulty: "hard".into(), gamemode: "survival".into(), hardcore: false, pvp: true, level_seed: String::new(),

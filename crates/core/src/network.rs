@@ -110,6 +110,10 @@ pub struct ShareConfig {
     /// Hasta entonces la anfitriona no quita OP que no conoce.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mc_ops_init: bool,
+    /// «Permitir conexiones sin 939 Host», decidido por la propietaria (firmado). `None` = sin
+    /// decidir: solo la red local, como antes de que existiera el interruptor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_access: Option<bool>,
 }
 
 /// Qué tiene que hacer la anfitriona con el OP de Minecraft según la lista firmada:
@@ -135,7 +139,7 @@ pub struct McOp { pub node_id: String, pub mc_name: String }
 
 impl Default for ShareConfig {
     fn default() -> Self {
-        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None, rejected_mods: vec![], mc_ops: vec![], mc_ops_revoked: vec![], mc_ops_base: vec![], mc_ops_init: false }
+        ShareConfig { enabled: false, members: vec![], invites: vec![], auto_failover: true, handover_on_quit: true, card: None, sig: None, owner_pin: None, recovery: None, recovery_pending: None, successor: None, succession: None, rsig: None, approved_mods: vec![], mod_policy: None, rejected_mods: vec![], mc_ops: vec![], mc_ops_revoked: vec![], mc_ops_base: vec![], mc_ops_init: false, external_access: None }
     }
 }
 

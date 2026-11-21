@@ -40,9 +40,13 @@
         recent: [{ join: '2026-11-19T20:00:00-03:00', leave: '2026-11-19T21:30:00-03:00', secs: 5400, cut: false }, { join: '2026-11-01T10:00:00-03:00', leave: '2026-11-01T10:00:00-03:00', secs: 0, cut: true }] } },
     mod_items: { 'gemas:rubi': { known: true, name: 'Rubí', modName: 'Gemas Brillantes', icon: 'logo-939.png' }, 'gemas:sin_icono': { known: true, name: 'Polvo de rubí', modName: 'Gemas Brillantes', icon: null }, 'otromod:cosa_rara': { known: false, name: null, modName: null, icon: null } },
     game_assets_status: { enabled: false, ready: false },
+    external_status: { allowed: true, shared: true, canChange: true, onlineMode: true, whitelist: false, lanAccess: false, consent: true, mapping: true, myPort: 25565,
+      entrances: [{ node: 'n0', name: 'Esta PC', online: true, isMe: true, info: { state: 'comprobada', detail: 'Comprobada desde otra PC del grupo: Minecraft 1.21.4 responde en 38 ms.', addr: '181.45.3.2:25565', addrV6: null, local: '192.168.1.20:25565', method: 'upnp', checkedAt: '2026-11-20T03:00:00-03:00' } },
+        { node: 'n2', name: 'Kaki', online: true, isMe: false, info: { state: 'cgnat', detail: 'El router abrió el puerto, pero su IP de Internet (100.70.1.4) es compartida por tu proveedor (CGNAT): desde Internet no se llega a esta PC. Otra PC del grupo puede ser la entrada.', addr: null, method: 'upnp' } }],
+      best: '181.45.3.2:25565', bestVerified: true, publicName: null },
     player_edit_access: { allowed: true, reason: null, liveHealth: true, liveFeed: true, liveXp: true }, modrinth_modpacks: { hits: [], total: 0 },
   };
-  const OBJ = new Set(['get_server', 'world_info', 'files_list', 'snapshots_list', 'alias_status', 'app_info', 'share_status', 'storage_usage', 'game_assets_status', 'modrinth_modpacks', 'cf_status', 'alias_status', 'profile_photo_get', 'player_edit_access', 'player_detail', 'mod_items']);
+  const OBJ = new Set(['get_server', 'world_info', 'files_list', 'snapshots_list', 'alias_status', 'app_info', 'share_status', 'storage_usage', 'game_assets_status', 'modrinth_modpacks', 'cf_status', 'alias_status', 'profile_photo_get', 'player_edit_access', 'player_detail', 'mod_items', 'external_status']);
   const NUL = new Set(['data_notice', 'start_server', 'stop_server', 'server_logo_default', 'server_logo_set', 'server_logo_clear']);
   const listeners = {};
   window.__TAURI__ = {

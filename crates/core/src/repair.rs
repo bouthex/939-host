@@ -378,7 +378,7 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
         let occ = crate::ports::occupant(cfg.port, &mgr.own_processes());
         let others: Vec<u16> = crate::instance::list_configs().into_iter().filter(|c| c.id != cfg.id).map(|c| c.port).collect();
         let port = crate::ports::free_near(cfg.port, &others);
-        let lan = crate::settings::load().lan_access;
+        let lan = crate::access::lan_effective(&cfg.id);
         add(&mut problems, Problem { id: "port".into(), kind: "port".into(),
             title: format!("El puerto {} está ocupado", cfg.port),
             explanation: format!("Lo usa {}, así que Minecraft no puede escuchar ahí. 939 Host no cierra ni modifica ese programa: cambia el puerto de este servidor.", occ.describe()),
@@ -767,7 +767,7 @@ mod tests {
         let id = format!("r{}", hex::encode(b));
         std::fs::create_dir_all(paths::server_run_dir(&id).join("mods")).unwrap();
         ServerConfig {
-            id, name: "T".into(), logo: None, description: String::new(), mc_version: "26.2".into(), loader: Loader::Fabric, loader_version: None, java_major: 25, java_required: 25, java_choice: None,
+            external_access: None, id, name: "T".into(), logo: None, description: String::new(), mc_version: "26.2".into(), loader: Loader::Fabric, loader_version: None, java_major: 25, java_required: 25, java_choice: None,
             // Puerto libre: otras pruebas en paralelo pueden usar el 25565 (y el reparador lo diría).
             memory_mb: 2048, jvm_profile: JvmProfile::Balanced, extra_jvm_args: String::new(), port: crate::ports::free_near(47000, &[]).unwrap_or(47001), max_players: 8, motd: String::new(),
             online_mode: true, whitelist: true, difficulty: "hard".into(), gamemode: "survival".into(), hardcore: false, pvp: true, level_seed: String::new(),

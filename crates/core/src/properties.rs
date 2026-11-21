@@ -98,8 +98,9 @@ pub fn write_for(cfg: &ServerConfig) -> AppResult<()> {
         ("allow-flight", b(cfg.allow_flight)),
         ("enable-command-block", b(cfg.enable_command_block)),
         // Por defecto el servidor escucha solo en esta PC: se juega a través de 939 Host (que
-        // autentica a cada PC del grupo). «Permitir conexiones de mi red local» lo abre a la LAN.
-        ("server-ip", if crate::settings::load().lan_access { String::new() } else { "127.0.0.1".to_string() }),
+        // autentica a cada PC del grupo). «Permitir conexiones de mi red local» lo abre a la LAN,
+        // salvo que el servidor tenga bloqueadas las conexiones sin 939 Host (ver `access`).
+        ("server-ip", if crate::access::lan_effective(&cfg.id) { String::new() } else { "127.0.0.1".to_string() }),
     ];
     for (k, v) in managed { map.insert(k.to_string(), v); }
     // Servidores compartidos: server.properties viaja entre las PCs del grupo con cada punto de
@@ -175,6 +176,20 @@ mod tests {
         assert_eq!(p.get("management-server-host").map(String::as_str), Some("localhost"), "{p:?}");
         // Un servidor que no se comparte es de esta PC: su dueña puede usar RCON si quiere.
         let p = prepare(&format!("props-solo-{}", std::process::id()), false);
-        assert_eq!(p.get("enable-rcon").map(String::as_str), Some("true"), "{p:?}");
+        assert_eq!(p.get("enable-rcon").map(String::as_str), Some("true"), "{p:?}");        // Interruptor «conexiones sin 939 Host» bloqueado: aunque la PC permita la red local,
+        // Minecraft escucha solo en esta PC (lo único que llega es el túnel de 939 Host).
+        let mut st = crate::settings::load();
+        st.lan_access = true;
+        crate::settings::save(&st).unwrap();
+        for (val, want) in [(Some(false), "127.0.0.1"), (None, ""), (Some(true), "")] {
+            let id = format!("props-ext-{}-{val:?}", std::process::id()).replace(['(', ')'], "");
+            let dir = paths::server_run_dir(&id);
+            std::fs::create_dir_all(&dir).unwrap();
+            crate::network::save_share(&id, &crate::network::ShareConfig { enabled: true, external_access: val, ..Default::default() }).unwrap();
+            write_for(&cfg_for(&id)).unwrap();
+            assert_eq!(read(&dir.join("server.properties")).get("server-ip").map(String::as_str), Some(want), "{val:?}");
+        }
+        st.lan_access = false;
+        crate::settings::save(&st).unwrap();
     }
 }

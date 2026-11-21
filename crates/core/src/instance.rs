@@ -130,7 +130,7 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
     while paths::server_dir(&id).exists() { id = format!("{}-{}", slugify(&input.name), random_suffix()); }
 
     let now = chrono::Local::now().to_rfc3339();
-    let mut cfg = ServerConfig {
+    let mut cfg = ServerConfig { external_access: None,
         id: id.clone(),
         name: input.name.trim().to_string(),
         logo: None,
