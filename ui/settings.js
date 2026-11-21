@@ -196,7 +196,7 @@ A['photo-edit'] = async () => {
     } else return;
   } catch (e) { fail(e); return; }
   paintFoot?.();
-  routes.settings();
+  if (state.route === 'settings') routes.settings();
 };
 
 A['sound-test'] = (el, ev) => { ev?.preventDefault?.(); invoke('play_start_sound').catch(fail); };

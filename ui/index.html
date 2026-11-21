@@ -8,10 +8,16 @@
   <script src="theme-boot.js"></script>
 </head>
 <body>
-  <!-- Presentación: tres caras de cubo que giran en perspectiva hasta formar «939». Solo transform/opacity,
-       no espera a nada: se va en cuanto la app terminó de cargar. Sin animación si se pide menos movimiento. -->
+  <!-- Presentación: tres caras de cubo entran girando con los trazos del 939 dibujándose, dos líneas
+       cruzan la escena, los cubos giran a su cara clara y se juntan en el logo; al salir se separan.
+       Solo transform/opacity, no frena la carga (la app se arma debajo) y dura al menos ~2,3 s.
+       Con «menos movimiento» se ve el logo quieto, sin espera. -->
   <div class="splash" id="splash" aria-hidden="true">
-    <div class="sp-row"><span class="sp-cube" style="--i:0"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35"/></svg></span><span class="sp-cube" style="--i:1"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path d="M1.35 1.35H11.2V17.65H1.35M5.2 9.5H11.2"/></svg></span><span class="sp-cube" style="--i:2"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35"/></svg></span></div>
+    <div class="sp-stage">
+      <span class="sp-streak a"></span><span class="sp-streak b"></span>
+      <div class="sp-row"><span class="sp-slot" style="--i:0"><span class="sp-cube"><span class="sp-flip"><span class="f dark"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path pathLength="1" d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35"/></svg></span><span class="f light"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path pathLength="1" d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35"/></svg></span></span></span></span><span class="sp-slot" style="--i:1"><span class="sp-cube"><span class="sp-flip"><span class="f dark"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path pathLength="1" d="M1.35 1.35H11.2V17.65H1.35M5.2 9.5H11.2"/></svg></span><span class="f light"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path pathLength="1" d="M1.35 1.35H11.2V17.65H1.35M5.2 9.5H11.2"/></svg></span></span></span></span><span class="sp-slot" style="--i:2"><span class="sp-cube"><span class="sp-flip"><span class="f dark"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path pathLength="1" d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35"/></svg></span><span class="f light"><svg viewBox="-0.2 -0.2 12.95 19.4" aria-hidden="true"><path pathLength="1" d="M11.2 9.5H1.35V1.35H11.2V17.65H1.35"/></svg></span></span></span></span></div>
+    </div>
+    <div class="sp-status" id="sp-status">&nbsp;</div>
     <div class="bar indet"><i></i></div>
   </div>
   <div class="app">
@@ -22,7 +28,7 @@
       </div>
       <div class="nav-wrap"><div class="nav-ind" id="nav-ind"></div><div id="nav" class="nav-wrap"></div></div>
       <div class="foot">
-        <button class="foot-id" data-a="identity" title="Nombre y símbolo de esta PC"><span id="foot-ic"></span><span class="grow" style="min-width:0"><span class="sm b ellipsis" id="foot-node" style="display:block">—</span><span class="xs t3 ellipsis" id="foot-state" style="display:block">&nbsp;</span></span></button>
+        <button class="foot-id" data-a="identity" title="Tu perfil: nombre, foto y símbolo de esta PC"><span id="foot-ic"></span><span class="grow" style="min-width:0"><span class="sm b ellipsis" id="foot-node" style="display:block">—</span><span class="xs t3 ellipsis" id="foot-state" style="display:block">&nbsp;</span></span></button>
         <button class="btn s icon ghost" data-a="quit" aria-label="Salir de 939 Host" title="Salir de 939 Host" id="quit-btn"></button>
       </div>
     </nav>

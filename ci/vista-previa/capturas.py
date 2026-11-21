@@ -23,6 +23,7 @@ with sync_playwright() as p:
             page.on("console", lambda m: errores.append(f"{w}x{h} consola: {m.text}") if m.type == "error" else None)
             page.add_init_script(f"window.__DATOS__ = {datos};\n{mock}")
             page.goto((ROOT / "ui/index.html").as_uri())
+            page.wait_for_function("!document.getElementById('splash')", timeout=8000)
             page.wait_for_timeout(1500 if motion == "no-preference" else 300)
             tag = f"{w}x{h}" + ("-reducido" if motion == "reduce" else "")
             if w == 1280 and motion == "no-preference":

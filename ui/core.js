@@ -321,14 +321,14 @@ async function paintFoot() {
 async function identityDialog() {
   const s = state.info.settings;
   let name = s.nodeName, symbol = PC_SYMBOLS.includes(s.nodeSymbol) ? s.nodeSymbol : 'bloque';
-  const paintPick = (d) => { d.querySelectorAll('.sympick button').forEach((b) => { const on = b.dataset.sym === symbol; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); }); d.querySelector('#id-prev').innerHTML = pcAvatar(symbol, 48, 'inv lg'); };
+  const paintPick = (d) => { d.querySelectorAll('.sympick button').forEach((b) => { const on = b.dataset.sym === symbol; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); }); d.querySelector('#id-prev').innerHTML = pcAvatar(symbol, 48, 'inv lg', state.photo || null); };
   const ok = await dialog({
-    title: 'Nombre de esta PC',
+    title: 'Tu perfil en esta PC',
     body: `<div class="row" style="gap:14px"><span id="id-prev"></span><div class="grow stack" style="gap:6px">
         <label class="field">Nombre<div class="row" style="gap:8px"><input class="input" id="id-name" maxlength="24" value="${esc(name)}" autocomplete="off" spellcheck="false"><button class="btn icon" id="id-dice" title="Otro nombre al azar" aria-label="Otro nombre al azar">${icon('dice', 18)}</button></div></label></div></div>
       <div class="field">Símbolo<div class="sympick" role="group" aria-label="Símbolo">${PC_SYMBOLS.map((k) => `<button type="button" data-sym="${k}" title="${SYMBOL_NAMES[k]}" aria-label="${SYMBOL_NAMES[k]}">${icon(`sym-${k}`, 22)}</button>`).join('')}</div></div>
-      <p class="sm">Es solo para reconocer esta PC en el grupo. No cambia su identidad, sus claves, sus permisos ni los servidores.</p>`,
-    confirm: 'Guardar',
+      <p class="sm">Es solo para reconocer esta PC en el grupo. No cambia su identidad, sus claves, sus permisos ni los servidores.${state.photo ? ' Con foto de perfil, la foto se muestra en lugar del símbolo.' : ''}</p>`,
+    buttons: [{ label: state.photo ? 'Cambiar foto' : 'Elegir foto', value: 'photo' }, { label: 'Guardar', value: true, kind: 'pri' }],
     onMount: (d) => {
       paintPick(d);
       const inp = d.querySelector('#id-name');
@@ -339,12 +339,17 @@ async function identityDialog() {
     },
   });
   if (!ok) return false;
+  const changed = name !== s.nodeName || symbol !== s.nodeSymbol;
   try {
-    state.info.settings = await invoke('pc_identity_set', { name, symbol });
-    paintFoot();
-    toast(`Esta PC ahora se llama «${state.info.settings.nodeName}»`);
-    return true;
+    if (changed || ok === true) {
+      state.info.settings = await invoke('pc_identity_set', { name, symbol });
+      paintFoot();
+      if (changed) toast(`Esta PC ahora se llama «${state.info.settings.nodeName}»`);
+    }
   } catch (e) { fail(e); return false; }
+  // «Cambiar foto»: el mismo editor de imágenes que usan los logos de los servidores.
+  if (ok === 'photo') await A['photo-edit']();
+  return true;
 }
 A.identity = async () => { if (await identityDialog()) { if (state.route === 'settings') routes.settings(); else if (state.route === 'server' && state.tab === 'group') drawTab(); } };
 

@@ -24,17 +24,22 @@ with sync_playwright() as p:
                 pg.wait_for_timeout(t - prev); prev = t
                 pg.screenshot(path=str(OUT / f"splash-{theme}-{motion}-{t}.png"), clip={"x": 312, "y": 240, "width": 400, "height": 200})
                 if motion == "reduce":
-                    op = pg.eval_on_selector_all(".sp-cube", "els => els.map(e => getComputedStyle(e).opacity + '|' + getComputedStyle(e).transform)")
-                    if any(o != "1|none" for o in op): fallos.append(f"con menos movimiento los cuadros no están quietos: {op}")
+                    corriendo = pg.evaluate("document.getElementById('splash').getAnimations({ subtree: true }).filter(a => a.playState === 'running').length")
+                    if corriendo: fallos.append(f"con menos movimiento hay {corriendo} animaciones en la presentación")
             ctx.close()
-    # Con la app real (simulada): el splash se va en cuanto la pantalla está lista.
-    ctx = b.new_context(viewport={"width": 1280, "height": 820})
-    pg = ctx.new_page(); pg.add_init_script(f"window.__DATOS__ = {datos};\n{mock}")
-    pg.goto((ROOT / "ui/index.html").as_uri())
-    pg.wait_for_function("window.__h939Ready", timeout=5000)
-    pg.wait_for_timeout(450)
-    if pg.query_selector("#splash"): fallos.append("el splash sigue en pantalla después de cargar")
-    ctx.close()
+    # Con la app (backend simulado): la app queda usable enseguida (la presentación no frena la
+    # carga), la presentación se ve al menos ~2,3 s y se va sola; con menos movimiento, enseguida.
+    for motion, minimo, maximo in [("no-preference", 2.0, 3.4), ("reduce", 0.0, 1.0)]:
+        ctx = b.new_context(viewport={"width": 1280, "height": 820}, reduced_motion=motion)
+        pg = ctx.new_page(); pg.add_init_script(f"window.__DATOS__ = {datos};\n{mock}")
+        pg.goto((ROOT / "ui/index.html").as_uri())
+        pg.wait_for_function("window.__h939Ready", timeout=5000)
+        listo = pg.evaluate("(window.__h939Ready - performance.timeOrigin) / 1000")
+        if listo > 2.0: fallos.append(f"la app tardó {listo:.1f} s en quedar usable")
+        pg.wait_for_function("!document.getElementById('splash')", timeout=6000)
+        fin = pg.evaluate("performance.now() / 1000")
+        if not (minimo <= fin <= maximo): fallos.append(f"con movimiento «{motion}» la presentación duró {fin:.1f} s (esperado {minimo}–{maximo})")
+        ctx.close()
     b.close()
 print("\n".join(fallos) if fallos else "presentación: sin errores")
 sys.exit(1 if fallos else 0)

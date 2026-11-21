@@ -11,10 +11,26 @@ function scheduleRefresh(id) {
   }, 250);
 }
 
+/* Presentación: se ve al menos ~2,3 s en cada apertura (sin frenar la carga: la app se arma
+   debajo) y muestra el paso real del arranque. Con «menos movimiento», se va apenas está lista. */
+const splashT0 = performance.now();
+const splashStep = (t) => { const el = $('#sp-status'); if (el) el.textContent = t; };
+function splashDone() {
+  const sp = $('#splash');
+  if (!sp) return;
+  sp.style.pointerEvents = 'none';
+  sp.classList.add('ready');
+  const still = (() => { try { return localStorage.getItem('939-motion') === 'reduce'; } catch { return false; } })() || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const wait = still ? 0 : Math.max(0, 2300 - (performance.now() - splashT0));
+  setTimeout(() => { sp.classList.add('out'); setTimeout(() => sp.remove(), 520); }, wait);
+}
+
 async function boot() {
+  splashStep('Leyendo tu configuración…');
   $('#quit-btn').innerHTML = icon('logout', 16);
   $('#foot-ic').innerHTML = icon('pc', 16);
-  try { state.info = await invoke('app_info'); } catch (e) { fail(e); $('#splash')?.classList.add('out'); return; }
+  try { state.info = await invoke('app_info'); } catch (e) { fail(e); splashStep('No se pudo iniciar'); $('#splash')?.classList.add('out'); return; }
+  splashStep('Preparando tu perfil…');
   state.photo = (await invoke('profile_photo_get').catch(() => ({}))).hash || null;
   applyTheme();
   paintFoot();
@@ -22,6 +38,7 @@ async function boot() {
   refreshTrashCount();
   setInterval(() => { if (!document.hidden) refreshFootState(); }, 30000);
 
+  splashStep('Conectando con los servidores…');
   await setupOps();
   await listen('server-changed', (ev) => scheduleRefresh(ev.payload.id));
   await listen('update-status', (ev) => {
@@ -85,11 +102,12 @@ async function boot() {
 
   if (!state.info.settings.onboardingDone) saveSetting({ onboardingDone: true }, null);
   refreshRequests();
+  splashStep('Cargando tus servidores…');
   await go('servers');
-  $('#splash')?.classList.add('out');
+  splashStep('Listo');
   // Momento en que la app queda usable (para medir el arranque en las pruebas).
   window.__h939Ready = performance.timeOrigin + performance.now();
-  setTimeout(() => $('#splash')?.remove(), 300);
+  splashDone();
   invoke('notify_ui_ready').catch(() => {});
   invoke('last_close_notes').then((notes) => { for (const n of notes || []) showLastClose(n); }).catch(() => {});
   invoke('data_notice').then((m) => { if (m) dialog({ title: 'Datos de 939 Host', body: `<p>${esc(m)}</p>`, buttons: [{ label: 'Entendido', value: 'ok', kind: 'pri' }] }); }).catch(() => {});

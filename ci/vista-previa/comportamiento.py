@@ -19,6 +19,7 @@ def abrir(b, **ctx):
     pg.on("pageerror", lambda e: errores.append(str(e)))
     pg.add_init_script(f"window.__DATOS__ = {datos};\n{mock}")
     pg.goto((ROOT / "ui/index.html").as_uri())
+    pg.wait_for_function("!document.getElementById('splash')", timeout=8000)
     pg.wait_for_timeout(1200)
     return c, pg
 
