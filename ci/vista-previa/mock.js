@@ -7,8 +7,8 @@
   const server = (over = {}) => Object.assign({ config: cfg, logoUrl: null, status: 'running', players: ['Ana', 'Beto'], startedAt: now, memoryUsedMb: 1830, mspt: 12.4, msptP95: 18, lastError: null, needsRestart: false, installing: false, worldSizeMb: 412, paused: false, saving: false, restarting: false, phase: null, countdown: null, pauseSupported: true, reach: 'ok', reachInfo: null, reachError: null, joinIssue: null, modsCount: 12 }, over);
   const servers = [server({ logoUrl: 'logo-939.png', config: Object.assign({}, cfg, { logo: '939' }) }), server({ config: Object.assign({}, cfg, { id: 'srv-2', name: 'Creativo', loader: 'vanilla', loaderVersion: null }), status: 'stopped', players: [] })];
   const friends = { available: true, friends: [
-    { node: 'n1', name: 'Archimak', online: true, playing: 'Supervivencia con amigos', available: true, unread: 2, avatar: null, sharedGroups: ['Supervivencia con amigos'] },
-    { node: 'n2', name: 'Kaki', online: false, playing: null, available: false, unread: 0, avatar: null, sharedGroups: [] }],
+    { node: 'n1', name: 'Lucía', online: true, playing: 'Supervivencia con amigos', available: true, unread: 2, avatar: null, sharedGroups: ['Supervivencia con amigos'] },
+    { node: 'n2', name: 'Tomi', online: false, playing: null, available: false, unread: 0, avatar: null, sharedGroups: [] }],
     requests: [{ node: 'n3', name: 'Lucía' }], notices: [], blocked: 0 };
   const T = {
     app_info: { version: '1.0.0', dataDir: 'C:\\Users\\usuario\\AppData\\Local\\939Host', node: { nodeId: 'abc', shortId: 'ABC' }, settings: D.settings },
@@ -26,9 +26,9 @@
     files_list: { entries: [{ name: 'world', path: 'world', dir: true, size: 0, modified: now, kind: 'world', locked: true }, { name: 'mods', path: 'mods', dir: true, size: 0, modified: now, kind: 'mods', locked: false }, { name: 'server.properties', path: 'server.properties', dir: false, size: 1300, modified: now, kind: 'config', locked: false }], remote: false },
     public_address_get: '',
     alias_status: { items: [], suggestion: { 'srv-demo': 'supervivencia' } }, list_backups: [], players_list: [
-      { name: 'Archimak', uuid: 'dc93628e-4a27-409a-8ed7-fa8b31818b75', online: true, whitelisted: true, opLevel: 4, banned: false, lastSeen: null },
-      { name: 'Kaki', uuid: '11111111-2222-4333-8444-555555555555', online: false, whitelisted: true, opLevel: null, banned: false, lastSeen: '2026-11-19T21:30:00-03:00' }],
-    player_detail: { name: 'Archimak', uuid: 'dc93628e-4a27-409a-8ed7-fa8b31818b75', source: 'live', savedAt: null, health: 15, food: 18, saturation: 3.5, xpLevel: 12, xpProgress: 0.4,
+      { name: 'Lucía', uuid: 'dc93628e-4a27-409a-8ed7-fa8b31818b75', online: true, whitelisted: true, opLevel: 4, banned: false, lastSeen: null },
+      { name: 'Tomi', uuid: '11111111-2222-4333-8444-555555555555', online: false, whitelisted: true, opLevel: null, banned: false, lastSeen: '2026-11-19T21:30:00-03:00' }],
+    player_detail: { name: 'Lucía', uuid: 'dc93628e-4a27-409a-8ed7-fa8b31818b75', source: 'live', savedAt: null, health: 15, food: 18, saturation: 3.5, xpLevel: 12, xpProgress: 0.4,
       gamemode: 'survival', dimension: 'minecraft:overworld', pos: [120.5, 64, -340.2], facing: 'Norte', spawn: null, armorPoints: 8,
       equipment: { head: null, chest: { slot: 102, id: 'minecraft:iron_chestplate', count: 1, damage: 20, maxDamage: 240, enchantments: [], customName: null }, legs: null, feet: null, offhand: null },
       inventory: [{ slot: 0, id: 'minecraft:diamond_sword', count: 1, damage: 100, maxDamage: 1561, enchantments: [['minecraft:sharpness', 3]], customName: null },
@@ -47,10 +47,10 @@
     game_sprites: { 'tex:shield_base_nopattern': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAk0lEQVR4Xu3YsQ2CUBSGUTRWDOEk1g5jwTAUDmPtJA5BKxUWkmBMbvPzzmkJL/DdW72uo22H5ffvw+X9T4rb+Py8m+yY/PEVTt+HvPrr5rnn6bH5PE3zGyBA2spWE6C6aBoB0iZWTYDqomkESJtYNQGqi6YRIG1i1QSoLppmdSO0txufX5rfAAAAAAAAAAAAAGC/ZoSKCP4ApGiNAAAAAElFTkSuQmCC', 'tex:chest/normal': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAeElEQVR4Xu3YMRGAMAwFUEANM4ZAARMymFAAhphxAx7CZcj1vb3N9afT7zoAAADa00effK7TGzm7HHd4ZoYh49JKBFBpWxmaDwAAAIAWheupfR5Dldh2PeGZGZrvAwSQ8a0qEUClbWUQQEaqlQig0rYAAAAAAPjpA5mzCB3vg61qAAAAAElFTkSuQmCC', 'item:diamond_sword': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAV0lEQVR4XmNgGHIg4M6z/8iOZiLFBzDNyIYQbQCypg0qUowwi4kyAJdmECBoAD7NBA0gpBmvAcRoxmkAsZqxGkCKZgwDSNWMYgA5muEGkKsZBaCncboBAN0MNFv+2/8gAAAAAElFTkSuQmCC' },
     game_names: { 'item:shield': 'Escudo', 'block:chest': 'Cofre', 'item:diamond_sword': 'Espada de diamante', 'block:oak_planks': 'Tablones de roble', 'item:enchanted_golden_apple': 'Manzana dorada encantada', 'enchantment:sharpness': 'Filo' },
     external_status: { allowed: true, shared: true, canChange: true, onlineMode: true, whitelist: false, lanAccess: false, consent: true, mapping: true, myPort: 25565,
-      entrances: [{ node: 'n0', name: 'Esta PC', online: true, isMe: true, info: { state: 'comprobada', detail: 'Comprobada desde otra PC del grupo: Minecraft 1.21.4 responde en 38 ms.', addr: '181.45.3.2:25565', addrV6: null, local: '192.168.1.20:25565', method: 'upnp', checkedAt: '2026-11-20T03:00:00-03:00' } },
-        { node: 'n2', name: 'Kaki', online: true, isMe: false, info: { state: 'cgnat', detail: 'El router abrió el puerto, pero su IP de Internet (100.70.1.4) es compartida por tu proveedor (CGNAT): desde Internet no se llega a esta PC. Otra PC del grupo puede ser la entrada.', addr: null, method: 'upnp' } }],
-      best: '181.45.3.2:25565', bestVerified: true, publicName: null },
-    client_prepare: { profileName: '939 Host · Supervivencia con amigos', versionId: 'fabric-loader-0.16.9-1.21.4', gameDir: 'C:\\Users\\vos\\AppData\\Roaming\\.minecraft\\939 Host\\Supervivencia con amigos', modsInstalled: 12, previousMods: 'mods anteriores', serverOnly: ['Chunky'], installedVersion: true, installedLoader: true },
+      entrances: [{ node: 'n0', name: 'Esta PC', online: true, isMe: true, info: { state: 'comprobada', detail: 'Comprobada desde otra PC del grupo: Minecraft 1.21.4 responde en 38 ms.', addr: '203.0.113.25:25565', addrV6: null, local: '192.168.1.20:25565', method: 'upnp', checkedAt: '2026-11-20T03:00:00-03:00' } },
+        { node: 'n2', name: 'Tomi', online: true, isMe: false, info: { state: 'cgnat', detail: 'El router abrió el puerto, pero su IP de Internet (100.70.1.4) es compartida por tu proveedor (CGNAT): desde Internet no se llega a esta PC. Otra PC del grupo puede ser la entrada.', addr: null, method: 'upnp' } }],
+      best: '203.0.113.25:25565', bestVerified: true, publicName: null },
+    client_prepare: { label: 'Minecraft 1.21.4 con Fabric 0.16.9', profileName: '939 Host · Supervivencia con amigos', versionId: 'fabric-loader-0.16.9-1.21.4', gameDir: 'C:\\Users\\vos\\AppData\\Roaming\\.minecraft\\939 Host\\Supervivencia con amigos', modsInstalled: 12, previousMods: 'mods anteriores', serverOnly: ['Chunky'], installedVersion: true, installedLoader: true },
     player_edit_access: { allowed: true, reason: null, liveHealth: true, liveFeed: true, liveXp: true }, modrinth_modpacks: { hits: [], total: 0 },
   };
   const OBJ = new Set(['get_server', 'world_info', 'files_list', 'snapshots_list', 'alias_status', 'app_info', 'share_status', 'storage_usage', 'game_assets_status', 'modrinth_modpacks', 'cf_status', 'alias_status', 'profile_photo_get', 'player_edit_access', 'player_detail', 'mod_items', 'external_status', 'client_prepare', 'game_assets_status', 'game_sprites', 'game_names']);

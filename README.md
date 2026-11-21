@@ -86,6 +86,36 @@ firmados por la PC propietaria.
   </picture>
 </p>
 
+### Preparar el Minecraft de cada jugador
+Un botón: **Preparar para jugar**. 939 Host instala la versión de Minecraft, el cargador (Fabric,
+Forge o NeoForge) y los mods que necesita el servidor en una carpeta propia, crea el perfil en el
+Launcher oficial y agrega el servidor a Multijugador. Si ya había una carpeta de mods, la guarda
+como «mods anteriores» sin mezclar ni borrar nada. Funciona también en la PC de un amigo que solo
+juega.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/app-preparar-oscuro.png">
+    <img src="docs/img/app-preparar-claro.png" width="88%" alt="Preparar para jugar: versión, cargador y mods instalados, perfil creado en el Launcher">
+  </picture>
+</p>
+
+### Ver y cuidar a los jugadores
+Cada jugador con su vida, hambre, experiencia, inventario (también los objetos de mods, con su
+nombre e ícono) y las sesiones que jugó. La PC propietaria puede subir o bajar vida, hambre y nivel
+con − y +, o matar a un jugador conectado, con lo que Minecraft permite de verdad en cada caso.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/app-jugadores-oscuro.png">
+    <img src="docs/img/app-jugadores-claro.png" width="49%" alt="Ficha de un jugador con vida, hambre, saturación y nivel, cada uno con botones − y +">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/app-inventario-oscuro.png">
+    <img src="docs/img/app-inventario-claro.png" width="49%" alt="Inventario en lista: nombre completo, cantidad, durabilidad y mod de cada objeto">
+  </picture>
+</p>
+
 ### Y además
 
 | | |
@@ -95,7 +125,7 @@ firmados por la PC propietaria.
 | **Papelera** | Lo que borrás se guarda 30 días y se restaura completo. |
 | **Versiones** | Cambiar la versión de Minecraft con copia previa verificada y opción de volver atrás. |
 | **Modpacks** | Crear un servidor desde un `.mrpack` o un modpack de Modrinth. |
-| **Jugadores** | Perfil de mods (`.mrpack`) para que cada uno prepare su Minecraft. |
+| **Otros launchers** | Exportar el perfil como `.mrpack` para Modrinth App, Prism Launcher y similares. |
 
 <p align="center">
   <img src="docs/img/app-papelera.png" width="49%" alt="Papelera: servidores borrados, días que quedan para restaurarlos">
@@ -104,15 +134,57 @@ firmados por la PC propietaria.
 
 <br>
 
+## Cómo se conectan los jugadores
+
+**Con 939 Host** (recomendado): cada amigo se une al grupo con una invitación y entra por
+`127.0.0.1:…`, una dirección que siempre lleva a la PC que esté alojando el servidor. No hace falta
+abrir puertos: las PCs se conectan entre sí de forma directa y cifrada, y si no se puede, por un
+relay que solo pasa datos cifrados.
+
+**Sin 939 Host, por IP**: la propietaria puede activar **Permitir conexiones sin 939 Host**. Una o
+más PCs del grupo que lo acepten hacen de *entrada*: piden al router que abra el puerto y llevan a
+cada jugador hasta la PC que aloja en ese momento, así que la dirección no cambia cuando cambia la
+anfitriona. Otra PC del grupo prueba cada entrada desde su propia conexión y la app muestra si
+funciona.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/app-conexion-ip-oscuro.png">
+    <img src="docs/img/app-conexion-ip-claro.png" width="88%" alt="Permitir conexiones sin 939 Host: entradas de cada PC, su estado y la dirección para compartir">
+  </picture>
+</p>
+
+> [!IMPORTANT]
+> Entrar por IP solo sirve para **jugar**: no da acceso a la administración ni permiso para alojar.
+> Necesita el modo online de Minecraft (cuentas verificadas) y conviene la lista blanca. Si tu
+> proveedor de Internet comparte tu IP con otros clientes (CGNAT) o el router no abre puertos, desde
+> Internet no se llega a esa PC: la app lo detecta y otra PC del grupo puede ser la entrada. Quien
+> entra por una entrada ve la IP pública de esa PC. Detalles: [Conexión por IP](docs/DIRECCIONES-PUBLICAS.md).
+
+<br>
+
+## Compatibilidad
+
+| | |
+|---|---|
+| **Minecraft** | Java Edition, versiones con servidor oficial de Mojang |
+| **Servidores** | Vanilla, Fabric, Forge y NeoForge |
+| **Mods** | Modrinth (con dependencias y versiones compatibles), CurseForge con clave propia y archivos `.jar` agregados a mano |
+| **Modpacks** | `.mrpack` y modpacks de Modrinth |
+| **Para jugar** | Launcher oficial de Minecraft (también el de Microsoft Store) u otros launchers con `.mrpack` |
+
+<br>
+
 ## Estado del proyecto
 
 La versión publicada es la **0.9.0**. La rama
 [`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.0.0** (próxima versión), probada en
 Windows reales (servidores, dos PCs en lugares distintos y un cliente real de Minecraft), pero
-**todavía no está publicada**. Las capturas de esta página son de esa versión.
+**todavía no está publicada**. Las capturas de esta página son de esa versión, con datos de ejemplo.
 
 En la 0.9.0 ya están: crear y administrar servidores, mods de Modrinth, puntos de restauración y
-compartir entre PCs. Todo lo demás de esta página llega con la próxima versión.
+compartir entre PCs. Preparar para jugar, la conexión por IP, las fichas de jugadores e
+inventarios con mods y lo demás de esta página llegan con la 1.0.0.
 
 **Necesita configuración aparte:** CurseForge funciona solo con una clave de su API oficial
 ([cómo conseguirla](docs/MANUAL.md#curseforge)). Lo que todavía no hace está en
@@ -141,6 +213,71 @@ compartir entre PCs. Todo lo demás de esta página llega con la próxima versi�
 4. Cuando termine, tocá **Iniciar**. Para sumar amigos, andá a la pestaña **Grupo**.
 
 Verificación de descargas, actualización y desinstalación: [Instalación](docs/INSTALACION.md).
+
+<br>
+
+## La primera vez
+
+1. **Creá el servidor**: *Crear servidor* → nombre, versión y tipo. 939 Host baja todo lo necesario.
+2. **Encendelo**: *Iniciar*. El estado dice «Listo para jugar» cuando se puede entrar.
+3. **Prepará tu Minecraft**: en el resumen del servidor, *Preparar para jugar*. Abrí el Launcher,
+   elegí el perfil «939 Host · …» y jugá.
+4. **Sumá a tus amigos**: pestaña *Grupo* → *Invitar*. Tu amigo instala 939 Host, pega el código en
+   *Servidores de amigos → Unirme*, toca *Preparar para jugar* y entra por la dirección que le aparece.
+5. **Opcional**: activá la conexión por IP para quien no tenga 939 Host.
+
+<br>
+
+## Seguridad y permisos
+
+- **Roles**: propietaria (decide todo), coanfitrionas (pueden alojar y guardan una copia) y
+  jugadores (solo juegan). Los cambios del grupo los firma la PC propietaria.
+- **Lo delicado se controla en la app, no solo en la pantalla**: cambiar datos de jugadores,
+  permitir conexiones sin 939 Host o quitar a alguien del grupo se comprueba en el programa.
+- **Sin cuentas ni telemetría**. 939 Host nunca pide ni guarda la contraseña de Microsoft.
+- **Descargas verificadas** por su hash (Mojang, Fabric, Forge, NeoForge, Modrinth y Java).
+- **Tu Minecraft queda a salvo**: cada servidor usa su propia carpeta de juego y los mods que había
+  se guardan aparte; el archivo de perfiles del Launcher se copia antes de tocarlo.
+- Más: [Privacidad](PRIVACY.md) · [Seguridad](SECURITY.md) · [Limitaciones](docs/LIMITACIONES.md).
+
+<br>
+
+## Preguntas frecuentes
+
+<details><summary><b>¿Tengo que dejar mi PC prendida para que mis amigos jueguen?</b></summary>
+
+No necesariamente. Cualquier PC del grupo invitada como coanfitriona puede alojar el servidor; con
+tres PCs o más, si la que aloja se apaga, otra lo retoma sola.
+</details>
+
+<details><summary><b>¿Hace falta abrir puertos en el router?</b></summary>
+
+No, para jugar con 939 Host. Solo la conexión por IP (sin 939 Host) necesita que el router de la
+PC de entrada abra un puerto, y 939 Host intenta hacerlo solo.
+</details>
+
+<details><summary><b>¿Mis amigos necesitan 939 Host?</b></summary>
+
+Para unirse al grupo y prepararse el Minecraft con un botón, sí. Si la propietaria lo permite,
+también pueden entrar por IP con su Minecraft normal.
+</details>
+
+<details><summary><b>¿Cuesta algo?</b></summary>
+
+No. No hay servidores pagos ni suscripciones: el servidor corre en las PCs del grupo.
+</details>
+
+<details><summary><b>¿Toca mi Minecraft de siempre?</b></summary>
+
+No mezcla nada: cada servidor tiene su carpeta y su perfil «939 Host · …» en el Launcher. Tus
+perfiles y mods de siempre quedan como estaban.
+</details>
+
+<details><summary><b>Windows me muestra un aviso al abrirlo</b></summary>
+
+939 Host todavía no está firmado digitalmente. Podés verificar la descarga con su SHA-256
+([Instalación](docs/INSTALACION.md)). No recomendamos desactivar protecciones de Windows.
+</details>
 
 <br>
 

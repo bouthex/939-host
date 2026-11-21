@@ -34,10 +34,10 @@ A['client-prepare'] = async (el) => {
   el.disabled = false; el.removeAttribute('aria-busy'); el.innerHTML = `${icon('check', 14)}Listo para jugar`;
   await dialog({ title: 'Listo para jugar', cancel: null, confirm: 'Entendido',
     body: `<ul class="steps-done">
-        <li>${icon('check', 14)}Minecraft ${esc(r.versionId)} ${r.installedVersion || r.installedLoader ? 'instalado' : 'ya estaba instalado'}</li>
-        ${r.modsInstalled ? `<li>${icon('check', 14)}${r.modsInstalled} ${r.modsInstalled === 1 ? 'mod instalado y verificado' : 'mods instalados y verificados'}</li>` : ''}
-        ${r.serverOnly.length ? `<li>${icon('check', 14)}${r.serverOnly.length} solo del servidor, no hace${r.serverOnly.length === 1 ? '' : 'n'} falta en tu PC</li>` : ''}
-        <li>${icon('check', 14)}Perfil <b>${esc(r.profileName)}</b> en el Launcher, con el servidor en Multijugador</li>
+        <li>${icon('check', 14)}<span>${esc(r.label || r.versionId)}: ${r.installedVersion || r.installedLoader ? 'instalado' : 'ya estaba instalado'}</span></li>
+        ${r.modsInstalled ? `<li>${icon('check', 14)}<span>${r.modsInstalled} ${r.modsInstalled === 1 ? 'mod instalado y verificado' : 'mods instalados y verificados'}</span></li>` : ''}
+        ${r.serverOnly.length ? `<li>${icon('check', 14)}<span>${r.serverOnly.length} solo del servidor, no hace${r.serverOnly.length === 1 ? '' : 'n'} falta en tu PC</span></li>` : ''}
+        <li>${icon('check', 14)}<span>Perfil <b>${esc(r.profileName)}</b> en el Launcher, con el servidor en Multijugador</span></li>
       </ul>
       ${r.previousMods ? `<p class="sm t2">La carpeta de mods que había quedó guardada como «${esc(r.previousMods)}».</p>` : ''}
       <p class="sm">Abrí el <b>Launcher de Minecraft</b>, elegí el perfil <b>${esc(r.profileName)}</b> y tocá <b>Jugar</b>. La primera vez el Launcher termina de bajar algunos archivos del juego.</p>

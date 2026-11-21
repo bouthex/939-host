@@ -57,6 +57,8 @@ impl Default for Loader { fn default() -> Self { Loader::Vanilla } }
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
+    /// Para mostrar: «Minecraft 1.21.4 con Fabric 0.16.9».
+    pub label: String,
     pub profile_name: String,
     pub version_id: String,
     pub game_dir: String,
@@ -357,7 +359,11 @@ where F: Fn(String) -> Fut, Fut: std::future::Future<Output = AppResult<Vec<u8>>
         }
     };
     progress("Listo para jugar", 1.0);
-    Ok(Report { profile_name: name, version_id: vid, game_dir: gdir.to_string_lossy().to_string(), mods_installed: plan.mods.len(), previous_mods: previous, server_only: plan.server_only.clone(), installed_version, installed_loader })
+    let label = match (&plan.loader, &plan.loader_version) {
+        (Loader::Vanilla, _) | (_, None) => format!("Minecraft {}", plan.mc_version),
+        (l, Some(v)) => format!("Minecraft {} con {} {}", plan.mc_version, l.name(), v),
+    };
+    Ok(Report { label, profile_name: name, version_id: vid, game_dir: gdir.to_string_lossy().to_string(), mods_installed: plan.mods.len(), previous_mods: previous, server_only: plan.server_only.clone(), installed_version, installed_loader })
 }
 
 #[cfg(test)]
