@@ -133,6 +133,8 @@ async function boot() {
   splashDone();
   if (autoUpdate) openUpdateScreen(upd, true);
   else paintUpdateBar(upd);
+  // Una actualización que se descargó pero no pasó la verificación: se avisa (se reintenta sola más tarde).
+  if (!autoUpdate && upd?.status === 'error' && upd.available) toast('No se pudo verificar la actualización', 'error', upd.message);
   if (notice || upd?.notice) showUpdateNotice(notice || upd.notice, upd);
   invoke('notify_ui_ready').catch(() => {});
   invoke('last_close_notes').then((notes) => { for (const n of notes || []) showLastClose(n); }).catch(() => {});

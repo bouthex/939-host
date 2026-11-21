@@ -57,6 +57,7 @@ with sync_playwright() as p:
         emitir(pg, st(status="instalando", available="1.1.0")); 
         for _ in range(12): pg.wait_for_timeout(100); mirar()
         pg.screenshot(path=str(OUT / f"actualizacion-instalando-{theme}.png"))
+        pg.wait_for_timeout(600)
         emitir(pg, st(status="reiniciando", available="1.1.0"))
         for _ in range(12): pg.wait_for_timeout(100); mirar()
         pg.screenshot(path=str(OUT / f"actualizacion-reiniciando-{theme}.png"))
@@ -64,6 +65,21 @@ with sync_playwright() as p:
         reales = [t for t in vistos if t in orden]
         if reales != orden: fallos.append(f"[{theme}] estados en otro orden o faltantes: {vistos}")
         ctx.close()
+    # 2b) Descarga instantánea (ya «lista» al abrir): igual se lee «Verificando…» antes de instalar.
+    ctx, pg = abrir(b, st(status="lista", available="1.1.0"), install=[])
+    pg.wait_for_selector("#upd-screen", timeout=4000)
+    vistos = []
+    for _ in range(25):
+        t = texto(pg)
+        if t and (not vistos or vistos[-1] != t): vistos.append(t)
+        pg.wait_for_timeout(60)
+    emitir(pg, st(status="instalando", available="1.1.0"))
+    for _ in range(15):
+        t = texto(pg)
+        if t and (not vistos or vistos[-1] != t): vistos.append(t)
+        pg.wait_for_timeout(60)
+    if "Verificando archivos…" not in vistos or "Instalando actualización…" not in vistos: fallos.append(f"descarga instantánea: faltan estados {vistos}")
+    ctx.close()
     # 3) Error de verificación: se explica y se puede reintentar o seguir.
     ctx, pg = abrir(b, st(status="descargando", available="1.1.0", progress=0.5))
     pg.wait_for_selector("#upd-screen", timeout=4000)

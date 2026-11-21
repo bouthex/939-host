@@ -191,7 +191,7 @@ with sync_playwright() as pw:
             while time.time() - t0 < 120:
                 t = js(p, "document.getElementById('upd-status')?.textContent || ''", None)
                 if t is None: break
-                if t and (not seen or seen[-1] != t):
+                if t and t.strip() and (not seen or seen[-1] != t):
                     seen.append(t)
                     if shot < 4:
                         try: p.screenshot(path=str(OUT / f"actualizacion-windows-{shot}.png")); shot += 1
@@ -223,7 +223,9 @@ with sync_playwright() as pw:
     mtime = EXE.stat().st_mtime
     app = start(EXE, env())
     b, p = page(pw)
-    msg = wait(lambda: p and (t := js(p, "document.getElementById('upd-status')?.textContent || ''")) and "coincide" in t and t, 60) if p else None
+    # Puede pasar antes de que termine la presentación (entonces no hay pantalla, solo el aviso) o
+    # durante la pantalla: en los dos casos el estado real dice por qué se rechazó.
+    msg = wait(lambda: p and (t := js(p, "window.__TAURI__.core.invoke('update_status').then(v => v.status + ': ' + v.message)")) and "coincide" in t and t, 60) if p else None
     if p:
         try: p.screenshot(path=str(OUT / "actualizacion-windows-corrupto.png"))
         except Exception: pass

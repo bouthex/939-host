@@ -5,17 +5,27 @@
    texto queda a la vista al menos un instante para que nada parpadee si la descarga es muy rápida. */
 
 const UPD_STAGE = document.querySelector('#splash .sp-stage')?.outerHTML || '';
-const UPD = { el: null, auto: false, installing: false, said: '', saidAt: 0, pending: null, timer: null, v: null };
-const UPD_MIN_MS = 750;
+const UPD = { el: null, auto: false, installing: false, said: '', saidAt: 0, queue: [], timer: null, v: null };
+const UPD_MIN_MS = 520;
 
-function updSay(text) {
+/* Los estados se muestran en orden y cada uno queda a la vista un instante (aunque la descarga
+   haya sido instantánea, «Verificando…» se llega a leer). El reinicio y los errores se muestran ya. */
+function updSay(text, now) {
   if (!UPD.el) return;
   const put = (t) => { const s = UPD.el?.querySelector('#upd-status'); if (s) s.textContent = t; UPD.said = t; UPD.saidAt = performance.now(); };
-  if (text === UPD.said) return;
-  const left = UPD_MIN_MS - (performance.now() - UPD.saidAt);
-  clearTimeout(UPD.timer);
-  if (left <= 0) put(text);
-  else UPD.timer = setTimeout(() => put(text), left);
+  if (now) { clearTimeout(UPD.timer); UPD.timer = null; UPD.queue = []; if (text !== UPD.said) put(text); return; }
+  const last = UPD.queue.length ? UPD.queue[UPD.queue.length - 1] : UPD.said;
+  if (text === last) return;
+  UPD.queue.push(text);
+  const pump = () => {
+    UPD.timer = null;
+    if (!UPD.queue.length) return;
+    const left = UPD_MIN_MS - (performance.now() - UPD.saidAt);
+    if (left > 0) { UPD.timer = setTimeout(pump, left); return; }
+    put(UPD.queue.shift());
+    if (UPD.queue.length) UPD.timer = setTimeout(pump, UPD_MIN_MS);
+  };
+  if (!UPD.timer) pump();
 }
 
 function updBar(p) {
@@ -48,7 +58,7 @@ function openUpdateScreen(v, auto) {
     <div class="upd-bar" hidden><div class="bar"><i></i></div><span class="xs t3 mono upd-pct"></span></div>
     <div class="btns upd-acts" id="upd-acts"></div>`;
   document.body.appendChild(el);
-  UPD.el = el; UPD.auto = !!auto; UPD.installing = false; UPD.said = ''; UPD.saidAt = 0;
+  UPD.el = el; UPD.auto = !!auto; UPD.installing = false; UPD.said = ''; UPD.saidAt = 0; UPD.queue = [];
   updSay('Nueva versión disponible');
   updOnStatus(v);
 }
@@ -92,7 +102,7 @@ function updOnStatus(v) {
     updActs('');
   } else if (st === 'reiniciando') {
     UPD.el.classList.add('done');
-    updSay('Reiniciando 939 Host…');
+    updSay('Reiniciando 939 Host…', true);
     updBar(null);
     updActs('');
   } else if (st === 'buscando') {
@@ -101,7 +111,7 @@ function updOnStatus(v) {
   } else if (['error', 'bloqueada', 'sin-conexion'].includes(st)) {
     updFail(v.message || 'No se pudo actualizar.');
   } else if (st === 'al-dia') {
-    updSay('939 Host está al día');
+    updSay('939 Host está al día', true);
     updBar(null);
     setTimeout(closeUpdateScreen, 900);
   }
@@ -113,7 +123,7 @@ function updFail(msg) {
   UPD.el?.classList.add('err');
   updTitle('No se pudo actualizar');
   msg = String(msg);
-  updSay(msg.charAt(0).toUpperCase() + msg.slice(1));
+  updSay(msg.charAt(0).toUpperCase() + msg.slice(1), true);
   updBar(null);
   updActs('<button class="btn s pri" data-a="upd-retry">Reintentar</button><button class="btn s" data-a="upd-later">Continuar sin actualizar</button>');
 }
