@@ -596,10 +596,10 @@ async fn e2e_items_de_mods() {
     let dir = host939_core::paths::cache().join("prueba-items-de-mods");
     std::fs::create_dir_all(&dir).unwrap();
     // (proyecto, cargador, ítem que tiene que aparecer con nombre e ícono)
-    for (slug, loader, item) in [("farmers-delight", "fabric", "farmersdelight:tomato"), ("create", "neoforge", "create:wrench"), ("sodium", "fabric", "")] {
+    for (slug, loader, item) in [("farmers-delight", "neoforge", "farmersdelight:tomato"), ("farmers-delight-refabricated", "fabric", "farmersdelight:tomato"), ("create", "neoforge", "create:wrench"), ("sodium", "fabric", "")] {
         let url = format!("https://api.modrinth.com/v2/project/{slug}/version?loaders=%5B%22{loader}%22%5D");
         let versions: serde_json::Value = host939_core::net::get_json(&url, "Modrinth").await.expect("versiones");
-        let f = &versions[0]["files"][0];
+        let f = versions.as_array().and_then(|v| v.iter().find(|x| x["files"][0]["filename"].is_string())).map(|v| &v["files"][0]).unwrap_or_else(|| panic!("{slug} no tiene versiones para {loader}: {versions}"));
         let jar = dir.join(f["filename"].as_str().unwrap());
         host939_core::net::download(f["url"].as_str().unwrap(), &jar, host939_core::net::Hash::Sha1(f["hashes"]["sha1"].as_str().unwrap()), |_, _| {}).await.expect("descarga");
         let t = std::time::Instant::now();

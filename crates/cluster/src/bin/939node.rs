@@ -303,7 +303,7 @@ async fn main() {
                     }
                     Ok(serde_json::json!(cfg.id))
                 }
-                "online" => {
+                "onlinemode" => {
                     let mut c = instance::load(&p(1)).map_err(|e| e.message)?;
                     c.online_mode = p(2) == "1";
                     instance::save(&c).map_err(|e| e.message)?;

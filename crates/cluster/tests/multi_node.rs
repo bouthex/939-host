@@ -953,7 +953,7 @@ fn conexion_por_ip_sin_939_host() {
     assert!(c.err(&format!("external {sid} 1")).contains("propietaria"));
     // Modo sin conexión: se niega a abrir (cualquiera entraría con el nombre de un operador).
     assert!(a.err(&format!("external {sid} 1")).contains("modo online"));
-    a.ok(&format!("online {sid} 1"));
+    a.ok(&format!("onlinemode {sid} 1"));
     a.ok(&format!("external {sid} 1"));
     println!("✔ solo la propietaria lo enciende, y nunca con el modo sin conexión");
     // 2) Encendido: un Minecraft sin 939 Host entra por la entrada de C y llega a A.
