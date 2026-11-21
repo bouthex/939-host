@@ -214,3 +214,93 @@ mod tests {
         assert_eq!(max_health(&serde_json::json!({})), 20.0);
     }
 }
+
+/* ───────── Controles + y − (de a un paso) y matar ───────── */
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Stat { Health, Food, Saturation, Xp }
+
+/// Paso mínimo útil de cada atributo: medio corazón, una unidad de hambre, media de saturación
+/// (la vista la muestra con un decimal) y un nivel.
+pub fn step(stat: Stat) -> f64 { match stat { Stat::Health => 1.0, Stat::Food => 1.0, Stat::Saturation => 0.5, Stat::Xp => 1.0 } }
+
+/// Un cambio a la vez por jugador: un toque rápido no puede pisar a otro.
+static BUSY: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashSet<String>>> = once_cell::sync::Lazy::new(Default::default);
+struct Turn(String);
+impl Turn {
+    fn take(server: &str, name: &str) -> AppResult<Turn> {
+        let k = format!("{server}/{}", name.to_lowercase());
+        if !BUSY.lock().unwrap().insert(k.clone()) { return Err(AppError::invalid("Todavía se está aplicando el cambio anterior.")); }
+        Ok(Turn(k))
+    }
+}
+impl Drop for Turn { fn drop(&mut self) { BUSY.lock().unwrap().remove(&self.0); } }
+
+/// Sube (`up`) o baja un paso. `live` = el jugador está conectado y el servidor encendido.
+pub fn adjust(mgr: &Manager, cfg: &ServerConfig, name: &str, uuid: &str, live: bool, stat: Stat, up: bool, who: &str) -> AppResult<String> {
+    let _turn = Turn::take(&cfg.id, name)?;
+    let d = playerdata::detail(mgr, cfg, name, uuid, live)?;
+    let sign = if up { 1.0 } else { -1.0 };
+    if live {
+        match stat {
+            Stat::Food | Stat::Saturation => return Err(AppError::invalid("Con el jugador conectado Minecraft no permite cambiar el hambre ni la saturación de a poco (solo llenarlas). Se puede cuando esté desconectado.")),
+            Stat::Xp => {
+                let (_, _, xp_ok) = online_support(&cfg.mc_version);
+                if !xp_ok { return Err(AppError::invalid("Esta versión de Minecraft no tiene el comando para cambiar la experiencia.")); }
+                let lvl = d.xp_level.unwrap_or(0);
+                if !up && lvl <= 0 { return Err(AppError::invalid("Ya está en el nivel 0.")); }
+                if up && lvl >= 21863 { return Err(AppError::invalid("Ya está en el nivel máximo.")); }
+                mgr.send_command(&cfg.id, &format!("xp add {name} {} levels", if up { 1 } else { -1 }))?;
+                audit(&cfg.id, &format!("jugador-editado {name} (conectado): nivel {}", lvl + if up { 1 } else { -1 }), who);
+                return Ok(format!("Nivel {}", lvl + if up { 1 } else { -1 }));
+            }
+            Stat::Health => {
+                let cur = d.health.unwrap_or(20.0);
+                let target = ((cur + sign * step(stat)) * 2.0).round() / 2.0;
+                if target < 0.5 { return Err(AppError::invalid("Para dejarlo sin vida usá «Matar»: así muere de verdad en el juego.")); }
+                // Tope: la vida máxima real (se valida con sus atributos dentro de apply_online).
+                return apply_online(mgr, cfg, name, &Edit { health: Some(target), ..Default::default() }, who);
+            }
+        }
+    }
+    let e = match stat {
+        Stat::Health => {
+            let t = ((d.health.unwrap_or(20.0) + sign) * 2.0).round() / 2.0;
+            if t < 0.5 { return Err(AppError::invalid("La vida no puede quedar en cero con el jugador desconectado.")); }
+            Edit { health: Some(t), ..Default::default() }
+        }
+        Stat::Food => {
+            let t = d.food.unwrap_or(20) + if up { 1 } else { -1 };
+            if !(0..=20).contains(&t) { return Err(AppError::invalid(if up { "El hambre ya está llena." } else { "El hambre ya está en cero." })); }
+            Edit { food: Some(t), ..Default::default() }
+        }
+        Stat::Saturation => {
+            let food = d.food.unwrap_or(20) as f64;
+            let t = ((d.saturation.unwrap_or(0.0) * 2.0).round() / 2.0 + sign * step(stat)).max(0.0);
+            if t > food { return Err(AppError::invalid("Minecraft no deja la saturación por encima del hambre.")); }
+            if !up && d.saturation.unwrap_or(0.0) <= 0.0 { return Err(AppError::invalid("La saturación ya está en cero.")); }
+            Edit { saturation: Some(t), ..Default::default() }
+        }
+        Stat::Xp => {
+            let t = d.xp_level.unwrap_or(0) + if up { 1 } else { -1 };
+            if !(0..=21863).contains(&t) { return Err(AppError::invalid("El nivel va de 0 a 21863.")); }
+            Edit { xp_level: Some(t), ..Default::default() }
+        }
+    };
+    apply_offline(mgr, cfg, name, uuid, &e, who)
+}
+
+/// Mata al jugador de verdad con el comando de Minecraft (cuenta como muerte en el juego:
+/// suelta su inventario según las reglas del mundo y aparece en sus estadísticas).
+pub fn kill(mgr: &Manager, cfg: &ServerConfig, name: &str, who: &str) -> AppResult<String> {
+    if !crate::players::valid_name(name) { return Err(AppError::invalid("Jugador inválido.")); }
+    let _turn = Turn::take(&cfg.id, name)?;
+    if !mgr.runtime(&cfg.id).lock().unwrap().players.contains(name) {
+        return Err(AppError::invalid(&format!("{name} no está conectado: Minecraft solo puede matar a un jugador que está en el juego.")));
+    }
+    let line = mgr.query(&cfg.id, &format!("kill {name}"), &[&format!("Killed {name}"), "No entity was found", "No player was found", "Unknown or incomplete command"], Duration::from_secs(4))?;
+    if !line.contains("Killed") { return Err(AppError::invalid(&format!("Minecraft no pudo matar a {name}: {}", line.trim()))); }
+    audit(&cfg.id, &format!("jugador-matado {name}"), who);
+    Ok(format!("{name} murió."))
+}

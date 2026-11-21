@@ -170,7 +170,8 @@ function dialog({ title, body = '', confirm = 'Aceptar', cancel = 'Cancelar', bu
     root.querySelectorAll('[data-dv]').forEach((b) => b.addEventListener('click', () => done(b.dataset.dv === '__cancel' ? false : btns[+b.dataset.dv].value)));
     const inp = root.querySelector('#dlg-in');
     if (inp) { inp.addEventListener('input', () => root.querySelectorAll('.btn.pri').forEach((b) => { b.disabled = inp.value.trim() !== requireText; })); inp.focus(); }
-    else (root.querySelector('.btn.pri') || root.querySelector('.btn'))?.focus();
+    // Acción peligrosa: el foco empieza en «Cancelar» para que un Enter no la ejecute.
+    else ((danger ? root.querySelector('[data-dv="__cancel"]') : null) || root.querySelector('.btn.pri') || root.querySelector('.btn'))?.focus();
     root.querySelector('.overlay').addEventListener('keydown', (e) => { if (e.key === 'Escape' && cancel) done(false); });
     if (onMount) onMount(root.querySelector('.dialog'));
   });

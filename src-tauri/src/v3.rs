@@ -134,6 +134,33 @@ pub async fn player_edit_access(app: AppHandle, id: String) -> AppResult<EditAcc
     })
 }
 
+/// Sube o baja un paso un atributo (botones + y −). Mismo permiso que la edición: solo la PC
+/// propietaria, con el servidor en esta PC.
+#[tauri::command]
+pub async fn player_adjust(app: AppHandle, id: String, name: String, stat: host939_core::playeredit::Stat, up: bool) -> AppResult<String> {
+    let who = edit_permission(&app, &id).await.map_err(|r| AppError::new("forbidden", r))?;
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        let mgr = app.state::<Manager>();
+        let list = players::list(&mgr, &cfg);
+        let p = list.iter().find(|p| p.name.eq_ignore_ascii_case(&name)).ok_or_else(|| AppError::not_found("el jugador"))?;
+        let live = p.online && mgr.runtime(&id).lock().unwrap().status() == RunStatus::Running;
+        host939_core::playeredit::adjust(&mgr, &cfg, &p.name, &p.uuid, live, stat, up, &who)
+    }).await
+}
+
+/// Mata al jugador (comando de Minecraft). Solo conectado; mismo permiso que la edición.
+#[tauri::command]
+pub async fn player_kill(app: AppHandle, id: String, name: String) -> AppResult<String> {
+    let who = edit_permission(&app, &id).await.map_err(|r| AppError::new("forbidden", r))?;
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        let mgr = app.state::<Manager>();
+        if mgr.runtime(&id).lock().unwrap().status() != RunStatus::Running { return Err(AppError::invalid("El servidor no está encendido.")); }
+        host939_core::playeredit::kill(&mgr, &cfg, &name, &who)
+    }).await
+}
+
 /// Cambia vida, hambre, saturación o nivel. Con el jugador conectado usa comandos; desconectado
 /// edita su archivo (con copia previa). Queda en la auditoría del servidor.
 #[tauri::command]

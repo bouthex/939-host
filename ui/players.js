@@ -281,13 +281,14 @@ function iconsRow(kind, value, max = 20) {
 }
 function summaryBody(d) {
   const pos = d.pos ? d.pos.map((x) => Math.floor(x)) : null;
-  return `<div class="grid2" style="gap:24px">
+  return `<div class="pgrid">
     <div class="vitals">
-      <div class="sec">Vida</div><div class="row" style="gap:12px">${iconsRow('heart', d.health ?? 0)}<span class="mono sm">${d.health != null ? (Math.round(d.health * 10) / 20).toString().replace('.', ',') : '—'} / 10</span></div>
-      <div class="sec">Hambre</div><div class="row" style="gap:12px">${iconsRow('food', d.food ?? 0)}<span class="mono sm">${d.food != null ? (d.food / 2).toString().replace('.', ',') : '—'} / 10</span></div>
+      <div class="sec">Vida</div><div class="row vrow">${iconsRow('heart', d.health ?? 0)}<span class="mono sm">${d.health != null ? (Math.round(d.health * 10) / 20).toString().replace('.', ',') : '—'} / 10</span>${stepper(d, 'health', 'la vida', 'medio corazón')}</div>
+      <div class="sec">Hambre</div><div class="row vrow">${iconsRow('food', d.food ?? 0)}<span class="mono sm">${d.food != null ? (d.food / 2).toString().replace('.', ',') : '—'} / 10</span>${stepper(d, 'food', 'el hambre', 'medio muslo')}</div>
+      ${d.saturation != null ? `<div class="sec">Saturación</div><div class="row vrow"><div class="bar sat"><i style="width:${Math.round(Math.min(20, d.saturation) / 20 * 100)}%"></i></div><span class="mono sm">${(Math.round(d.saturation * 10) / 10).toString().replace('.', ',')} / ${d.food ?? 20}</span>${stepper(d, 'saturation', 'la saturación', 'medio punto')}</div>` : ''}
       ${d.armorPoints ? `<div class="sec">Armadura</div><div class="row" style="gap:12px">${iconsRow('armor', d.armorPoints)}<span class="mono sm">${d.armorPoints} pts</span></div>` : ''}
-      ${editButton(d)}
-      <div class="sec">Experiencia</div><div class="xp"><span class="mono b">Nivel ${d.xpLevel ?? 0}</span><div class="bar"><i style="width:${Math.round((d.xpProgress || 0) * 100)}%"></i></div><span class="mono sm t3">${Math.round((d.xpProgress || 0) * 100)} %</span></div>
+      <div class="sec">Experiencia</div><div class="xp"><span class="mono b">Nivel ${d.xpLevel ?? 0}</span><div class="bar"><i style="width:${Math.round((d.xpProgress || 0) * 100)}%"></i></div><span class="mono sm t3">${Math.round((d.xpProgress || 0) * 100)} %</span>${stepper(d, 'xp', 'el nivel', 'un nivel')}</div>
+      ${killRow(d)}
     </div>
     <div class="stack">
       ${pos ? `<div class="coords">${['X', 'Y', 'Z'].map((k, i) => `<div><div class="xs t3">${k}</div><div class="v">${pos[i]}</div></div>`).join('')}</div>` : ''}
@@ -301,50 +302,49 @@ function summaryBody(d) {
       return `<div class="effect">${img ? `<img class="sprite" src="${img}" alt="">` : `<span class="avatar" style="width:24px;height:24px;border-radius:6px">${icon('layers', 14)}</span>`}<span class="grow b">${esc(effectName(e.id))} ${e.amplifier ? roman(e.amplifier + 1) : ''}</span><span class="mono sm t3">${e.durationTicks < 0 ? '∞' : fmtClock(e.durationTicks / 20)}</span></div>`;
     }).join('')}</div>` : '<span class="sm t3">Ninguno.</span>'}</div>`;
 }
-/* Cambiar vida, hambre, saturación y nivel: solo si el backend dice que esta PC puede (propietaria,
-   con el servidor acá). Conectado se ofrece solo lo que Minecraft permite con comandos. */
-function editButton(d) {
+/* Controles − y + al lado de cada valor: un paso por toque (medio corazón, una unidad de hambre,
+   media de saturación, un nivel). Solo si el backend dice que esta PC puede (propietaria, con el
+   servidor acá). Conectado, se ofrece solo lo que Minecraft permite con comandos; un cambio a la
+   vez por atributo para que los toques rápidos no se dupliquen. */
+pl.busy = {};
+function stepper(d, stat, what, unit) {
   const a = pl.access;
   if (!a?.allowed || !d || d.source === 'none') return '';
   const live = d.source === 'live';
-  if (live && !a.liveHealth && !a.liveFeed && !a.liveXp) return '';
-  return `<div><button class="btn s" data-a="pl-edit">${icon('edit', 14)}Cambiar vida, hambre o nivel</button></div>`;
+  let why = '';
+  if (live && (stat === 'food' || stat === 'saturation')) why = 'Con el jugador conectado Minecraft no permite cambiar esto de a poco. Se puede cuando esté desconectado.';
+  else if (live && stat === 'health' && !a.liveHealth) why = 'Cambiar la vida con el jugador conectado necesita Minecraft 1.19.4 o más nuevo.';
+  else if (live && stat === 'xp' && !a.liveXp) why = 'Esta versión de Minecraft no tiene el comando de experiencia.';
+  const busy = !!pl.busy[stat];
+  const dis = busy || !!why;
+  const b = (up) => `<button class="stp" data-a="pl-step" data-stat="${stat}" data-up="${up ? 1 : 0}" ${dis ? 'disabled' : ''} title="${esc(why || `${up ? 'Subir' : 'Bajar'} ${what} (${unit})`)}" aria-label="${up ? 'Subir' : 'Bajar'} ${what}">${up ? '+' : '−'}</button>`;
+  return `<span class="steps ${busy ? 'busy' : ''}" role="group" aria-label="Cambiar ${what}" ${busy ? 'aria-busy="true"' : ''}>${b(false)}${b(true)}</span>`;
 }
-A['pl-edit'] = async () => {
-  const d = pl.detail, a = pl.access;
-  if (!d || !a?.allowed) return;
+A['pl-step'] = async (el) => {
+  const d = pl.detail, stat = el.dataset.stat, up = el.dataset.up === '1';
+  if (!d || pl.busy[stat]) return;
+  pl.busy[stat] = true; repaintProfile();
+  try { await invoke('player_adjust', { id: state.params.id, name: d.name, stat, up }); }
+  catch (e) { fail(e); }
+  finally { pl.busy[stat] = false; }
+  await fetchDetail(true);
+};
+function killRow(d) {
+  const a = pl.access;
+  if (!a?.allowed || !d || d.source === 'none') return '';
   const live = d.source === 'live';
-  const num = (id, label, hint, val, min, max, step) => `<label class="field">${label} <span class="hint">${hint}</span><input class="input mono" type="number" id="${id}" value="${val ?? ''}" min="${min}" max="${max}" step="${step}"></label>`;
-  const body = live
-    ? `<div class="stack"><p class="sm t2">${esc(d.name)} está conectado: Minecraft deja cambiar la vida y el nivel, y llenar el hambre. Los valores exactos de hambre y saturación se cambian cuando está desconectado.</p>
-       ${a.liveHealth ? num('pe-h', 'Vida', 'De 0,5 a la vida máxima (2 = un corazón)', d.health, 0.5, 1024, 0.5) : ''}
-       ${a.liveFeed ? '<label class="row" style="gap:8px"><input type="checkbox" id="pe-feed"> Llenar hambre y saturación</label>' : ''}
-       ${a.liveXp ? num('pe-x', 'Nivel de experiencia', 'De 0 a 21863', d.xpLevel, 0, 21863, 1) : ''}</div>`
-    : `<div class="stack"><p class="sm t2">${esc(d.name)} está desconectado: se cambia su archivo guardado (con una copia previa) y lo verá al volver a entrar.</p>
-       ${num('pe-h', 'Vida', 'De 0,5 a la vida máxima (2 = un corazón)', d.health, 0.5, 1024, 0.5)}
-       ${num('pe-f', 'Hambre', 'De 0 a 20', d.food, 0, 20, 1)}
-       ${num('pe-s', 'Saturación', 'De 0 al valor de hambre', d.saturation != null ? Math.round(d.saturation * 10) / 10 : '', 0, 20, 0.5)}
-       ${num('pe-x', 'Nivel de experiencia', 'De 0 a 21863', d.xpLevel, 0, 21863, 1)}</div>`;
-  let edit = null;
-  const ok = await dialog({ title: `Cambiar a ${d.name}`, body, confirm: 'Aplicar', onMount: (dl) => {
-    const read = () => {
-      const v = (id) => { const el = dl.querySelector(id); if (!el || el.value === '') return null; const n = Number(el.value); return Number.isFinite(n) ? n : NaN; };
-      const e = {};
-      const h = v('#pe-h'), f = v('#pe-f'), s = v('#pe-s'), x = v('#pe-x');
-      if (h != null && h !== d.health) e.health = h;
-      if (f != null && f !== d.food) e.food = f;
-      if (s != null && Math.abs(s - (d.saturation ?? -1)) > 0.05) e.saturation = s;
-      if (x != null && x !== d.xpLevel) e.xpLevel = x;
-      if (dl.querySelector('#pe-feed')?.checked) e.food = 20;
-      edit = e;
-    };
-    dl.addEventListener('input', read); dl.addEventListener('change', read); read();
-  } });
-  if (!ok || !edit) return;
-  if (!Object.keys(edit).length) { toast('No cambiaste ningún valor.'); return; }
-  if (Object.values(edit).some((x) => Number.isNaN(x))) { toast('Revisá los números.', 'error'); return; }
-  try { toast(await invoke('player_edit', { id: state.params.id, name: d.name, edit })); } catch (e) { fail(e); }
-  fetchDetail(true);
+  return `<div class="danger-row"><div class="grow"><span class="b sm">Matar al jugador</span><span class="xs t3">${live ? 'Muere de verdad en el juego, como con /kill.' : 'Solo se puede con el jugador conectado.'}</span></div>
+    <button class="btn s danger-ghost" data-a="pl-kill" ${live && !pl.busy.kill ? '' : 'disabled'} ${pl.busy.kill ? 'aria-busy="true"' : ''}>${icon('alert', 14)}Matar</button></div>`;
+}
+A['pl-kill'] = async () => {
+  const d = pl.detail;
+  if (!d || d.source !== 'live' || pl.busy.kill) return;
+  const ok = await dialog({ title: `¿Matar a ${d.name}?`, body: `<p class="sm t2">Muere de verdad en el servidor: según las reglas del mundo puede soltar su inventario y su experiencia. No se puede deshacer.</p>`, confirm: 'Matar', danger: true });
+  if (!ok) return;
+  pl.busy.kill = true; repaintProfile();
+  try { toast(await invoke('player_kill', { id: state.params.id, name: d.name })); } catch (e) { fail(e); }
+  finally { pl.busy.kill = false; }
+  await fetchDetail(true);
 };
 
 const fmtClock = (s) => { s = Math.floor(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };

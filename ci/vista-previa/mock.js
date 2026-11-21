@@ -47,7 +47,7 @@
     player_edit_access: { allowed: true, reason: null, liveHealth: true, liveFeed: true, liveXp: true }, modrinth_modpacks: { hits: [], total: 0 },
   };
   const OBJ = new Set(['get_server', 'world_info', 'files_list', 'snapshots_list', 'alias_status', 'app_info', 'share_status', 'storage_usage', 'game_assets_status', 'modrinth_modpacks', 'cf_status', 'alias_status', 'profile_photo_get', 'player_edit_access', 'player_detail', 'mod_items', 'external_status']);
-  const NUL = new Set(['data_notice', 'start_server', 'stop_server', 'server_logo_default', 'server_logo_set', 'server_logo_clear']);
+  const NUL = new Set(['data_notice', 'start_server', 'stop_server', 'server_logo_default', 'server_logo_set', 'server_logo_clear', 'player_adjust', 'player_kill']);
   const listeners = {};
   window.__TAURI__ = {
     core: { invoke: async (cmd, args) => { (window.__INVOCADOS__ = window.__INVOCADOS__ || []).push(cmd); if (cmd in T) return JSON.parse(JSON.stringify(typeof T[cmd] === 'function' ? T[cmd](args) : T[cmd])); if (NUL.has(cmd)) return null; return OBJ.has(cmd) ? {} : []; } },

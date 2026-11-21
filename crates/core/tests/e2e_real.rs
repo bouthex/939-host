@@ -274,6 +274,20 @@ async fn e2e_cliente_real() {
             println!("✔ subir la vida en vivo → {:?}", up.health);
             // Con el hambre llena el jugador se regenera solo entre el ajuste y la lectura.
             assert!(up.health.map(|h| (h - 15.0).abs() <= 1.0).unwrap_or(false), "vida tras curar y ajustar: {:?}", up.health);
+            // Botones − y + (un paso) y matar, con el jugador conectado.
+            use host939_core::playeredit::{adjust, kill, Stat};
+            let h0 = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().health.unwrap();
+            adjust(&mgr, &cfg, name, "", true, Stat::Health, false, "prueba").expect("bajar medio corazón");
+            let h1 = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().health.unwrap();
+            assert!(h1 < h0 && (h0 - h1) <= 2.0, "bajar un paso: {h0} → {h1}");
+            let l0 = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().xp_level.unwrap();
+            adjust(&mgr, &cfg, name, "", true, Stat::Xp, true, "prueba").expect("subir un nivel");
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().xp_level, Some(l0 + 1));
+            assert!(adjust(&mgr, &cfg, name, "", true, Stat::Food, true, "prueba").is_err(), "hambre de a uno no se ofrece conectado");
+            println!("✔ − y + en vivo: vida {h0} → {h1}, nivel {l0} → {}", l0 + 1);
+            let msg = kill(&mgr, &cfg, name, "prueba").expect("matar");
+            println!("✔ matar en vivo: {msg}");
             mgr.send_command(&cfg.id, &format!("kick {name} prueba terminada")).ok();
             // Salida: queda desconectado, con su sesión registrada y su archivo guardado.
             assert!(wait_for(Duration::from_secs(20), || !mgr.runtime(&cfg.id).lock().unwrap().players.contains(name)), "sigue figurando conectado");
@@ -287,6 +301,12 @@ async fn e2e_cliente_real() {
             let d = host939_core::playerdata::detail(&mgr, &cfg, name, &p.uuid, false).unwrap();
             assert_eq!((d.health, d.food), (Some(13.0), Some(9)), "{msg}");
             println!("✔ edición desconectado sobre el archivo real de Minecraft {mc}: vida 13, hambre 9");
+            adjust(&mgr, &cfg, name, &p.uuid, false, Stat::Food, true, "prueba").expect("hambre +1 desconectado");
+            adjust(&mgr, &cfg, name, &p.uuid, false, Stat::Health, false, "prueba").expect("vida −1 desconectado");
+            let d = host939_core::playerdata::detail(&mgr, &cfg, name, &p.uuid, false).unwrap();
+            assert_eq!((d.health, d.food), (Some(12.0), Some(10)));
+            assert!(kill(&mgr, &cfg, name, "prueba").is_err(), "no se mata desconectado");
+            println!("✔ − y + desconectado: vida 12, hambre 10; matar desconectado se niega");
         }
         let _ = child.kill();
         let _ = child.wait();

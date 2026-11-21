@@ -775,3 +775,29 @@ details.tech[open] > summary::before { content: '▾ '; }
 .slot.unk { border-style: dashed; background: transparent; }
 .slot.unk .nm { font-size: 15px; color: var(--t3); }
 .slot img { object-fit: cover; object-position: top; }
+/* Ficha del jugador: − y + al lado de cada valor; matar como acción aparte. */
+.vrow { gap: 12px; align-items: center; }
+.steps { display: inline-flex; gap: 4px; margin-left: auto; }
+.stp { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line2); background: var(--bg); color: var(--text); font: 600 15px/1 var(--font); display: grid; place-items: center; cursor: pointer; padding: 0; }
+.stp:hover:not(:disabled) { background: var(--hover); }
+.stp:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+.stp:disabled { opacity: .35; cursor: default; }
+.steps.busy .stp { opacity: .55; cursor: progress; }
+.steps.busy::after { content: ''; width: 12px; height: 12px; align-self: center; border: 2px solid var(--line2); border-top-color: var(--text); border-radius: 50%; animation: spin .8s linear infinite; }
+.xp .steps { margin-left: 8px; }
+.bar.sat { width: 180px; }
+.danger-row { display: flex; align-items: center; gap: 12px; margin-top: 6px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line)); border-radius: 10px; }
+.danger-row .grow { display: flex; flex-direction: column; gap: 2px; }
+.btn.danger-ghost { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line2)); background: transparent; }
+.btn.danger-ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.vrow { flex-wrap: nowrap; }
+.vrow .icons-row { flex-wrap: nowrap; flex: none; }
+.vrow > .mono, .xp > .mono { white-space: nowrap; flex: none; }
+.steps { flex-direction: row; flex-wrap: nowrap; flex: none; }
+.bar.sat { flex: 0 1 180px; width: auto; min-width: 80px; }
+.pgrid { display: grid; gap: 24px; grid-template-columns: minmax(380px, 1.25fr) minmax(0, 1fr); }
+@media (max-width: 1420px) { .pgrid { grid-template-columns: minmax(0, 1fr); } }
+.vrow > .mono { min-width: 66px; }
+.steps { margin-left: 4px; }
+.vrow .icons-row, .vrow .bar.sat { width: 198px; flex: none; }
+.xp .bar { flex: 0 1 198px; }
