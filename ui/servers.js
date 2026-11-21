@@ -259,7 +259,7 @@ routes.friends = async function renderFriends() {
           <span class="st">${r.iAmHost ? SHAPES.dot + 'En esta PC' : r.hostOnline ? SHAPES.dot + 'En línea' : SHAPES.off + 'Sin anfitrión'}</span></div>
         <div class="addr"><span>127.0.0.1:${r.routePort}</span><button class="btn s" data-a="copy" data-text="127.0.0.1:${r.routePort}" data-msg="Dirección copiada">${icon('copy', 14)}Copiar</button></div>
         <p class="sm t2" style="margin:0">En Minecraft: Multijugador → Agregar servidor → esta dirección. Siempre lleva a la PC que lo esté alojando${r.hostName ? `: ahora, <b>${esc(r.hostName)}</b>` : ''}. Si cambia de PC, no tenés que tocar nada.</p>
-        <div class="btns">${r.hasCopy ? `<button class="btn s" data-a="open" data-id="${esc(r.id)}">Abrir</button>` : ''}<button class="btn s ghost" data-a="remote-remove" data-id="${esc(r.id)}">${icon('logout', 14)}Salir del grupo</button></div>
+        <div class="btns">${profileButton({ loader: r.loader }, {}, r.id)}${r.hasCopy ? `<button class="btn s" data-a="open" data-id="${esc(r.id)}">Abrir</button>` : ''}<button class="btn s ghost" data-a="remote-remove" data-id="${esc(r.id)}">${icon('logout', 14)}Salir del grupo</button></div>
       </div>`).join('')}</div>`
       : `<div class="empty">${icon('friends', 28)}<h2>Todavía no te uniste a ningún servidor</h2><p>Pedile a un amigo que te invite desde su servidor en 939 Host (Grupo → Invitar).</p></div>`}
   </div>`;

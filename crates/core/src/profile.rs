@@ -114,3 +114,42 @@ pub fn launchers() -> Vec<&'static str> {
     if appdata.join("ATLauncher").is_dir() { v.push("ATLauncher"); }
     v
 }
+
+/// Lista de lo que necesita el cliente para entrar (la usa «Preparar para jugar»). Los mods de
+/// Modrinth van con su descarga oficial; los agregados a mano, sin URL (se copian desde la PC que
+/// tiene el servidor). Los que solo corren en el servidor quedan fuera.
+pub async fn client_plan<S: Source>(src: &S, id: &str) -> AppResult<crate::clientsetup::Plan> {
+    let cfg = instance::load(id)?;
+    let mut plan = crate::clientsetup::Plan { server_id: id.to_string(), server_name: cfg.name.clone(), mc_version: cfg.mc_version.clone(), loader: cfg.loader, loader_version: cfg.loader_version.clone(), ..Default::default() };
+    if cfg.loader == Loader::Vanilla { return Ok(plan); }
+    let dir = mods::mods_dir(id);
+    let mut jars = vec![];
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) == Some("jar") && p.is_file() { jars.push(p); }
+    }
+    jars.sort();
+    let mut sha1s = vec![];
+    for j in &jars { sha1s.push(net::sha1_file(j)?); }
+    let found = if sha1s.is_empty() { Default::default() } else { src.versions_by_sha1(&sha1s).await.unwrap_or_default() };
+    let pids: Vec<String> = found.values().map(|v| v.project_id.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let projects = src.projects(&pids).await.unwrap_or_default();
+    for (j, h) in jars.iter().zip(&sha1s) {
+        let name = j.file_name().unwrap().to_string_lossy().to_string();
+        let size = std::fs::metadata(j).map(|m| m.len()).unwrap_or(0);
+        match found.get(h).and_then(|v| v.files.iter().find(|f| &f.hashes.sha1 == h).map(|f| (v, f))) {
+            Some((v, f)) if f.url.starts_with("https://cdn.modrinth.com/") => {
+                let p = projects.iter().find(|p| p.id == v.project_id);
+                if p.map(|p| p.client_side.as_str()) == Some("unsupported") { plan.server_only.push(p.map(|p| p.title.clone()).unwrap_or(name)); continue; }
+                plan.mods.push(crate::clientsetup::PlanMod { filename: name.clone(), title: p.map(|p| p.title.clone()).unwrap_or(name), sha1: h.clone(), size, url: Some(f.url.clone()) });
+            }
+            _ => {
+                // Agregado a mano: se mira en sus metadatos si declara que es solo de servidor.
+                let server_only = mods::jar_meta(j).map(|m| m.environment == "server").unwrap_or(false);
+                if server_only { plan.server_only.push(name); continue; }
+                plan.mods.push(crate::clientsetup::PlanMod { filename: name.clone(), title: name, sha1: h.clone(), size, url: None });
+            }
+        }
+    }
+    Ok(plan)
+}

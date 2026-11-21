@@ -148,7 +148,7 @@ fn load_routes() -> HashMap<String, u16> { paths::read_json(&routes_path()).unwr
 
 /// Puerto local estable para un servidor: se deriva de su id (así suele ser el mismo en todas
 /// las PCs del grupo) y se guarda para que nunca cambie en esta PC.
-fn route_port(server: &str) -> u16 {
+pub fn route_port(server: &str) -> u16 {
     let mut r = load_routes();
     if let Some(p) = r.get(server) { return *p; }
     let h = server.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
@@ -655,3 +655,44 @@ pub async fn friend_send(node: String, text: String, cluster: State<'_, Cluster>
 pub async fn friend_chat(node: String, cluster: State<'_, Cluster>) -> AppResult<Vec<host939_cluster::friends::Message>> { Ok(cluster.node().await?.friend_chat(&node)) }
 #[tauri::command]
 pub async fn friend_set_available(on: bool, cluster: State<'_, Cluster>) -> AppResult<()> { cluster.node().await?.friend_set_available(on).map_err(ferr) }
+
+/* ───────── Preparar para jugar ───────── */
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PrepareProgress<'a> { id: &'a str, message: &'a str, fraction: f64 }
+
+/// Deja listo el Minecraft de esta PC para entrar al servidor: versión, cargador, mods en una
+/// carpeta propia del servidor y perfil en el Launcher (ver `clientsetup`). Sirve en la PC que
+/// tiene el servidor y en la de un jugador del grupo (pide la lista a la anfitriona).
+#[tauri::command]
+pub async fn client_prepare(app: AppHandle, id: String, cluster: State<'_, Cluster>) -> AppResult<host939_core::clientsetup::Report> {
+    if !paths::valid_server_id(&id) { return Err(AppError::invalid("Servidor inválido.")); }
+    let share = network::load_share(&id);
+    let local = instance::load(&id).ok().filter(|c| c.installed);
+    let node = cluster.try_node();
+    let emit = |m: &str, f: f64| { let _ = app.emit("client-prepare-progress", PrepareProgress { id: &id, message: m, fraction: f }); };
+    emit("Consultando qué necesita el servidor", 0.01);
+    let plan = match (&local, &node) {
+        (Some(_), _) => host939_core::profile::client_plan(&host939_core::modrinth::Modrinth, &id).await?,
+        (None, Some(n)) if share.enabled => n.client_plan(&id).await.map_err(|e| AppError::invalid(e.to_string()))?,
+        _ => return Err(AppError::invalid("Esta PC no tiene el servidor ni está en su grupo.")),
+    };
+    // Dirección con la que esta PC entra: por 939 Host si el servidor es del grupo; si es solo de
+    // esta PC, directo al puerto local.
+    let address = if share.enabled { format!("127.0.0.1:{}", route_port(&id)) } else { format!("127.0.0.1:{}", local.as_ref().map(|c| c.port).unwrap_or(25565)) };
+    let icon = host939_core::logo::data_url(&id).or_else(|| share.card.as_ref().and_then(|c| c.get("logo")).and_then(|v| v.as_str()).map(String::from));
+    let id2 = id.clone();
+    let node2 = node.cloned();
+    let has_local = local.is_some();
+    let fetch = move |filename: String| {
+        let (id, node) = (id2.clone(), node2.clone());
+        async move {
+            if has_local {
+                return std::fs::read(host939_core::mods::mods_dir(&id).join(&filename)).map_err(|e| AppError::io("No se pudo leer un mod del servidor", e));
+            }
+            match node { Some(n) => n.client_mod(&id, &filename).await.map_err(|e| AppError::invalid(e.to_string())), None => Err(AppError::invalid("La red del grupo no está lista.")) }
+        }
+    };
+    host939_core::clientsetup::prepare(&plan, &address, icon.as_deref(), fetch, |m, f| emit(m, f)).await
+}

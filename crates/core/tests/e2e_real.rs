@@ -638,3 +638,76 @@ async fn e2e_items_de_mods() {
         assert!(with_icon * 10 >= idx.names.len() * 6, "menos del 60 % de los ítems con ícono");
     }
 }
+
+/// «Preparar para jugar» de verdad, en un Minecraft de prueba (carpeta temporal, nunca el
+/// `.minecraft` real): vanilla, Fabric con un mod de Modrinth y uno agregado a mano, protección
+/// de la carpeta de mods anterior, vuelta atrás si algo falla, y NeoForge con su instalador oficial.
+#[tokio::test]
+#[ignore]
+async fn e2e_preparar_para_jugar() {
+    use host939_core::clientsetup::{prepare, Plan, PlanMod};
+    use host939_core::model::Loader;
+    init();
+    let mc = tempfile::tempdir().unwrap();
+    std::env::set_var("H939_MINECRAFT_DIR", mc.path());
+    let none = |_f: String| async { Err::<Vec<u8>, _>(host939_core::error::AppError::invalid("sin mods a mano")) };
+    // Sin Launcher: lo dice claro y no instala nada.
+    let vanilla = Plan { server_id: "srv-v".into(), server_name: "Vanilla".into(), mc_version: "1.21.1".into(), loader: Loader::Vanilla, ..Default::default() };
+    let e = prepare(&vanilla, "127.0.0.1:25565", None, none, |_, _| {}).await.unwrap_err();
+    assert!(e.message.contains("Launcher"), "{}", e.message);
+    std::fs::write(mc.path().join("launcher_profiles.json"), r#"{"profiles":{"mio":{"name":"Mío","type":"latest-release","lastVersionId":"latest-release"}},"version":3}"#).unwrap();
+    // 1) Vanilla: versión instalada, perfil y servidor en Multijugador.
+    let r = prepare(&vanilla, "127.0.0.1:25565", None, none, |_, _| {}).await.expect("vanilla");
+    assert!(r.installed_version);
+    assert!(mc.path().join("versions/1.21.1/1.21.1.jar").is_file());
+    let lp: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(mc.path().join("launcher_profiles.json")).unwrap()).unwrap();
+    assert_eq!(lp["profiles"]["mio"]["name"], "Mío");
+    assert_eq!(lp["profiles"]["939host-srv-v"]["lastVersionId"], "1.21.1");
+    println!("✔ vanilla 1.21.1: versión instalada y perfil «{}»", r.profile_name);
+    // 2) Fabric con Fabric API (Modrinth, verificado) y un mod agregado a mano.
+    let versions: serde_json::Value = host939_core::net::get_json("https://api.modrinth.com/v2/project/fabric-api/version?loaders=%5B%22fabric%22%5D&game_versions=%5B%221.21.1%22%5D", "Modrinth").await.unwrap();
+    let f = &versions[0]["files"][0];
+    let manual = b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0".to_vec();
+    let manual_sha = host939_core::net::sha1_bytes(&manual);
+    let loader = host939_core::meta::loader_support(Loader::Fabric, "1.21.1").await.unwrap().loader_version.expect("versión de Fabric");
+    let mut fabric = Plan { server_id: "srv-f".into(), server_name: "Con mods".into(), mc_version: "1.21.1".into(), loader: Loader::Fabric, loader_version: Some(loader),
+        mods: vec![
+            PlanMod { filename: f["filename"].as_str().unwrap().into(), title: "Fabric API".into(), sha1: f["hashes"]["sha1"].as_str().unwrap().into(), size: f["size"].as_u64().unwrap(), url: Some(f["url"].as_str().unwrap().into()) },
+            PlanMod { filename: "a-mano.jar".into(), title: "a-mano.jar".into(), sha1: manual_sha.clone(), size: manual.len() as u64, url: None },
+        ], ..Default::default() };
+    let gdir = host939_core::clientsetup::game_dir(mc.path(), &fabric);
+    std::fs::create_dir_all(gdir.join("mods")).unwrap();
+    std::fs::write(gdir.join("mods/viejo.jar"), b"viejo").unwrap();
+    let m2 = manual.clone();
+    let fetch = move |n: String| { let m = m2.clone(); async move { assert_eq!(n, "a-mano.jar"); Ok(m) } };
+    let r = prepare(&fabric, "127.0.0.1:41500", None, fetch.clone(), |_, _| {}).await.expect("fabric");
+    assert!(r.installed_loader && r.mods_installed == 2);
+    assert_eq!(r.previous_mods.as_deref(), Some("mods anteriores"));
+    assert_eq!(std::fs::read(gdir.join("mods anteriores/viejo.jar")).unwrap(), b"viejo", "lo anterior quedó intacto");
+    assert!(!gdir.join("mods/viejo.jar").exists(), "sin mezclar");
+    assert!(mc.path().join(format!("versions/{0}/{0}.json", r.version_id)).is_file());
+    println!("✔ Fabric: {} con Fabric API y un mod a mano; los mods de antes en «mods anteriores»", r.version_id);
+    // Repetir sin cambios no aparta nada; con cambios aparta en «mods anteriores 1».
+    let r = prepare(&fabric, "127.0.0.1:41500", None, fetch.clone(), |_, _| {}).await.unwrap();
+    assert!(r.previous_mods.is_none());
+    fabric.mods.pop();
+    let r = prepare(&fabric, "127.0.0.1:41500", None, fetch.clone(), |_, _| {}).await.unwrap();
+    assert_eq!(r.previous_mods.as_deref(), Some("mods anteriores 1"));
+    // 3) Si un mod no coincide con su hash: error y todo queda como estaba.
+    let before: Vec<_> = std::fs::read_dir(gdir.join("mods")).unwrap().flatten().map(|e| e.file_name()).collect();
+    let mut bad = fabric.clone();
+    bad.mods.push(PlanMod { filename: "roto.jar".into(), title: "roto".into(), sha1: "0".repeat(40), size: 1, url: None });
+    let b2 = manual.clone();
+    assert!(prepare(&bad, "127.0.0.1:41500", None, move |_| { let m = b2.clone(); async move { Ok(m) } }, |_, _| {}).await.is_err());
+    let after: Vec<_> = std::fs::read_dir(gdir.join("mods")).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(before, after, "la carpeta de mods no cambió");
+    assert!(!gdir.join(".mods-939host-nuevos").exists() && !gdir.join("mods anteriores 2").exists());
+    println!("✔ falla a mitad de camino: no queda nada a medias");
+    // 4) NeoForge con su instalador oficial en modo cliente.
+    let nv = host939_core::meta::loader_support(Loader::NeoForge, "1.21.1").await.unwrap().loader_version.expect("versión de NeoForge");
+    let neo = Plan { server_id: "srv-n".into(), server_name: "NeoForge".into(), mc_version: "1.21.1".into(), loader: Loader::NeoForge, loader_version: Some(nv), ..Default::default() };
+    let t = std::time::Instant::now();
+    let r = prepare(&neo, "127.0.0.1:41501", None, none, |m, _| println!("    {m}")).await.expect("neoforge");
+    assert!(mc.path().join(format!("versions/{0}/{0}.json", r.version_id)).is_file());
+    println!("✔ NeoForge: {} instalado con su instalador oficial en {} s", r.version_id, t.elapsed().as_secs());
+}

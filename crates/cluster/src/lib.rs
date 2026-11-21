@@ -174,6 +174,10 @@ enum Req {
     Avatar { server: String, hash: String },
     /// «Probá mi entrada pública desde tu conexión» (ping de estado de Minecraft).
     ProbeEntrance { server: String, addr: String },
+    /// Qué necesita el Minecraft de un jugador para entrar (versión, cargador, mods).
+    ClientPlan { server: String },
+    /// Un mod agregado a mano del servidor (para «Preparar para jugar» en otra PC).
+    ClientMod { server: String, filename: String },
 }
 
 impl Req {
@@ -181,7 +185,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } => server,
         }
     }
 }
@@ -246,6 +250,9 @@ enum Resp {
     Avatar { png: String },
     /// Resultado de probar una entrada pública.
     Probe { ok: bool, detail: String },
+    ClientPlan { plan: serde_json::Value },
+    /// Mod en base64.
+    ClientMod { data: String },
     Err { msg: String },
 }
 
@@ -1044,6 +1051,41 @@ impl GroupNode {
         s.auto_failover = auto_failover;
         s.handover_on_quit = handover_on_quit;
         self.inner.commit(server, &mut s)
+    }
+
+    /// PCs que tienen los archivos del servidor, primero la anfitriona.
+    fn plan_sources(&self, server: &str) -> Vec<String> {
+        let share = network::load_share(server);
+        let host = lease::read(server).map(|l| l.host).unwrap_or_default();
+        let mut v: Vec<String> = share.members.iter().filter(|m| m.can_host() && m.node_id != self.inner.me).map(|m| m.node_id.clone()).collect();
+        v.sort_by_key(|n| *n != host);
+        v
+    }
+
+    /// Pide a una PC que tiene el servidor la lista para «Preparar para jugar».
+    pub async fn client_plan(&self, server: &str) -> Result<host939_core::clientsetup::Plan> {
+        let mut last = "Ninguna PC con el servidor está conectada ahora. Probá cuando la anfitriona tenga 939 Host abierto.".to_string();
+        for n in self.plan_sources(server) {
+            match self.inner.rpc_timeout(&n, &Req::ClientPlan { server: server.into() }, Duration::from_secs(60)).await {
+                Ok(Resp::ClientPlan { plan }) => return Ok(serde_json::from_value(plan)?),
+                Ok(Resp::Err { msg }) => last = msg,
+                _ => {}
+            }
+        }
+        bail!(last)
+    }
+
+    /// Trae un mod agregado a mano desde una PC que tiene el servidor.
+    pub async fn client_mod(&self, server: &str, filename: &str) -> Result<Vec<u8>> {
+        let mut last = "Ninguna PC con el servidor está conectada ahora.".to_string();
+        for n in self.plan_sources(server) {
+            match self.inner.rpc_timeout(&n, &Req::ClientMod { server: server.into(), filename: filename.into() }, Duration::from_secs(120)).await {
+                Ok(Resp::ClientMod { data }) => return Ok(data_encoding::BASE64.decode(data.as_bytes())?),
+                Ok(Resp::Err { msg }) => last = msg,
+                _ => {}
+            }
+        }
+        bail!(last)
     }
 
     /// «Permitir conexiones sin 939 Host»: solo la propietaria, firmado y enviado a todo el grupo.
@@ -2835,6 +2877,26 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             }
         }
         Req::ProbeEntrance { addr, .. } => inner.probe_for(remote, &addr).await,
+        Req::ClientPlan { server } => {
+            // Solo la PC que tiene el servidor (sus archivos) puede armar la lista.
+            if host939_core::instance::load(&server).map(|c| !c.installed).unwrap_or(true) { return Resp::Err { msg: "Esta PC no tiene los archivos del servidor.".into() }; }
+            match host939_core::profile::client_plan(&host939_core::modrinth::Modrinth, &server).await {
+                Ok(p) => Resp::ClientPlan { plan: serde_json::to_value(p).unwrap_or_default() },
+                Err(e) => Resp::Err { msg: e.message },
+            }
+        }
+        Req::ClientMod { server, filename } => {
+            if filename.contains(['/', '\\']) || filename.contains("..") || !filename.ends_with(".jar") { return Resp::Err { msg: "Nombre de archivo inválido.".into() }; }
+            let p = host939_core::mods::mods_dir(&server).join(&filename);
+            match std::fs::metadata(&p) {
+                Ok(m) if m.is_file() && m.len() <= 5_500_000 => match std::fs::read(&p) {
+                    Ok(b) => Resp::ClientMod { data: data_encoding::BASE64.encode(&b) },
+                    Err(_) => Resp::Err { msg: "No se pudo leer el mod.".into() },
+                },
+                Ok(m) if m.is_file() => Resp::Err { msg: format!("El mod {filename} pesa {} MB: es demasiado grande para copiarlo por el grupo. Pedile a quien tiene el servidor que lo agregue desde Modrinth.", m.len() / 1_048_576) },
+                _ => Resp::Err { msg: format!("El servidor ya no tiene el mod {filename}.") },
+            }
+        }
         Req::Nudge { .. } => {
             // Una conexión nueva hacia esa PC, que se cierra enseguida (solo sirve para que su
             // transporte vuelva a elegir el camino). Sin caché: tiene que ser una conexión nueva.

@@ -486,6 +486,7 @@ fn main() {
             network::group_transfer,
             network::group_leave,
             v3::profile_export,
+            network::client_prepare,
             v3::profile_open,
             aliases::alias_status,
             aliases::alias_set,
