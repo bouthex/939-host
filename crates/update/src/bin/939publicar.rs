@@ -159,6 +159,20 @@ fn main() {
             write(&dir.join("clave-publicacion.secreta"), hex::encode(ci_seed).as_bytes());
             println!("✔ raíz 1 (recuperación {}…, publicación {}…)", &recovery.public().key_id()[..12], &ci.public().key_id()[..12]);
         }
+        // Comprueba, sin firmar ni mostrar nada secreto, que la clave del entorno sea la que autoriza
+        // la raíz que viaja en la app (solo imprime los primeros caracteres del identificador público).
+        "comprobar-clave" => {
+            let seed = std::env::var("H939_CLAVE_PUBLICACION").unwrap_or_default();
+            let Some(seed) = hex::decode(seed.trim()).ok().and_then(|b| <[u8; 32]>::try_from(b).ok()) else { die("la clave de publicación falta o no tiene el formato esperado (64 caracteres hexadecimales)") };
+            let key = SecretKey::ed25519_from_seed(&seed);
+            let root_path = PathBuf::from(arg(&args, "--raiz").unwrap_or_else(|| die("falta --raiz")));
+            let root_bytes = std::fs::read(&root_path).unwrap_or_else(|e| die(format!("{}: {e}", root_path.display())));
+            let root_bytes = serde_json::from_slice::<serde_json::Value>(&root_bytes).ok().and_then(|v| v.get("raiz").cloned()).filter(|v| !v.is_null()).map(|v| serde_json::to_vec(&v).unwrap()).unwrap_or(root_bytes);
+            let root = Root::trusted_initial(&root_bytes).unwrap_or_else(|e| die(format!("raíz inválida: {e}")));
+            let id = key.public().key_id();
+            if root.release.keyids.contains(&id) { println!("✔ La clave del entorno coincide con la clave pública de la app (publicación {}…).", &id[..12]); }
+            else { die(format!("La clave del entorno NO coincide con la de la app (la del entorno es {}…, la app espera {}…).", &id[..12], root.release.keyids.first().map(|k| &k[..12]).unwrap_or("?"))); }
+        }
         "firmar-ci" => {
             let seed = std::env::var("H939_CLAVE_PUBLICACION").unwrap_or_else(|_| die("falta la clave de publicación (H939_CLAVE_PUBLICACION)"));
             let seed: [u8; 32] = hex::decode(seed.trim()).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| die("la clave de publicación no tiene el formato esperado"));

@@ -1,0 +1,27 @@
+name: Comprobar clave de publicación
+
+# Comprueba que el secreto H939_CLAVE_PUBLICACION del entorno «publicacion» corresponda a la clave
+# pública que traen las apps (src-tauri/distribucion.json, la misma desde la 1.1.0). No firma, no
+# publica y no muestra la clave. Se ejecuta subiendo una etiqueta comprobar-clave-N (y aprobando el
+# uso del entorno en GitHub). No crea releases.
+on:
+  push:
+    tags: ["comprobar-clave-*"]
+
+permissions:
+  contents: read
+
+jobs:
+  comprobar:
+    name: La clave del entorno coincide con la de la app
+    runs-on: ubuntu-24.04
+    environment: publicacion
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup toolchain install
+      - name: Comprobar
+        env:
+          H939_CLAVE_PUBLICACION: ${{ secrets.H939_CLAVE_PUBLICACION }}
+        run: |
+          cargo build --locked --release -p host939-update --features propietario --bin 939publicar
+          target/release/939publicar comprobar-clave --carpeta . --raiz src-tauri/distribucion.json
