@@ -1037,20 +1037,22 @@ async fn e2e_resourcepacks_cliente_real() {
     pack_server(rp::LOCAL_PORT);
     let dir = paths::root().join("cliente-packs");
     let name_p = "Jugador939";
+    // Toda la consola desde el principio (la del servidor guarda solo las últimas líneas).
+    let lines = || rec.console.lock().unwrap().clone();
     let join = |accept: &str, opcional: Option<&std::path::Path>, secs: u64| -> bool {
-        let start = mgr.console(&id).len();
+        let start = lines().len();
         let mut cmd = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" });
         cmd.args([&script, &mc, &format!("127.0.0.1:{port}"), dir.to_str().unwrap(), name_p, &secs.to_string()]).env("ACEPTAR_PACKS", accept);
         if let Some(o) = opcional { cmd.env("PACK_OPCIONAL", o); } else { cmd.env_remove("PACK_OPCIONAL"); }
         let mut child = cmd.spawn().expect("cliente");
-        let ok = wait_for(Duration::from_secs(secs + if accept == "0" && opcional.is_none() { 30 } else { 300 }), || mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} joined the game"))));
+        let ok = wait_for(Duration::from_secs(secs + if accept == "0" && opcional.is_none() { 30 } else { 300 }), || lines().iter().skip(start).any(|l| l.contains(&format!("{name_p} joined the game"))));
         // Que se quede un momento conectado (no lo echan después de entrar).
-        let kicked = ok && { std::thread::sleep(Duration::from_secs(8)); mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} lost connection")) || l.contains(&format!("{name_p} left the game"))) };
+        let kicked = ok && { std::thread::sleep(Duration::from_secs(8)); lines().iter().skip(start).any(|l| l.contains(&format!("{name_p} lost connection")) || l.contains(&format!("{name_p} left the game"))) };
         // Cerrar el juego de verdad (el script lo abre como otro proceso) y esperar a que salga.
         let _ = std::process::Command::new("pkill").args(["-f", "quickPlayMultiplayer"]).status();
         let _ = child.kill();
         let _ = child.wait();
-        if ok { wait_for(Duration::from_secs(40), || mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} left the game")) || l.contains(&format!("{name_p} lost connection")))); }
+        if ok { wait_for(Duration::from_secs(40), || lines().iter().skip(start).any(|l| l.contains(&format!("{name_p} left the game")) || l.contains(&format!("{name_p} lost connection")))); }
         std::thread::sleep(Duration::from_secs(3));
         ok && !kicked
     };
@@ -1108,5 +1110,4 @@ async fn e2e_resourcepacks_cliente_real() {
     assert!(join("0", Some(&opt), 90), "un pack opcional no impide entrar");
     println!("✔ pack opcional instalado en el perfil del jugador y ninguno obligatorio: entra sin problemas");
     mgr.stop_all();
-    let _ = rec;
 }
