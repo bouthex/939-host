@@ -2,11 +2,12 @@ name: Comprobar clave de publicación
 
 # Comprueba que el secreto H939_CLAVE_PUBLICACION del entorno «publicacion» corresponda a la clave
 # pública que traen las apps (src-tauri/distribucion.json, la misma desde la 1.1.0). No firma, no
-# publica y no muestra la clave. Se ejecuta subiendo una etiqueta comprobar-clave-N (y aprobando el
-# uso del entorno en GitHub). No crea releases.
+# publica y no muestra la clave. Se ejecuta al cambiar actualizaciones/comprobar-clave.txt en
+# rediseno-v3 (y aprobando el uso del entorno en GitHub). No crea releases.
 on:
   push:
-    tags: ["comprobar-clave-*"]
+    branches: [rediseno-v3]
+    paths: [actualizaciones/comprobar-clave.txt]
 
 permissions:
   contents: read
