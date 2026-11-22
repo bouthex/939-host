@@ -54,3 +54,10 @@ Límites conocidos de esas funciones:
 - Descubrimiento de PCs del grupo en la red local (mDNS) para no depender de direcciones guardadas cuando cambia la IP y no hay relays.
 - Compresión de los bloques de sincronización que no sean regiones (las regiones ya vienen comprimidas).
 - Panel de historial del grupo (quién hosteó, traspasos, recuperaciones).
+
+## Resource packs
+
+- Minecraft permite **un solo** pack enviado por el servidor (`server.properties`): solo uno puede ser obligatorio. Los opcionales los instala «Preparar para jugar» en el Minecraft de cada jugador.
+- Un pack **propio** obligatorio llega a quienes entran con 939 Host (por el grupo, sin publicarlo). Quien entra por IP **sin** 939 Host no puede bajarlo y no podría entrar: para esos jugadores, usar un pack de Modrinth.
+- Los packs de más de 250 MB no se pueden enviar desde el servidor (límite de Minecraft).
+- El rechazo de un pack obligatorio lo aplica Minecraft; en la prueba automática se comprobó que sin aceptarlo el jugador no entra (no se automatizó tocar «No» en la pantalla del juego).

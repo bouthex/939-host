@@ -6,6 +6,7 @@ pub mod avatar;
 pub mod backup;
 pub mod client;
 pub mod clientsetup;
+pub mod resourcepacks;
 pub mod diagnostics;
 pub mod error;
 pub mod events;

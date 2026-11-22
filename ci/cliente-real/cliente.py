@@ -85,7 +85,20 @@ host, port = addr.rsplit(":", 1)
 game = f"{root}/game"
 os.makedirs(game, exist_ok=True)
 # Opciones mínimas: sin música, sin tutorial, pantalla chica.
-open(f"{game}/options.txt", "w").write("onboardAccessibility:false\ntutorialStep:none\nsoundCategory_master:0.0\nrenderDistance:2\nsimulationDistance:5\nmaxFps:30\njoinedFirstServer:true\nskipMultiplayerWarning:true\n")
+opts = "onboardAccessibility:false\ntutorialStep:none\nsoundCategory_master:0.0\nrenderDistance:2\nsimulationDistance:5\nmaxFps:30\njoinedFirstServer:true\nskipMultiplayerWarning:true\n"
+# Resource pack opcional ya instalado en el perfil del jugador (como lo deja «Preparar para jugar»).
+if os.environ.get("PACK_OPCIONAL"):
+    import shutil
+    os.makedirs(f"{game}/resourcepacks", exist_ok=True)
+    shutil.copy(os.environ["PACK_OPCIONAL"], f"{game}/resourcepacks/opcional.zip")
+    opts += 'resourcePacks:["vanilla","file/opcional.zip"]\n'
+open(f"{game}/options.txt", "w").write(opts)
+# Lista de servidores con la elección de «Resource packs del servidor» para esta dirección:
+# ACEPTAR_PACKS=1 → aceptar sin preguntar (como un jugador que eligió «Activados»); 0 → «Desactivados».
+if os.environ.get("ACEPTAR_PACKS") in ("0", "1"):
+    def s(t): b = t.encode(); return len(b).to_bytes(2, "big") + b
+    e = b"\x08" + s("ip") + s(addr) + b"\x08" + s("name") + s("Prueba") + b"\x01" + s("acceptTextures") + bytes([int(os.environ["ACEPTAR_PACKS"])]) + b"\x00"
+    open(f"{game}/servers.dat", "wb").write(b"\x0a\x00\x00\x09" + s("servers") + b"\x0a" + (1).to_bytes(4, "big") + e + b"\x00")
 java_bin = os.environ.get("JAVA_BIN", "java")
 args = [java_bin, "-Xmx2G", f"-Djava.library.path={natives}", "-Dorg.lwjgl.util.Debug=false", "-cp", os.pathsep.join(cp), vj["mainClass"],
         "--username", name, "--version", ver, "--gameDir", game, "--assetsDir", f"{root}/assets", "--assetIndex", idx["id"],

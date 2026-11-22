@@ -24,6 +24,8 @@ pub struct AppSettings {
     /// Perfiles de Minecraft de esta PC con la reconexión automática activada.
     #[serde(default)]
     pub reconnect_profiles: Vec<crate::client::ClientProfile>,
+    /// Carpeta de Minecraft elegida a mano (cuando no está en el lugar de siempre). Vacío: detectar.
+    pub minecraft_dir: String,
     /// Símbolo que acompaña al nombre de esta PC (solo visual).
     pub node_symbol: String,
     /// Apariencia: "system" (según Windows), "light" o "dark".
@@ -79,6 +81,7 @@ impl Default for AppSettings {
             onboarding_done: false,
             start_with_windows: false,
             reconnect_profiles: vec![],
+            minecraft_dir: String::new(),
             node_symbol: String::new(),
             theme: "system".into(),
             reduce_motion: false,

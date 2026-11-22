@@ -685,9 +685,18 @@ pub async fn client_prepare(app: AppHandle, id: String, cluster: State<'_, Clust
     let id2 = id.clone();
     let node2 = node.cloned();
     let has_local = local.is_some();
+    let pack_sha: std::collections::HashMap<String, String> = plan.packs.iter().map(|p| (p.filename.clone(), p.sha1.clone())).collect();
     let fetch = move |filename: String| {
-        let (id, node) = (id2.clone(), node2.clone());
+        let (id, node, pack_sha) = (id2.clone(), node2.clone(), pack_sha.clone());
         async move {
+            // Resource packs propios: del servidor de esta PC o, en tramos, de la PC que lo tiene.
+            if let Some(pack) = filename.strip_prefix("resourcepacks/") {
+                let sha = pack_sha.get(pack).cloned().unwrap_or_default();
+                if let Some(p) = host939_core::resourcepacks::find_local(&id, &sha) { return std::fs::read(p).map_err(|e| AppError::io("No se pudo leer el resource pack", e)); }
+                let n = node.ok_or_else(|| AppError::invalid("La red del grupo no está lista."))?;
+                let p = n.pack_fetch(&id, &sha).await.map_err(|e| AppError::invalid(e.to_string()))?;
+                return std::fs::read(p).map_err(|e| AppError::io("No se pudo leer el resource pack", e));
+            }
             if has_local {
                 return std::fs::read(host939_core::mods::mods_dir(&id).join(&filename)).map_err(|e| AppError::io("No se pudo leer un mod del servidor", e));
             }
@@ -695,4 +704,56 @@ pub async fn client_prepare(app: AppHandle, id: String, cluster: State<'_, Clust
         }
     };
     host939_core::clientsetup::prepare(&plan, &address, icon.as_deref(), fetch, |m, f| emit(m, f)).await
+}
+
+/// Carpeta de juego del perfil de un servidor (la que ya usa su perfil, o la que usaría).
+fn profile_dir(id: &str) -> AppResult<(std::path::PathBuf, std::path::PathBuf)> {
+    let mc = host939_core::clientsetup::minecraft_dir().ok_or_else(|| AppError::invalid("No se encontró la carpeta de Minecraft."))?;
+    let name = instance::load(id).map(|c| c.name).ok().or_else(|| network::load_share(id).card.as_ref().and_then(|c| c.get("name")).and_then(|v| v.as_str()).map(String::from)).unwrap_or_default();
+    let plan = host939_core::clientsetup::Plan { server_id: id.to_string(), server_name: name, ..Default::default() };
+    let g = host939_core::clientsetup::resolve_game_dir(&mc, &plan);
+    Ok((mc, g))
+}
+
+/// Deshace el cambio de mods de «Preparar para jugar» (la carpeta anterior vuelve a ser «mods»).
+#[tauri::command]
+pub fn client_prepare_undo(id: String, previous: String) -> AppResult<String> {
+    if !paths::valid_server_id(&id) { return Err(AppError::invalid("Servidor inválido.")); }
+    let (_, g) = profile_dir(&id)?;
+    host939_core::clientsetup::undo_mods(&g, &previous)
+}
+
+/// Usa las preferencias del último perfil usado en el perfil de este servidor (lo que había queda
+/// guardado como copia).
+#[tauri::command]
+pub fn client_import_prefs(id: String) -> AppResult<Vec<String>> {
+    if !paths::valid_server_id(&id) { return Err(AppError::invalid("Servidor inválido.")); }
+    let (mc, g) = profile_dir(&id)?;
+    let (name, from) = host939_core::clientsetup::last_used_profile(&mc, &g).ok_or_else(|| AppError::invalid("No se encontró otro perfil con preferencias para copiar."))?;
+    let done = host939_core::clientsetup::import_preferences(&from, &g)?;
+    host939_core::clientsetup::mark_seeded(&g, &name)?;
+    Ok(done)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinecraftDirs { pub current: Option<String>, pub custom: String, pub found: Vec<host939_core::clientsetup::Install> }
+
+/// Instalaciones de Minecraft encontradas y la que se usa.
+#[tauri::command]
+pub fn minecraft_dirs() -> MinecraftDirs {
+    MinecraftDirs { current: host939_core::clientsetup::minecraft_dir().map(|p| p.to_string_lossy().to_string()), custom: host939_core::settings::load().minecraft_dir, found: host939_core::clientsetup::installations() }
+}
+
+/// Elige a mano la carpeta de Minecraft (vacío: volver a detectarla). Se comprueba que sea una.
+#[tauri::command]
+pub fn minecraft_dir_set(path: String) -> AppResult<MinecraftDirs> {
+    let p = path.trim().to_string();
+    if !p.is_empty() && !host939_core::clientsetup::looks_like_minecraft(std::path::Path::new(&p)) {
+        return Err(AppError::invalid("Esa carpeta no parece la de Minecraft: no tiene launcher_profiles.json ni la carpeta versions. Abrí el Launcher una vez o elegí la carpeta correcta (normalmente se llama .minecraft)."));
+    }
+    let mut s = host939_core::settings::load();
+    s.minecraft_dir = p;
+    host939_core::settings::save(&s)?;
+    Ok(minecraft_dirs())
 }

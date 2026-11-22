@@ -8,6 +8,7 @@ mod network;
 mod ops;
 mod shutdown;
 mod updates;
+mod packs;
 mod vigia;
 mod v3;
 
@@ -285,6 +286,8 @@ fn main() {
             app.manage(ops::Ops::default());
             // Actualizaciones: consulta enseguida y cada 6 horas (la apertura no espera).
             updates::start(app.handle().clone());
+            // Entrega local de resource packs propios al Minecraft de esta PC (127.0.0.1:39393).
+            packs::start_local_server(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Abrir 939 Host", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Salir de 939 Host…", true, None::<&str>)?;
@@ -413,6 +416,17 @@ fn main() {
             updates::update_check,
             updates::update_channel,
             updates::update_install,
+            packs::rp_library,
+            packs::rp_search,
+            packs::rp_install,
+            packs::rp_add_file,
+            packs::rp_remove,
+            packs::rp_set,
+            packs::rp_open_folder,
+            network::client_prepare_undo,
+            network::client_import_prefs,
+            network::minecraft_dirs,
+            network::minecraft_dir_set,
             updates::update_confirm,
             updates::update_notice_seen,
             updates::update_restart_now,

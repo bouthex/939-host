@@ -869,3 +869,12 @@ details.tech[open] > summary::before { content: '▾ '; }
 :root[data-motion="reduce"] .upd *, :root[data-motion="reduce"] .upd *::after { animation: none !important; }
 :root[data-motion="reduce"] .upd-title, :root[data-motion="reduce"] .upd-ver, :root[data-motion="reduce"] .upd .sp-status { opacity: 1; }
 .updbar { display: flex; align-items: center; gap: 10px; margin: 10px 16px 0; padding: 8px 10px 8px 14px; border: 1px solid var(--line2); border-radius: 12px; background: var(--bg); }
+
+/* Resource packs */
+.rp-sw { padding: 0; border: 0; }
+.seg.s { padding: 2px; }
+.seg.s button { height: 26px; padding: 0 9px; font-size: 12px; }
+.rp-acts { align-items: center; flex-wrap: nowrap; }
+.rp-warn { display: flex; align-items: flex-start; gap: 5px; color: var(--text); }
+.rp-warn svg { flex: none; margin-top: 2px; }
+.rp-li.off .mod-ic, .rp-li.off .mod-main .t { opacity: .55; }

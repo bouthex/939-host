@@ -113,11 +113,7 @@ jobs:
           [ -n "$H939_CLAVE_PUBLICACION" ] || { echo "::error::Falta el secreto H939_CLAVE_PUBLICACION en el entorno «publicacion»: no se publica nada."; exit 1; }
           rustup toolchain install
           cargo build --locked --release -p host939-update --features propietario --bin 939publicar
-          datos="$(sed -n 's/^pub const DATA_VERSION: u32 = \([0-9]*\);/\1/p' crates/core/src/datos.rs)"
-          siguientes=(); for r in $(ls actualizaciones/raiz-*.json | sort -V | tail -n +2); do siguientes+=(--raiz-siguiente "$r"); done
-          target/release/939publicar firmar-ci --carpeta . --raiz src-tauri/distribucion.json "${siguientes[@]}" \
-            --artefactos dist --version "$VERSION" --datos "$datos" --notas "939 Host $VERSION" --salida dist
-          target/release/939publicar verificar --raiz-inicial actualizaciones/raiz-1.json --publicacion dist/estable.json
+          scripts/firmar-actualizacion.sh "$VERSION" dist src-tauri/distribucion.json actualizaciones/raiz-1.json $(ls actualizaciones/raiz-*.json | sort -V | tail -n +2)
           cp actualizaciones/raiz-*.json dist/
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:

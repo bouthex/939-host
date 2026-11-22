@@ -1,5 +1,13 @@
 # Registro de cambios
 
+### 1.2.0 (rama rediseno-v3, sin release)
+- «Preparar para jugar» conserva los datos de Minecraft: el perfil nuevo recibe una copia de las preferencias del último perfil usado (idioma, teclas, accesibilidad, gráficos, sonido) y de la lista de servidores; nada original se modifica. Causa del problema anterior: el perfil usaba una carpeta propia vacía, por eso arrancaba con opciones por defecto y sin los servidores (los mundos y la lista seguían en el perfil de siempre).
+- La lista de servidores conserva íconos y la elección de resource packs de los servidores que ya estaban (antes se perdían al agregar el de 939 Host). Copias previas de `launcher_profiles.json` (la original y la anterior) y de `servers.dat`.
+- Dos servidores con el mismo nombre ya no comparten carpeta; se respeta la carpeta que tenga el perfil en el Launcher. Deshacer el cambio de mods. Usar las preferencias en un perfil que ya existía (las anteriores quedan guardadas).
+- Carpeta de Minecraft detectada (Launcher y Microsoft Store) o elegida a mano si está en otro lugar.
+- Panel de Resource packs: Modrinth, archivos propios, obligatorio u opcional con efecto real (server.properties y entrega local por el grupo, o instalación con «Preparar para jugar»).
+- Archivos: las carpetas que faltan (resourcepacks, mods, config, datapacks) se crean desde ahí mismo.
+
 ### 1.1.0 (rama rediseno-v3, sin release)
 - Actualizaciones automáticas desde las releases oficiales de GitHub: detección al abrir y cada 6 horas, descarga reanudable con progreso real, verificación de firma y SHA-256, instalación sola al abrir (o «Actualizar ahora» con la app en uso), reinicio y confirmación de la versión nueva.
 - Vuelta atrás real: respaldo verificado de los archivos del programa y un vigía que restaura la versión anterior si la nueva no instala o no abre. Los datos nunca se tocan.

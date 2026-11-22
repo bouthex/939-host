@@ -2,7 +2,7 @@
 /* Pantalla de un servidor: encabezado con estado y controles siempre visibles, y las pestañas
    Resumen, Mundo, Copias, Grupo y Ajustes (Consola, Jugadores y Mods tienen su propio archivo). */
 
-const TABS = [['summary', 'Resumen'], ['console', 'Consola'], ['players', 'Jugadores'], ['mods', 'Mods'], ['world', 'Mundo'], ['files', 'Archivos'], ['backups', 'Copias'], ['group', 'Grupo'], ['settings', 'Ajustes']];
+const TABS = [['summary', 'Resumen'], ['console', 'Consola'], ['players', 'Jugadores'], ['mods', 'Mods'], ['packs', 'Resource packs'], ['world', 'Mundo'], ['files', 'Archivos'], ['backups', 'Copias'], ['group', 'Grupo'], ['settings', 'Ajustes']];
 const tabDraw = {};
 
 routes.server = async function renderServer() {

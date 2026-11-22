@@ -115,6 +115,9 @@ pub fn write_for(cfg: &ServerConfig) -> AppResult<()> {
         if map.get("management-server-enabled").map(|v| v == "true").unwrap_or(false) { map.insert("management-server-enabled".into(), "false".into()); }
     }
 
+    // Resource pack del servidor (panel de Resource packs): si hay uno obligatorio, manda.
+    crate::resourcepacks::overlay(&cfg.id, &mut map);
+
     let mut text = String::from("# Generado por 939 Host. Los cambios hechos desde la app reemplazan las claves administradas.\n");
     for (k, v) in &map {
         text.push_str(k);

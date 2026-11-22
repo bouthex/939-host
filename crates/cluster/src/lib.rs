@@ -178,6 +178,8 @@ enum Req {
     ClientPlan { server: String },
     /// Un mod agregado a mano del servidor (para «Preparar para jugar» en otra PC).
     ClientMod { server: String, filename: String },
+    /// Un tramo de un resource pack del servidor (por SHA-1), para entregarlo al Minecraft del jugador.
+    PackChunk { server: String, sha1: String, offset: u64 },
 }
 
 impl Req {
@@ -185,7 +187,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } | Req::PackChunk { server, .. } => server,
         }
     }
 }
@@ -253,6 +255,8 @@ enum Resp {
     ClientPlan { plan: serde_json::Value },
     /// Mod en base64.
     ClientMod { data: String },
+    /// Tramo de un resource pack (base64) y tamaño total.
+    PackChunk { data: String, total: u64 },
     Err { msg: String },
 }
 
@@ -537,6 +541,9 @@ fn server_name(server: &str) -> String {
 }
 
 /* ─────────────────────────────── Nodo ─────────────────────────────── */
+
+/// Tramo de resource pack por mensaje (en base64 entra holgado en un mensaje de 8 MB).
+const PACK_CHUNK: usize = 3 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct GroupNode { inner: Arc<Inner>, router: Arc<Router> }
@@ -1085,6 +1092,42 @@ impl GroupNode {
                 _ => {}
             }
         }
+        bail!(last)
+    }
+
+    /// Trae un resource pack (por SHA-1) desde una PC que tiene el servidor, en tramos, lo verifica
+    /// y lo deja en la caché local (`resourcepacks::cache_path`). Si ya está en la caché, no baja nada.
+    pub async fn pack_fetch(&self, server: &str, sha1: &str) -> Result<std::path::PathBuf> {
+        let sha1 = sha1.to_ascii_lowercase();
+        let dest = host939_core::resourcepacks::cache_path(&sha1);
+        if dest.is_file() && host939_core::net::sha1_file(&dest).map(|h| h == sha1).unwrap_or(false) { return Ok(dest); }
+        std::fs::create_dir_all(dest.parent().unwrap())?;
+        let tmp = dest.with_extension(format!("{}.part", std::process::id()));
+        let mut last = "Ninguna PC con el servidor está conectada ahora.".to_string();
+        'src: for n in self.plan_sources(server) {
+            let mut f = std::fs::File::create(&tmp)?;
+            let mut off = 0u64;
+            loop {
+                match self.inner.rpc_timeout(&n, &Req::PackChunk { server: server.into(), sha1: sha1.clone(), offset: off }, Duration::from_secs(120)).await {
+                    Ok(Resp::PackChunk { data, total }) => {
+                        let b = data_encoding::BASE64.decode(data.as_bytes())?;
+                        if total > host939_core::resourcepacks::MAX_SERVER_PACK * 2 { bail!("El resource pack es demasiado grande."); }
+                        std::io::Write::write_all(&mut f, &b)?;
+                        off += b.len() as u64;
+                        if off >= total || b.is_empty() { break; }
+                    }
+                    Ok(Resp::Err { msg }) => { last = msg; continue 'src; }
+                    _ => continue 'src,
+                }
+            }
+            drop(f);
+            if host939_core::net::sha1_file(&tmp).map(|h| h == sha1).unwrap_or(false) {
+                host939_core::paths::rename_retry(&tmp, &dest)?;
+                return Ok(dest);
+            }
+            last = "El resource pack llegó distinto (SHA-1): se descartó.".into();
+        }
+        let _ = std::fs::remove_file(&tmp);
         bail!(last)
     }
 
@@ -2896,6 +2939,19 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
                 Ok(m) if m.is_file() => Resp::Err { msg: format!("El mod {filename} pesa {} MB: es demasiado grande para copiarlo por el grupo. Pedile a quien tiene el servidor que lo agregue desde Modrinth.", m.len() / 1_048_576) },
                 _ => Resp::Err { msg: format!("El servidor ya no tiene el mod {filename}.") },
             }
+        }
+        Req::PackChunk { server, sha1, offset } => {
+            let Some(p) = host939_core::resourcepacks::find_local(&server, &sha1) else { return Resp::Err { msg: "Esta PC no tiene ese resource pack.".into() } };
+            use std::io::{Read, Seek, SeekFrom};
+            let r = (|| -> std::io::Result<(Vec<u8>, u64)> {
+                let mut f = std::fs::File::open(&p)?;
+                let total = f.metadata()?.len();
+                f.seek(SeekFrom::Start(offset.min(total)))?;
+                let mut b = Vec::with_capacity(PACK_CHUNK);
+                f.take(PACK_CHUNK as u64).read_to_end(&mut b)?;
+                Ok((b, total))
+            })();
+            match r { Ok((b, total)) => Resp::PackChunk { data: data_encoding::BASE64.encode(&b), total }, Err(_) => Resp::Err { msg: "No se pudo leer el resource pack.".into() } }
         }
         Req::Nudge { .. } => {
             // Una conexión nueva hacia esa PC, que se cierra enseguida (solo sirve para que su

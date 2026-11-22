@@ -5,6 +5,12 @@
 const fm = { path: '', list: null, q: '', results: null, sel: new Set(), clip: null, busy: null, forId: null };
 const FM_QUICK = [['', 'Servidor', 'folder'], ['world', 'Mundo', 'globe'], ['mods', 'Mods', 'box'], ['config', 'Configuración', 'settings'], ['world/datapacks', 'Datapacks', 'layers'], ['resourcepacks', 'Resource packs', 'image'], ['logs', 'Registros', 'file']];
 const FM_KIND = { world: 'globe', mods: 'box', config: 'settings', datapacks: 'layers', resourcepacks: 'image', plugins: 'box', logs: 'file', jar: 'box' };
+const FM_MISSING_HINT = {
+  resourcepacks: 'Se crea en la carpeta del servidor. Los .zip que pongas acá aparecen en el panel Resource packs, donde elegís si son obligatorios u opcionales.',
+  mods: 'Se crea en la carpeta del servidor. Para instalar mods con sus dependencias conviene usar la pestaña Mods.',
+  config: 'Se crea en la carpeta del servidor; los mods guardan acá su configuración.',
+  'world/datapacks': 'Se crea dentro del mundo. Los datapacks se cargan al iniciar el servidor.',
+};
 const fmJoin = (a, b) => (a ? `${a}/${b}` : b);
 const fmParent = (p) => p.split('/').slice(0, -1).join('/');
 const fmName = (p) => p.split('/').pop();
@@ -16,8 +22,14 @@ tabDraw.files = async (el) => {
   fmPaint(el);
 };
 async function fmLoad() {
+  fm.missing = false;
   try { fm.list = await invoke('files_list', { id: fm.forId, path: fm.path }); fm.error = null; }
-  catch (e) { fm.error = errMsg(e); fm.list = fm.list || { entries: [], remote: false }; }
+  catch (e) {
+    fm.error = errMsg(e);
+    // Carpeta que todavía no existe: se ofrece crearla ahí mismo (salvo las que crea Minecraft).
+    fm.missing = (e?.code === 'missing' || /todavía no existe/.test(fm.error)) && !!fm.path && !['world', 'logs'].includes(fm.path);
+    fm.list = fm.missing ? { entries: [], remote: fm.list?.remote, hostName: fm.list?.hostName } : (fm.list || { entries: [], remote: false });
+  }
   fm.sel.clear();
 }
 function fmRow(e) {
@@ -42,7 +54,8 @@ function fmPaint(el = $('#srv-tab')) {
   el.innerHTML = `<div class="stack" style="gap:14px">
     ${L.remote ? `<div class="note">${icon('friends')}<div class="grow"><b>Archivos en la PC de ${esc(L.hostName)}</b><span class="sm t2">Es la anfitriona ahora. Los cambios se hacen allá por la conexión cifrada del grupo y viajan a las demás PCs con la próxima sincronización.</span></div></div>` : ''}
     ${L.active ? `<div class="note">${icon('shield')}<div class="grow"><b>El mundo está protegido</b><span class="sm t2">Con el servidor encendido, Minecraft escribe el mundo en cualquier momento: sus archivos se pueden ver, pero no modificar ni descargar. Para una copia en caliente usá Copias.</span></div></div>` : ''}
-    ${fm.error ? `<div class="issue">${icon('alert', 18)}<div class="sm">${esc(fm.error)}</div><button class="btn s" data-a="fm-reload">Reintentar</button></div>` : ''}
+    ${fm.missing ? `<div class="note">${icon('folderplus')}<div class="grow"><b>La carpeta «${esc(fm.path)}» todavía no existe</b><span class="sm t2">${FM_MISSING_HINT[fm.path] || 'Podés crearla ahora y cargar archivos.'}</span></div><button class="btn s pri" data-a="fm-create-missing">Crear carpeta</button></div>`
+      : fm.error ? `<div class="issue">${icon('alert', 18)}<div class="sm">${esc(fm.error)}</div><button class="btn s" data-a="fm-reload">Reintentar</button></div>` : ''}
     <div class="fm-quick">${FM_QUICK.map(([p, t, ic]) => `<button class="chip-btn${fm.path === p && !fm.results ? ' on' : ''}" data-a="fm-go" data-p="${p}">${icon(ic, 14)}${t}</button>`).join('')}</div>
     <div class="card fm" id="fm-drop">
       <div class="fm-bar">
@@ -81,6 +94,10 @@ const fmRefresh = async () => { if (fm.results && fm.q) { try { fm.results = awa
 
 A['fm-go'] = async (el) => { fm.path = el.dataset.p; fm.results = null; fm.q = ''; await fmLoad(); fmPaint(); };
 A['fm-clear'] = async () => { fm.results = null; fm.q = ''; fmPaint(); };
+A['fm-create-missing'] = async () => {
+  try { await invoke('files_mkdir', { id: fm.forId, path: fm.path }); toast(`Carpeta «${fm.path}» creada`); await fmLoad(); fmPaint(); }
+  catch (e) { fail(e); }
+};
 A['fm-reload'] = fmRefresh;
 A['fm-unsel'] = () => { fm.sel.clear(); fmPaint(); };
 A['fm-sel'] = (el, ev) => { ev?.stopPropagation?.(); const p = el.dataset.p; fm.sel.has(p) ? fm.sel.delete(p) : fm.sel.add(p); fmPaint(); };

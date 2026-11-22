@@ -2,8 +2,8 @@
 
 Usa la app instalada por los pasos anteriores (compilación de prueba 1.1.0), una distribución local
 en 127.0.0.1 firmada con una clave de prueba generada en la CI (nunca la real) y el instalador y la
-portable de esta misma compilación. La app se hace pasar por 1.0.0 (solo existe en la compilación de
-prueba) para recibir 1.1.0 como actualización.
+portable de esta misma compilación. La app se hace pasar por 1.1.0 (la que tienen instalada) (solo existe en la compilación de
+prueba) para recibir la versión actual como actualización.
 
 Escenarios:
   A  instalada: detecta, descarga, verifica, instala, reinicia y la versión nueva confirma; datos intactos
@@ -87,7 +87,10 @@ def reset():
     shutil.rmtree(DATA / "cache" / "actualizaciones", ignore_errors=True)
 
 
-def env(extra=None, version="1.0.0", dist="dist.json"):
+OLD = "1.1.0"
+
+
+def env(extra=None, version=OLD, dist="dist.json"):
     e = dict(os.environ)
     e["H939_ACTUALIZACIONES_PRUEBA"] = str(WORK / dist)
     if version: e["H939_PRUEBA_VERSION_INSTALADA"] = version
@@ -203,7 +206,7 @@ with sync_playwright() as pw:
     log("Reiniciando 939 Host…" in seen and any("Descargando" in s or "Verificando" in s for s in seen), "A: estados reales en orden (descarga/verificación → instalación → reinicio)")
     st = wait(lambda: (s := state()) and s.get("phase") in ("ok", "revertida", "fallida") and s, 200)
     log(bool(st) and st["phase"] == "ok", "A: la versión nueva abrió y confirmó", json.dumps(st, ensure_ascii=False)[:400] if st else "sin estado")
-    log(bool(st) and st.get("from") == "1.0.0" and st.get("to") == NEW and st.get("mode") == "instalada", f"A: 1.0.0 → {NEW} (instalada)")
+    log(bool(st) and st.get("from") == OLD and st.get("to") == NEW and st.get("mode") == "instalada", f"A: {OLD} → {NEW} (instalada)")
     log("instalador terminó: exit code: 0" in registro(), "A: el instalador verificado se ejecutó y terminó bien")
     log(bool(running_with("--tras-actualizar", INST)), "A: 939 Host quedó abierto con la versión nueva")
     log(registry_version() == NEW, f"A: Programas instalados muestra {NEW}", str(registry_version()))
@@ -253,7 +256,7 @@ with sync_playwright() as pw:
     st = wait(lambda: (s := state()) and s.get("phase") in ("ok", "revertida", "fallida") and s, 240)
     log(bool(st) and st["phase"] == "revertida", "D: la versión nueva no abrió y se volvió atrás sola", (st or {}).get("message", "")[:300])
     log(leeme.read_text(encoding="utf-8") == "marca de la versión anterior", "D: los archivos anteriores quedaron restaurados")
-    log(registry_version() == "1.0.0", "D: Programas instalados vuelve a mostrar la versión anterior", str(registry_version()))
+    log(registry_version() == OLD, "D: Programas instalados vuelve a mostrar la versión anterior", str(registry_version()))
     log(bool(wait(lambda: running_with("--tras-revertir", INST), 30)), "D: se volvió a abrir la versión anterior")
     b, p = page(pw)
     dlg = wait(lambda: p and "no se completó" in (js(p, "document.getElementById('modal-root')?.textContent || ''") or ""), 30) if p else None

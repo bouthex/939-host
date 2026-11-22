@@ -190,6 +190,7 @@ fn modified(m: &std::fs::Metadata) -> String {
 pub fn list(id: &str, rel: &str, active: bool) -> AppResult<Vec<Entry>> {
     let dir = abs(id, rel)?;
     let base = clean(rel)?;
+    if !dir.exists() { return Err(AppError::new("missing", format!("La carpeta «{}» todavía no existe.", base.to_string_lossy().replace('\\', "/")))); }
     let mut v = vec![];
     for e in std::fs::read_dir(&dir).map_err(|e| AppError::io("No se pudo abrir la carpeta", e))?.flatten() {
         let Ok(m) = e.metadata() else { continue };

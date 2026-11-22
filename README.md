@@ -90,8 +90,10 @@ firmados por la PC propietaria.
 Un botón: **Preparar para jugar**. 939 Host instala la versión de Minecraft, el cargador (Fabric,
 Forge o NeoForge) y los mods que necesita el servidor en una carpeta propia, crea el perfil en el
 Launcher oficial y agrega el servidor a Multijugador. Si ya había una carpeta de mods, la guarda
-como «mods anteriores» sin mezclar ni borrar nada. Funciona también en la PC de un amigo que solo
-juega.
+como «mods anteriores» sin mezclar ni borrar nada (y se puede deshacer). La primera vez, el perfil
+nuevo recibe una copia de tus preferencias del último perfil que usaste (idioma, teclas,
+accesibilidad, gráficos y sonido) y de tu lista de servidores; tus mundos, perfiles, packs, capturas
+y mods de siempre no se tocan. Funciona también en la PC de un amigo que solo juega.
 
 <p align="center">
   <picture>
@@ -125,6 +127,7 @@ con − y +, o matar a un jugador conectado, con lo que Minecraft permite de ver
 | **Papelera** | Lo que borrás se guarda 30 días y se restaura completo. |
 | **Versiones** | Cambiar la versión de Minecraft con copia previa verificada y opción de volver atrás. |
 | **Modpacks** | Crear un servidor desde un `.mrpack` o un modpack de Modrinth. |
+| **Resource packs** | Panel propio: buscar en Modrinth o subir un `.zip`. Obligatorio (lo envía el servidor al entrar; quien lo rechaza no entra) u opcional (lo instala «Preparar para jugar»). Los packs propios llegan a cada jugador por el grupo, sin publicarlos en internet. |
 | **Otros launchers** | Exportar el perfil como `.mrpack` para Modrinth App, Prism Launcher y similares. |
 | **Actualizaciones** | Automáticas desde las versiones oficiales: al abrir detecta, descarga, verifica la firma y el SHA-256, instala y reinicia. Si la versión nueva no abre, vuelve sola a la anterior. Los datos no se tocan. |
 
@@ -179,13 +182,13 @@ funciona.
 ## Estado del proyecto
 
 La versión publicada es la **0.9.0**. La rama
-[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.1.0** (próxima versión), probada en
+[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.2.0** (próxima versión), probada en
 Windows reales (servidores, dos PCs en lugares distintos y un cliente real de Minecraft), pero
 **todavía no está publicada**. Las capturas de esta página son de esa versión, con datos de ejemplo.
 
 En la 0.9.0 ya están: crear y administrar servidores, mods de Modrinth, puntos de restauración y
 compartir entre PCs. Preparar para jugar, la conexión por IP, las fichas de jugadores e
-inventarios con mods, las actualizaciones automáticas y lo demás de esta página llegan con la 1.1.0.
+inventarios con mods, las actualizaciones automáticas, los resource packs y lo demás de esta página llegan con la 1.1.0 y la 1.2.0.
 
 **Necesita configuración aparte:** CurseForge funciona solo con una clave de su API oficial
 ([cómo conseguirla](docs/MANUAL.md#curseforge)). Lo que todavía no hace está en

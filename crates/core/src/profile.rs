@@ -121,6 +121,8 @@ pub fn launchers() -> Vec<&'static str> {
 pub async fn client_plan<S: Source>(src: &S, id: &str) -> AppResult<crate::clientsetup::Plan> {
     let cfg = instance::load(id)?;
     let mut plan = crate::clientsetup::Plan { server_id: id.to_string(), server_name: cfg.name.clone(), mc_version: cfg.mc_version.clone(), loader: cfg.loader, loader_version: cfg.loader_version.clone(), ..Default::default() };
+    // Resource packs opcionales activos (el obligatorio lo envía el servidor al entrar).
+    plan.packs = crate::resourcepacks::client_packs(id);
     if cfg.loader == Loader::Vanilla { return Ok(plan); }
     let dir = mods::mods_dir(id);
     let mut jars = vec![];

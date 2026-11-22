@@ -653,67 +653,450 @@ async fn e2e_items_de_mods() {
 async fn e2e_preparar_para_jugar() {
     use host939_core::clientsetup::{prepare, Plan, PlanMod};
     use host939_core::model::Loader;
+    use std::collections::BTreeMap;
+    use std::path::Path;
     init();
+    // Minecraft de PRUEBA con datos como los de una persona (nunca el real).
     let mc = tempfile::tempdir().unwrap();
-    std::env::set_var("H939_MINECRAFT_DIR", mc.path());
+    let m = mc.path();
+    std::env::set_var("H939_MINECRAFT_DIR", m);
     let none = |_f: String| async { Err::<Vec<u8>, _>(host939_core::error::AppError::invalid("sin mods a mano")) };
     // Sin Launcher: lo dice claro y no instala nada.
     let vanilla = Plan { server_id: "srv-v".into(), server_name: "Vanilla".into(), mc_version: "1.21.1".into(), loader: Loader::Vanilla, ..Default::default() };
     let e = prepare(&vanilla, "127.0.0.1:25565", None, none, |_, _| {}).await.unwrap_err();
     assert!(e.message.contains("Launcher"), "{}", e.message);
-    std::fs::write(mc.path().join("launcher_profiles.json"), r#"{"profiles":{"mio":{"name":"Mío","type":"latest-release","lastVersionId":"latest-release"}},"version":3}"#).unwrap();
-    // 1) Vanilla: versión instalada, perfil y servidor en Multijugador.
+
+    let w = |rel: &str, b: &[u8]| { let p = m.join(rel); std::fs::create_dir_all(p.parent().unwrap()).unwrap(); std::fs::write(p, b).unwrap(); };
+    let options = "version:3955\nlang:es_ar\nkey_key.jump:key.keyboard.g\nkey_key.inventory:key.keyboard.tab\nnarrator:1\nhighContrast:true\ntextBackgroundOpacity:0.8\nguiScale:3\nsoundCategory_music:0.2\nresourcePacks:[\"vanilla\",\"file/MiPack.zip\"]\n";
+    w("options.txt", options.as_bytes());
+    w("optionsof.txt", b"ofFogType:3\n");
+    w("hotbar.nbt", b"\x0a\x00\x00\x00");
+    // servers.dat como lo escribe Minecraft: con ícono y «aceptar packs» en uno de ellos.
+    let srv = {
+        let s = |b: &mut Vec<u8>, t: &str| { b.extend((t.len() as u16).to_be_bytes()); b.extend(t.as_bytes()); };
+        let mut b = vec![10, 0, 0, 9]; s(&mut b, "servers"); b.push(10); b.extend(3i32.to_be_bytes());
+        for (n, ip, icon) in [("Hypixel", "mc.hypixel.net", true), ("Casa", "192.168.1.5:25565", false), ("Amigos", "amigos.ejemplo.com", false)] {
+            b.push(8); s(&mut b, "ip"); s(&mut b, ip); b.push(8); s(&mut b, "name"); s(&mut b, n);
+            if icon { b.push(8); s(&mut b, "icon"); s(&mut b, "iVBORw0KGgoAAAANSUhEUg=="); b.push(1); s(&mut b, "acceptTextures"); b.push(1); }
+            b.push(0);
+        }
+        b.push(0); b
+    };
+    w("servers.dat", &srv);
+    w("saves/Mi Mundo/level.dat", b"mundo1");
+    w("saves/Mi Mundo/region/r.0.0.mca", &vec![7u8; 4096]);
+    w("saves/Creativo/level.dat", b"mundo2");
+    w("resourcepacks/MiPack.zip", b"pack de la persona");
+    w("shaderpacks/Shader.zip", b"shader");
+    w("screenshots/2026-11-21.png", b"captura");
+    w("mods/mimod.jar", b"mod de la persona");
+    w("config/mimod.toml", b"x=1");
+    // Otro perfil con su propia carpeta y sus propias opciones.
+    w("Instancias/Otro/options.txt", b"lang:pt_br\n");
+    w("Instancias/Otro/saves/Isla/level.dat", b"isla");
+    let profiles = serde_json::json!({"profiles": {
+        "mio": {"name": "Mío", "type": "latest-release", "lastVersionId": "latest-release", "lastUsed": "2026-11-20T21:00:00.000Z"},
+        "otro": {"name": "Otro", "type": "custom", "lastVersionId": "1.20.1", "gameDir": m.join("Instancias/Otro"), "lastUsed": "2025-03-01T10:00:00.000Z"}},
+        "settings": {"keepLauncherOpen": true}, "version": 3});
+    std::fs::write(m.join("launcher_profiles.json"), serde_json::to_string_pretty(&profiles).unwrap()).unwrap();
+    // Huella de todo lo de la persona (sin lo que instala el Launcher ni las carpetas de 939 Host).
+    let fingerprint = || {
+        let mut out = BTreeMap::new();
+        let mut stack = vec![m.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                let rel = p.strip_prefix(m).unwrap().to_string_lossy().replace('\\', "/");
+                if ["versions", "libraries", "assets", "939 Host", "runtime", "logs"].iter().any(|x| rel == *x) || rel.starts_with("launcher_profiles") { continue; }
+                if p.is_dir() { stack.push(p); } else { out.insert(rel, host939_core::net::sha1_file(&p).unwrap()); }
+            }
+        }
+        out
+    };
+    let before = fingerprint();
+    let others = |lp: &serde_json::Value| { let mut v = lp["profiles"].clone(); v.as_object_mut().unwrap().retain(|k, _| !k.starts_with("939host-")); (v, lp["settings"].clone()) };
+    let lp0: serde_json::Value = serde_json::from_slice(&std::fs::read(m.join("launcher_profiles.json")).unwrap()).unwrap();
+
+    // 1) Vanilla: perfil nuevo con las preferencias del último perfil usado (copia) y la lista de servidores.
     let r = prepare(&vanilla, "127.0.0.1:25565", None, none, |_, _| {}).await.expect("vanilla");
     assert!(r.installed_version);
-    assert!(mc.path().join("versions/1.21.1/1.21.1.jar").is_file());
-    let lp: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(mc.path().join("launcher_profiles.json")).unwrap()).unwrap();
-    assert_eq!(lp["profiles"]["mio"]["name"], "Mío");
+    assert!(m.join("versions/1.21.1/1.21.1.jar").is_file());
+    let gv = Path::new(&r.game_dir).to_path_buf();
+    assert_eq!(r.seeded_from.as_deref(), Some("Mío"));
+    assert_eq!(std::fs::read_to_string(gv.join("options.txt")).unwrap(), options, "idioma, teclas, accesibilidad, gráficos y sonido copiados tal cual");
+    assert_eq!(std::fs::read(gv.join("optionsof.txt")).unwrap(), b"ofFogType:3\n");
+    let sv = host939_core::nbt::read_nbt_file(&gv.join("servers.dat")).unwrap();
+    let ips: Vec<&str> = sv["servers"].as_array().unwrap().iter().map(|e| e["ip"].as_str().unwrap()).collect();
+    assert_eq!(ips, vec!["127.0.0.1:25565", "mc.hypixel.net", "192.168.1.5:25565", "amigos.ejemplo.com"], "servidores guardados + el de 939 Host");
+    assert_eq!(sv["servers"][1]["icon"], "iVBORw0KGgoAAAANSUhEUg==");
+    assert_eq!(sv["servers"][1]["acceptTextures"], 1);
+    assert_eq!(r.servers_listed, 4);
+    assert_eq!(fingerprint(), before, "mundos, servidores, opciones, packs, shaders, capturas, mods y configs de la persona sin cambios");
+    let lp: serde_json::Value = serde_json::from_slice(&std::fs::read(m.join("launcher_profiles.json")).unwrap()).unwrap();
+    assert_eq!(others(&lp), others(&lp0), "los demás perfiles y ajustes del Launcher sin cambios");
     assert_eq!(lp["profiles"]["939host-srv-v"]["lastVersionId"], "1.21.1");
-    println!("✔ vanilla 1.21.1: versión instalada y perfil «{}»", r.profile_name);
-    // 2) Fabric con Fabric API (Modrinth, verificado) y un mod agregado a mano.
+    assert_eq!(std::fs::read(m.join("launcher_profiles.json.original-939host")).unwrap(), serde_json::to_string_pretty(&profiles).unwrap().as_bytes(), "copia original intacta");
+    println!("✔ vanilla 1.21.1: perfil nuevo con idioma, teclas y accesibilidad del perfil «Mío»; {} servidores guardados + el nuevo; nada de la persona cambió", ips.len() - 1);
+
+    // 2) Fabric con Fabric API (Modrinth, verificado), un mod a mano y un resource pack opcional propio.
     let versions: serde_json::Value = host939_core::net::get_json("https://api.modrinth.com/v2/project/fabric-api/version?loaders=%5B%22fabric%22%5D&game_versions=%5B%221.21.1%22%5D", "Modrinth").await.unwrap();
     let f = &versions[0]["files"][0];
     let manual = b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0".to_vec();
     let manual_sha = host939_core::net::sha1_bytes(&manual);
+    let pack = b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x01".to_vec();
+    let pack_sha = host939_core::net::sha1_bytes(&pack);
     let loader = host939_core::meta::loader_support(Loader::Fabric, "1.21.1").await.unwrap().loader_version.expect("versión de Fabric");
-    let mut fabric = Plan { server_id: "srv-f".into(), server_name: "Con mods".into(), mc_version: "1.21.1".into(), loader: Loader::Fabric, loader_version: Some(loader),
+    let fabric = Plan { server_id: "srv-f".into(), server_name: "Con mods".into(), mc_version: "1.21.1".into(), loader: Loader::Fabric, loader_version: Some(loader),
         mods: vec![
             PlanMod { filename: f["filename"].as_str().unwrap().into(), title: "Fabric API".into(), sha1: f["hashes"]["sha1"].as_str().unwrap().into(), size: f["size"].as_u64().unwrap(), url: Some(f["url"].as_str().unwrap().into()) },
             PlanMod { filename: "a-mano.jar".into(), title: "a-mano.jar".into(), sha1: manual_sha.clone(), size: manual.len() as u64, url: None },
-        ], ..Default::default() };
-    let gdir = host939_core::clientsetup::game_dir(mc.path(), &fabric);
+        ],
+        packs: vec![PlanMod { filename: "pack del server.zip".into(), title: "Pack del server".into(), sha1: pack_sha.clone(), size: pack.len() as u64, url: None }],
+        ..Default::default() };
+    let gdir = host939_core::clientsetup::resolve_game_dir(m, &fabric);
     std::fs::create_dir_all(gdir.join("mods")).unwrap();
     std::fs::write(gdir.join("mods/viejo.jar"), b"viejo").unwrap();
-    let m2 = manual.clone();
-    let fetch = move |n: String| { let m = m2.clone(); async move { assert_eq!(n, "a-mano.jar"); Ok(m) } };
+    let (m2, p2) = (manual.clone(), pack.clone());
+    let fetch = move |n: String| { let (m, p) = (m2.clone(), p2.clone()); async move { if n.starts_with("resourcepacks/") { assert_eq!(n, "resourcepacks/pack del server.zip"); Ok(p) } else { assert_eq!(n, "a-mano.jar"); Ok(m) } } };
     let r = prepare(&fabric, "127.0.0.1:41500", None, fetch.clone(), |_, _| {}).await.expect("fabric");
     assert!(r.installed_loader && r.mods_installed == 2);
     assert_eq!(r.previous_mods.as_deref(), Some("mods anteriores"));
     assert_eq!(std::fs::read(gdir.join("mods anteriores/viejo.jar")).unwrap(), b"viejo", "lo anterior quedó intacto");
     assert!(!gdir.join("mods/viejo.jar").exists(), "sin mezclar");
-    assert!(mc.path().join(format!("versions/{0}/{0}.json", r.version_id)).is_file());
-    println!("✔ Fabric: {} con Fabric API y un mod a mano; los mods de antes en «mods anteriores»", r.version_id);
-    // Repetir sin cambios no aparta nada; con cambios aparta en «mods anteriores 1».
+    assert_eq!(std::fs::read(gdir.join("resourcepacks/pack del server.zip")).unwrap(), pack);
+    let fo = std::fs::read_to_string(gdir.join("options.txt")).unwrap();
+    assert!(fo.contains("lang:es_ar") && fo.contains("key_key.jump:key.keyboard.g"), "preferencias de la persona");
+    assert!(fo.contains("resourcePacks:[\"vanilla\",\"file/MiPack.zip\",\"file/pack del server.zip\"]"), "pack opcional activado sin quitar los de la persona: {fo}");
+    assert_eq!(r.packs, vec!["pack del server.zip"]);
+    assert_ne!(gdir, gv);
+    assert!(m.join(format!("versions/{0}/{0}.json", r.version_id)).is_file());
+    assert_eq!(fingerprint(), before);
+    println!("✔ Fabric: {} con Fabric API, un mod a mano y un resource pack opcional activado; mods de antes en «mods anteriores»; nada de la persona cambió", r.version_id);
+    // Deshacer el cambio de mods: vuelve la carpeta anterior, la nueva queda aparte (nada se borra).
+    let aside = host939_core::clientsetup::undo_mods(&gdir, "mods anteriores").unwrap();
+    assert!(gdir.join("mods/viejo.jar").is_file() && gdir.join(&aside).join("a-mano.jar").is_file());
+    println!("✔ deshacer el cambio de mods: vuelve «mods», la de 939 Host queda como «{aside}»");
     let r = prepare(&fabric, "127.0.0.1:41500", None, fetch.clone(), |_, _| {}).await.unwrap();
-    assert!(r.previous_mods.is_none());
-    fabric.mods.pop();
-    let r = prepare(&fabric, "127.0.0.1:41500", None, fetch.clone(), |_, _| {}).await.unwrap();
-    assert_eq!(r.previous_mods.as_deref(), Some("mods anteriores 1"));
-    // 3) Si un mod no coincide con su hash: error y todo queda como estaba.
-    let before: Vec<_> = std::fs::read_dir(gdir.join("mods")).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert!(r.previous_mods.is_some());
+
+    // 3) Cada perfil conserva lo suyo: cambiar las opciones de uno no toca al otro, y volver a
+    // preparar un perfil respeta sus propias opciones.
+    std::fs::write(gv.join("options.txt"), "lang:fr_fr\nkey_key.jump:key.keyboard.space\n").unwrap();
+    prepare(&vanilla, "127.0.0.1:25565", None, none, |_, _| {}).await.expect("vanilla de nuevo");
+    assert_eq!(std::fs::read_to_string(gv.join("options.txt")).unwrap(), "lang:fr_fr\nkey_key.jump:key.keyboard.space\n", "volver al perfil recupera sus propias preferencias");
+    assert!(std::fs::read_to_string(gdir.join("options.txt")).unwrap().contains("lang:es_ar"), "el otro perfil no se mezcló");
+    assert_eq!(std::fs::read_to_string(m.join("Instancias/Otro/options.txt")).unwrap(), "lang:pt_br\n");
+    // Dos servidores con el mismo nombre no comparten carpeta.
+    let twin = Plan { server_id: "srv-v2".into(), ..vanilla.clone() };
+    let rt = prepare(&twin, "127.0.0.1:25566", None, none, |_, _| {}).await.expect("mismo nombre");
+    assert_ne!(Path::new(&rt.game_dir), gv);
+    println!("✔ perfiles independientes: cada uno con sus opciones; dos servidores con el mismo nombre en carpetas distintas");
+
+    // 4) Perfil creado por una versión anterior (sin las preferencias): se ofrece usarlas y lo que
+    // tenía queda guardado.
+    let old = Plan { server_id: "srv-viejo".into(), server_name: "Viejo".into(), mc_version: "1.21.1".into(), loader: Loader::Vanilla, ..Default::default() };
+    let og = host939_core::clientsetup::resolve_game_dir(m, &old);
+    std::fs::create_dir_all(&og).unwrap();
+    std::fs::write(og.join("options.txt"), "lang:en_us\n").unwrap();
+    let r = prepare(&old, "127.0.0.1:25567", None, none, |_, _| {}).await.expect("perfil viejo");
+    assert!(r.prefs_available.is_some() && r.seeded_from.is_none());
+    assert_eq!(std::fs::read_to_string(og.join("options.txt")).unwrap(), "lang:en_us\n", "no se cambió solo");
+    let (_, from) = host939_core::clientsetup::last_used_profile(m, &og).unwrap();
+    host939_core::clientsetup::import_preferences(&from, &og).unwrap();
+    assert_eq!(std::fs::read_to_string(og.join("options.txt.antes-939host")).unwrap(), "lang:en_us\n");
+    assert!(!std::fs::read_to_string(og.join("options.txt")).unwrap().contains("en_us"));
+    println!("✔ perfil existente: no se pisa solo; al pedirlo toma las preferencias y guarda las anteriores");
+
+    // 5) Si algo falla a mitad de camino (un mod o un pack con otro hash): error y nada a medias.
+    let before_mods: Vec<_> = std::fs::read_dir(gdir.join("mods")).unwrap().flatten().map(|e| e.file_name()).collect();
     let mut bad = fabric.clone();
     bad.mods.push(PlanMod { filename: "roto.jar".into(), title: "roto".into(), sha1: "0".repeat(40), size: 1, url: None });
     let b2 = manual.clone();
     assert!(prepare(&bad, "127.0.0.1:41500", None, move |_| { let m = b2.clone(); async move { Ok(m) } }, |_, _| {}).await.is_err());
-    let after: Vec<_> = std::fs::read_dir(gdir.join("mods")).unwrap().flatten().map(|e| e.file_name()).collect();
-    assert_eq!(before, after, "la carpeta de mods no cambió");
-    assert!(!gdir.join(".mods-939host-nuevos").exists() && !gdir.join("mods anteriores 2").exists());
-    println!("✔ falla a mitad de camino: no queda nada a medias");
-    // 4) NeoForge con su instalador oficial en modo cliente.
+    let mut badp = fabric.clone();
+    badp.packs[0].sha1 = "1".repeat(40);
+    badp.packs[0].filename = "otro.zip".into();
+    let p3 = pack.clone();
+    assert!(prepare(&badp, "127.0.0.1:41500", None, move |_| { let p = p3.clone(); async move { Ok(p) } }, |_, _| {}).await.is_err());
+    let after_mods: Vec<_> = std::fs::read_dir(gdir.join("mods")).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(before_mods, after_mods, "la carpeta de mods no cambió");
+    assert!(!gdir.join(".mods-939host-nuevos").exists() && !gdir.join("resourcepacks/otro.zip").exists());
+    assert_eq!(fingerprint(), before);
+    println!("✔ falla a mitad de camino (mod o pack con otro hash): no queda nada a medias ni se tocó nada de la persona");
+
+    // 6) NeoForge con su instalador oficial en modo cliente, en su propia carpeta.
     let nv = host939_core::meta::loader_support(Loader::NeoForge, "1.21.1").await.unwrap().loader_version.expect("versión de NeoForge");
     let neo = Plan { server_id: "srv-n".into(), server_name: "NeoForge".into(), mc_version: "1.21.1".into(), loader: Loader::NeoForge, loader_version: Some(nv), ..Default::default() };
     let t = std::time::Instant::now();
     let r = prepare(&neo, "127.0.0.1:41501", None, none, |m, _| println!("    {m}")).await.expect("neoforge");
-    assert!(mc.path().join(format!("versions/{0}/{0}.json", r.version_id)).is_file());
-    println!("✔ NeoForge: {} instalado con su instalador oficial en {} s", r.version_id, t.elapsed().as_secs());
+    assert!(m.join(format!("versions/{0}/{0}.json", r.version_id)).is_file());
+    assert!(!Path::new(&r.game_dir).join("mods/a-mano.jar").exists(), "sin mods de otro perfil");
+    assert_eq!(fingerprint(), before);
+    let lp: serde_json::Value = serde_json::from_slice(&std::fs::read(m.join("launcher_profiles.json")).unwrap()).unwrap();
+    assert_eq!(others(&lp), others(&lp0));
+    println!("✔ NeoForge: {} instalado con su instalador oficial en {} s, en su carpeta; mundos, servidores y datos de la persona intactos", r.version_id, t.elapsed().as_secs());
+
+    // 7) Ubicación de Minecraft: detectada (no la por defecto) y elegida a mano.
+    std::env::remove_var("H939_MINECRAFT_DIR");
+    let home = tempfile::tempdir().unwrap();
+    let real = if cfg!(windows) { home.path().join(".minecraft") } else { home.path().join(".minecraft") };
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("launcher_profiles.json"), "{\"profiles\":{}}").unwrap();
+    let (var, old_val) = if cfg!(windows) { ("APPDATA", std::env::var_os("APPDATA")) } else { ("HOME", std::env::var_os("HOME")) };
+    std::env::set_var(var, home.path());
+    assert_eq!(host939_core::clientsetup::minecraft_dir().unwrap(), real, "detectada en el lugar del Launcher");
+    let mut st = host939_core::settings::load();
+    st.minecraft_dir = m.to_string_lossy().to_string();
+    host939_core::settings::save(&st).unwrap();
+    assert_eq!(host939_core::clientsetup::minecraft_dir().unwrap(), m, "la carpeta elegida a mano manda");
+    st.minecraft_dir = home.path().join("no-es-minecraft").to_string_lossy().to_string();
+    host939_core::settings::save(&st).unwrap();
+    assert_eq!(host939_core::clientsetup::minecraft_dir().unwrap(), real, "una carpeta elegida que no es de Minecraft no se usa");
+    st.minecraft_dir = String::new();
+    host939_core::settings::save(&st).unwrap();
+    if let Some(v) = old_val { std::env::set_var(var, v); }
+    println!("✔ carpeta de Minecraft: detectada en su lugar real y elegible a mano (se valida)");
+}
+
+/// Resource pack de prueba (.zip real) con el formato indicado.
+fn pack_zip(path: &std::path::Path, format: u32, text: &str) {
+    use std::io::Write;
+    let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    z.start_file("pack.mcmeta", zip::write::SimpleFileOptions::default()).unwrap();
+    z.write_all(format!(r#"{{"pack":{{"pack_format":{format},"description":"{text}"}}}}"#).as_bytes()).unwrap();
+    z.start_file("assets/minecraft/texts/splashes.txt", zip::write::SimpleFileOptions::default()).unwrap();
+    z.write_all(text.as_bytes()).unwrap();
+    z.finish().unwrap();
+}
+
+/// Servidor local de packs en su propio hilo (como el de la app). Devuelve el puerto.
+fn pack_server(port: u16) {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        rt.block_on(async move {
+            let l = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.expect("puerto de packs");
+            host939_core::resourcepacks::serve(l, None).await;
+        });
+    });
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// Panel de Resource packs con un servidor real y Modrinth real: formato leído del servidor,
+/// búsqueda e instalación verificada, archivos propios (validación, conflicto, reemplazo),
+/// obligatorio/opcional en server.properties, el pack puesto a mano que vuelve, la entrega local y
+/// que un error no deja archivos a medias.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_resourcepacks() {
+    use host939_core::resourcepacks as rp;
+    init();
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let cfg = instance::create(input("Packs", "1.21.1", Loader::Vanilla, 25891), 2048).await.expect("crear");
+    instance::install(&mgr, cfg.id.clone()).await;
+    let cfg = instance::load(&cfg.id).unwrap();
+    assert!(cfg.installed, "{:?}", cfg.install_error);
+    let id = cfg.id.clone();
+    // Carpeta que no existe: se crea donde corresponde.
+    assert!(!rp::dir(&id).exists());
+    assert_eq!(host939_core::files::list(&id, "resourcepacks", false).unwrap_err().code, "missing");
+    host939_core::files::mkdir(&id, "resourcepacks", false).unwrap();
+    assert!(paths::server_run_dir(&id).join("resourcepacks").is_dir());
+    assert!(host939_core::files::list(&id, "resourcepacks", false).unwrap().is_empty());
+    println!("✔ carpeta resourcepacks creada en la carpeta del servidor");
+    let fmt = rp::server_format(&id).expect("formato del servidor");
+    assert_eq!(fmt, 34, "Minecraft 1.21.1 usa el formato 34");
+    println!("✔ formato de resource packs leído del servidor real: {fmt}");
+    // Modrinth real.
+    let (hits, total) = rp::search("faithful", "1.21.1", false, 0).await.expect("buscar");
+    assert!(total > 0 && hits.iter().all(|h| h.compatible), "solo compatibles");
+    let hit = hits.iter().find(|h| h.title.to_lowercase().contains("faithful")).unwrap_or(&hits[0]).clone();
+    let file = rp::install_modrinth(&id, &hit.project_id, false).await.expect("instalar de Modrinth");
+    let lib = rp::library(&id).unwrap();
+    let mp = lib.packs.iter().find(|p| p.file == file).unwrap();
+    assert_eq!((mp.source.as_str(), mp.compat.as_str()), ("modrinth", "ok"), "{}", mp.compat_detail);
+    let again = rp::install_modrinth(&id, &hit.project_id, false).await.unwrap();
+    assert_eq!(again, file, "instalar de nuevo no duplica ni vuelve a bajar");
+    println!("✔ Modrinth: «{}» buscado, instalado y verificado (SHA-1), compatible con 1.21.1", hit.title);
+    let (old_hits, _) = rp::search("", "1.8.9", false, 0).await.unwrap();
+    if let Some(h) = old_hits.iter().find(|h| !h.versions.iter().any(|v| v == "1.21.1")) {
+        let e = rp::install_modrinth(&id, &h.project_id, false).await.unwrap_err();
+        assert_eq!(e.code, "incompatible", "{}", e.message);
+        println!("✔ un pack sin versión para 1.21.1 no se instala sin confirmar: {}", e.message);
+    }
+    // Archivos propios.
+    let t = tempfile::tempdir().unwrap();
+    let mine = t.path().join("Mi pack.zip");
+    pack_zip(&mine, 34, "Hola desde 939");
+    let bad = t.path().join("roto.zip");
+    std::fs::write(&bad, b"no soy un zip").unwrap();
+    assert!(rp::add_file(&id, &bad, "").is_err());
+    let before: Vec<_> = std::fs::read_dir(rp::dir(&id)).unwrap().flatten().map(|e| e.file_name()).collect();
+    let name = rp::add_file(&id, &mine, "").expect("subir");
+    assert_eq!(rp::add_file(&id, &mine, "").unwrap_err().code, "exists");
+    let both = rp::add_file(&id, &mine, "ambos").unwrap();
+    assert_ne!(both, name);
+    pack_zip(&mine, 22, "Versión vieja");
+    rp::add_file(&id, &mine, "reemplazar").unwrap();
+    let lib = rp::library(&id).unwrap();
+    let p = lib.packs.iter().find(|p| p.file == name).unwrap();
+    assert_eq!(p.compat, "incompatible", "formato 22 en 1.21.1: se avisa");
+    assert!(host939_core::trash::list().iter().any(|i| i.meta.name.contains("resourcepacks/Mi pack.zip")), "el reemplazado está en la Papelera");
+    let zips = |v: &[std::ffi::OsString]| v.iter().filter(|n| n.to_string_lossy().ends_with(".zip")).count();
+    let now: Vec<_> = std::fs::read_dir(rp::dir(&id)).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(zips(&now), zips(&before) + 2, "el .zip roto no se agregó; el propio y su copia sí");
+    assert!(!now.iter().any(|n| n.to_string_lossy().contains("939host-copia")), "sin restos");
+    println!("✔ archivo propio: validado, conflicto con «guardar los dos» o «reemplazar» (el anterior a la Papelera), versión incompatible avisada");
+    // Obligatorio: server.properties con la entrega local; el pack puesto a mano vuelve al quitarlo.
+    let props_path = paths::server_run_dir(&id).join("server.properties");
+    let mut c = instance::load(&id).unwrap();
+    c.extra_properties.insert("resource-pack".into(), "https://ejemplo.com/pack-a-mano.zip".into());
+    instance::save(&c).unwrap();
+    host939_core::properties::write_for(&c).unwrap();
+    assert_eq!(rp::library(&id).unwrap().manual_pack.as_deref(), Some("https://ejemplo.com/pack-a-mano.zip"));
+    pack_zip(&mine, 34, "Hola desde 939");
+    rp::add_file(&id, &mine, "reemplazar").unwrap();
+    rp::set(&id, &name, Some("obligatorio"), None).unwrap();
+    host939_core::properties::write_for(&c).unwrap();
+    let pr = host939_core::properties::read(&props_path);
+    let sha = rp::required(&id).unwrap().1.sha1;
+    assert_eq!(pr["resource-pack"], format!("http://127.0.0.1:{}/rp/{id}/{sha}.zip", rp::LOCAL_PORT));
+    assert_eq!(pr["resource-pack-sha1"], sha);
+    assert_eq!(pr["require-resource-pack"], "true");
+    assert!(pr["resource-pack-prompt"].contains("obligatorio"));
+    // Solo uno obligatorio: el de Modrinth pasa a serlo y el propio queda opcional; su dirección es Modrinth.
+    let demoted = rp::set(&id, &file, Some("obligatorio"), None).unwrap();
+    assert_eq!(demoted.as_deref(), Some(name.as_str()));
+    host939_core::properties::write_for(&c).unwrap();
+    let pr = host939_core::properties::read(&props_path);
+    assert!(pr["resource-pack"].starts_with("https://cdn.modrinth.com/"), "{}", pr["resource-pack"]);
+    // Opcionales activos: los instala «Preparar para jugar» (con su descarga si son de Modrinth).
+    let cp = rp::client_packs(&id);
+    assert!(cp.iter().any(|p| p.filename == name && p.url.is_none()) && !cp.iter().any(|p| p.filename == file));
+    // Quitar el obligatorio: vuelve el pack que había puesto a mano.
+    rp::set(&id, &file, Some("opcional"), None).unwrap();
+    host939_core::properties::write_for(&c).unwrap();
+    let pr = host939_core::properties::read(&props_path);
+    assert_eq!(pr["resource-pack"], "https://ejemplo.com/pack-a-mano.zip");
+    assert!(pr.get("require-resource-pack").map(|v| v != "true").unwrap_or(true));
+    println!("✔ obligatorio en server.properties (dirección local o de Modrinth, SHA-1, rechazo = no entra), uno solo a la vez, y el pack puesto a mano vuelve al quitarlo");
+    // Entrega local: sirve exactamente el archivo; un SHA-1 desconocido no.
+    rp::set(&id, &name, Some("obligatorio"), None).unwrap();
+    pack_server(39400);
+    let url = format!("http://127.0.0.1:39400/rp/{id}/{sha}.zip");
+    let got = reqwest::get(&url).await.unwrap();
+    assert_eq!(got.status(), 200);
+    assert_eq!(net::sha1_bytes(&got.bytes().await.unwrap()), sha);
+    assert_eq!(reqwest::get(format!("http://127.0.0.1:39400/rp/{id}/{}.zip", "0".repeat(40))).await.unwrap().status(), 404);
+    assert_eq!(reqwest::get("http://127.0.0.1:39400/../server.properties").await.unwrap().status(), 404);
+    println!("✔ entrega local: el pack exacto por su SHA-1; nada más");
+    // El servidor real arranca con el pack obligatorio configurado.
+    let cfg = instance::load(&id).unwrap();
+    mgr.start(&probe, &cfg).expect("iniciar");
+    let rt = mgr.runtime(&id);
+    assert!(wait_for(Duration::from_secs(300), || rt.lock().unwrap().status() == RunStatus::Running), "no arrancó");
+    assert!(!mgr.console(&id).iter().any(|l| l.contains("resource pack") && (l.contains("ERROR") || l.contains("Invalid"))), "sin errores del pack en el servidor");
+    mgr.stop_all();
+    // Quitar un pack: va a la Papelera y el servidor deja de enviarlo.
+    rp::remove(&id, &name).unwrap();
+    host939_core::properties::write_for(&cfg).unwrap();
+    assert!(!rp::dir(&id).join(&name).exists());
+    assert_eq!(host939_core::properties::read(&props_path)["resource-pack"], "https://ejemplo.com/pack-a-mano.zip");
+    let _ = rec;
+    println!("✔ servidor real encendido con el pack obligatorio; quitar el pack lo manda a la Papelera y deja de enviarse");
+}
+
+/// Un cliente oficial de Minecraft con un pack obligatorio propio entregado por 939 Host: lo baja de
+/// la entrega local, entra; si el pack no cambió no lo vuelve a bajar; si cambia, baja el nuevo; sin
+/// aceptarlo no entra; con un pack opcional instalado en su perfil y ninguno obligatorio, entra.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_resourcepacks_cliente_real() {
+    use host939_core::resourcepacks as rp;
+    init();
+    let script = std::env::var("CLIENTE_REAL").expect("CLIENTE_REAL");
+    let mc = std::env::var("E2E_MC").unwrap_or_else(|_| "26.2".into());
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let port = 25871;
+    let mut inp = input("Packs cliente", &mc, Loader::Vanilla, port);
+    inp.online_mode = false;
+    let cfg = instance::create(inp, 4096).await.expect("crear");
+    instance::install(&mgr, cfg.id.clone()).await;
+    let cfg = instance::load(&cfg.id).unwrap();
+    assert!(cfg.installed, "{:?}", cfg.install_error);
+    let id = cfg.id.clone();
+    let fmt = rp::server_format(&id).expect("formato");
+    let t = tempfile::tempdir().unwrap();
+    let src = t.path().join("Pack obligatorio.zip");
+    pack_zip(&src, fmt, "Pack de 939 Host v1");
+    let name = rp::add_file(&id, &src, "").unwrap();
+    rp::set(&id, &name, Some("obligatorio"), None).unwrap();
+    pack_server(rp::LOCAL_PORT);
+    let dir = paths::root().join("cliente-packs");
+    let name_p = "Jugador939";
+    let join = |accept: &str, opcional: Option<&std::path::Path>, secs: u64| -> bool {
+        let start = mgr.console(&id).len();
+        let mut cmd = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" });
+        cmd.args([&script, &mc, &format!("127.0.0.1:{port}"), dir.to_str().unwrap(), name_p, &secs.to_string()]).env("ACEPTAR_PACKS", accept);
+        if let Some(o) = opcional { cmd.env("PACK_OPCIONAL", o); } else { cmd.env_remove("PACK_OPCIONAL"); }
+        let mut child = cmd.spawn().expect("cliente");
+        let ok = wait_for(Duration::from_secs(secs + 300), || mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} joined the game"))));
+        // Que se quede un momento conectado (no lo echan después de entrar).
+        let kicked = ok && { std::thread::sleep(Duration::from_secs(8)); mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} lost connection")) || l.contains(&format!("{name_p} left the game"))) };
+        let _ = child.kill();
+        let _ = child.wait();
+        std::thread::sleep(Duration::from_secs(3));
+        ok && !kicked
+    };
+    let start = |c: &ServerConfig| {
+        host939_core::properties::write_for(c).unwrap();
+        mgr.start(&probe, c).expect("iniciar");
+        let rt = mgr.runtime(&c.id);
+        assert!(wait_for(Duration::from_secs(400), || rt.lock().unwrap().status() == RunStatus::Running), "no arrancó");
+        assert!(wait_for(Duration::from_secs(30), || rt.lock().unwrap().reach.as_deref() == Some("ok")));
+    };
+    start(&cfg);
+    let sha1 = rp::required(&id).unwrap().1.sha1;
+    // 1) Acepta: baja el pack de la entrega local y entra.
+    let ok = join("1", None, 120);
+    let log = std::fs::read_to_string(dir.join("game/logs/latest.log")).unwrap_or_default();
+    let hits = rp::served().iter().filter(|s| s.ends_with(&sha1)).count();
+    assert!(ok, "con el pack obligatorio aceptado, el jugador entra. Consola: {:?}", mgr.console(&id).iter().rev().take(15).collect::<Vec<_>>());
+    assert_eq!(hits, 1, "el cliente bajó el pack de 939 Host una vez");
+    println!("✔ pack obligatorio: el cliente real lo bajó de la entrega local de 939 Host ({}…) y entró", &sha1[..12]);
+    if log.contains("Reloading ResourceManager") { println!("  (el cliente recargó sus recursos con el pack)"); }
+    // 2) Mismo pack: no lo vuelve a bajar.
+    assert!(join("1", None, 90), "entra de nuevo");
+    assert_eq!(rp::served().iter().filter(|s| s.ends_with(&sha1)).count(), 1, "sin descarga innecesaria");
+    println!("✔ sin cambios en el pack: el cliente no lo volvió a bajar");
+    // 3) El pack cambia: el servidor envía la versión nueva y el cliente la baja.
+    mgr.stop_all();
+    pack_zip(&src, fmt, "Pack de 939 Host v2");
+    rp::add_file(&id, &src, "reemplazar").unwrap();
+    let sha2 = rp::required(&id).unwrap().1.sha1;
+    assert_ne!(sha2, sha1);
+    start(&instance::load(&id).unwrap());
+    assert_eq!(host939_core::properties::read(&paths::server_run_dir(&id).join("server.properties"))["resource-pack-sha1"], sha2);
+    assert!(join("1", None, 120), "entra con la versión nueva");
+    assert_eq!(rp::served().iter().filter(|s| s.ends_with(&sha2)).count(), 1, "bajó la versión nueva");
+    println!("✔ pack cambiado: el servidor envió la versión nueva ({}…) y el cliente la bajó", &sha2[..12]);
+    // 4) Sin aceptar el pack obligatorio, no entra.
+    let served_before = rp::served().len();
+    assert!(!join("0", None, 80), "sin aceptar el pack obligatorio no se entra");
+    assert_eq!(rp::served().len(), served_before);
+    println!("✔ sin aceptar el pack obligatorio, el jugador no entra (lo exige Minecraft)");
+    // 5) Opcional: ninguno obligatorio y un pack instalado en el perfil del jugador: entra igual.
+    mgr.stop_all();
+    rp::set(&id, &name, Some("opcional"), None).unwrap();
+    start(&instance::load(&id).unwrap());
+    let pr = host939_core::properties::read(&paths::server_run_dir(&id).join("server.properties"));
+    assert!(pr.get("resource-pack").map(|v| v.is_empty()).unwrap_or(true) && pr.get("require-resource-pack").map(|v| v != "true").unwrap_or(true));
+    let opt = rp::dir(&id).join(&name);
+    assert!(join("0", Some(&opt), 90), "un pack opcional no impide entrar");
+    println!("✔ pack opcional instalado en el perfil del jugador y ninguno obligatorio: entra sin problemas");
+    mgr.stop_all();
+    let _ = rec;
 }
