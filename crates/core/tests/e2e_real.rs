@@ -893,7 +893,7 @@ async fn e2e_resourcepacks() {
     let rec = Arc::new(Recorder::default());
     let mgr = Manager::new(rec.clone());
     let probe = Probe::new();
-    let cfg = instance::create(input("Packs", "1.21.1", Loader::Vanilla, 25891), 2048).await.expect("crear");
+    let cfg = instance::create(input("Packs", "1.21.1", Loader::Vanilla, 25891), 8192).await.expect("crear");
     instance::install(&mgr, cfg.id.clone()).await;
     let cfg = instance::load(&cfg.id).unwrap();
     assert!(cfg.installed, "{:?}", cfg.install_error);
