@@ -211,6 +211,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_preparar_para_jugar -- --ignored --nocapture
       - name: Resource packs (servidor real, Modrinth real, obligatorio y opcional)
+        if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: cargo test --locked -p host939-core --test e2e_real e2e_resourcepacks -- --ignored --nocapture --exact
       - name: Ítems de mods reales (nombres e íconos desde Modrinth)

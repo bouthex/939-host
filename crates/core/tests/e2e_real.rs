@@ -1083,7 +1083,14 @@ async fn e2e_resourcepacks_cliente_real() {
     assert_ne!(sha2, sha1);
     start(&instance::load(&id).unwrap());
     assert_eq!(host939_core::properties::read(&paths::server_run_dir(&id).join("server.properties"))["resource-pack-sha1"], sha2);
-    assert!(join("1", None, 120), "entra con la versión nueva");
+    let ok3 = join("1", None, 120);
+    if !ok3 {
+        let log = std::fs::read_to_string(dir.join("game/logs/latest.log")).unwrap_or_default();
+        println!("consola: {:#?}", mgr.console(&id).iter().rev().take(25).rev().collect::<Vec<_>>());
+        println!("entregados: {:?}", rp::served());
+        println!("registro del cliente (final): {}", log.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"));
+    }
+    assert!(ok3, "entra con la versión nueva");
     assert_eq!(rp::served().iter().filter(|s| s.ends_with(&sha2)).count(), 1, "bajó la versión nueva");
     println!("✔ pack cambiado: el servidor envió la versión nueva ({}…) y el cliente la bajó", &sha2[..12]);
     // 4) Sin aceptar el pack obligatorio, no entra.
