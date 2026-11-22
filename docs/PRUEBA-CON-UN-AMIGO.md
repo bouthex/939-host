@@ -1,12 +1,12 @@
 # Prueba real con un amigo (dos PCs, dos conexiones distintas)
 
-Guía corta para probar la versión 1.0.0 de prueba. Vos sos **PC 1** (propietaria); tu amigo es
+Guía corta para probar la versión 1.1.0 de prueba. Vos sos **PC 1** (propietaria); tu amigo es
 **PC 2**, en su casa, con otra conexión de Internet.
 
 ## Antes de empezar (las dos PCs)
 
-1. Bajá el instalador `939Host-1.0.0-instalador.exe` (y `SHA256SUMS.txt`) que te pasaron.
-   Verificá el hash: en PowerShell, `Get-FileHash .\939Host-1.0.0-instalador.exe` tiene que dar el
+1. Bajá el instalador `939Host-1.1.0-instalador.exe` (y `SHA256SUMS.txt`) que te pasaron.
+   Verificá el hash: en PowerShell, `Get-FileHash .\939Host-1.1.0-instalador.exe` tiene que dar el
    mismo valor que figura en `SHA256SUMS.txt`.
 2. Instalalo. No está firmado: Windows puede mostrar «Windows protegió su PC» → *Más información* →
    *Ejecutar de todas formas*. Con Smart App Control activado no se puede abrir (no lo desactives).

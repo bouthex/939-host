@@ -352,10 +352,22 @@ pub async fn update_install(app: AppHandle) -> Result<Vec<String>, String> {
     { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000 | 0x0000_0008); } // CREATE_NO_WINDOW | DETACHED_PROCESS
     cmd.spawn().map_err(|e| fail(&app, format!("No se pudo iniciar la actualización: {e}")))?;
     set(&app, |v| { v.status = "reiniciando".into(); v.message = "Reiniciando 939 Host…".into(); });
+    // La interfaz avisa cuando ya mostró «Reiniciando 939 Host…» (así se leen todos los estados);
+    // si no avisa en 6 segundos (por ejemplo, la ventana no responde), se cierra igual.
+    RESTART_NOW.store(false, std::sync::atomic::Ordering::SeqCst);
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        for _ in 0..60 {
+            if RESTART_NOW.load(std::sync::atomic::Ordering::SeqCst) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         crate::begin_quit(&app2);
     });
     Ok(vec![])
 }
+
+static RESTART_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// La pantalla de actualización ya mostró «Reiniciando 939 Host…».
+#[tauri::command]
+pub fn update_restart_now() { RESTART_NOW.store(true, std::sync::atomic::Ordering::SeqCst); }

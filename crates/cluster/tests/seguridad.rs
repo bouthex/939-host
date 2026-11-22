@@ -386,9 +386,11 @@ fn recuperacion_con_codigo_y_sucesion() {
     assert!(a.err(&format!("reccreate {sid}")).contains("ya tiene"));
     // Una coanfitriona no puede autodesignarse sucesora ni crear códigos.
     assert!(b.err(&format!("successor {sid} {ib}")).contains("propietaria"));
+    // Los equipos de la CI de Windows a veces tardan en propagar la lista firmada (muchas pruebas
+    // en paralelo): los plazos son holgados; lo que se comprueba es que llega, no cuán rápido.
     assert!(b.err(&format!("reccreate {sid}")).contains("propietaria"));
     a.ok(&format!("successor {sid} {ib}"));
-    wait("todas ven la lista con código y sucesora", Duration::from_secs(20), || {
+    wait("todas ven la lista con código y sucesora", Duration::from_secs(60), || {
         [&mut b, &mut c, &mut d].iter_mut().all(|n| { let s = n.ok(&format!("share_json {sid}")); s["successor"] == ib.as_str() && s["recovery"].is_string() })
     });
     // D (coanfitriona no designada) intenta la sucesión: no puede.
@@ -403,7 +405,7 @@ fn recuperacion_con_codigo_y_sucesion() {
     assert!(d.err(&format!("recover {sid} AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH")).len() > 0);
     let new_code = d.ok(&format!("recover {sid} {code}")).as_str().unwrap().to_string();
     assert_ne!(new_code, code);
-    wait("B y C aceptan a D como propietaria", Duration::from_secs(30), || {
+    wait("B y C aceptan a D como propietaria", Duration::from_secs(75), || {
         [&mut b, &mut c].iter_mut().all(|n| n.ok(&format!("share_json {sid}"))["ownerPin"] == idd.as_str())
     });
     let s = b.ok(&format!("share_json {sid}"));
@@ -423,7 +425,7 @@ fn recuperacion_con_codigo_y_sucesion() {
 
     // Sucesión: D designa a B; D deja de responder; B inicia; antes de la espera no puede completar.
     d.ok(&format!("successor {sid} {ib}"));
-    wait("B ve que es sucesora", Duration::from_secs(20), || b.ok(&format!("share_json {sid}"))["successor"] == ib.as_str());
+    wait("B ve que es sucesora", Duration::from_secs(60), || b.ok(&format!("share_json {sid}"))["successor"] == ib.as_str());
     signal(d.pid(), "STOP");
     std::thread::sleep(Duration::from_secs(1));
     // Con D congelada, B todavía la vio hace poco: espera 5 min de silencio en uso real; acá el

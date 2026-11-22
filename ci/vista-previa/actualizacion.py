@@ -61,6 +61,7 @@ with sync_playwright() as p:
         emitir(pg, st(status="reiniciando", available="1.1.0"))
         for _ in range(12): pg.wait_for_timeout(100); mirar()
         pg.screenshot(path=str(OUT / f"actualizacion-reiniciando-{theme}.png"))
+        if "update_restart_now" not in pg.evaluate("window.__INVOCADOS__"): fallos.append(f"[{theme}] la pantalla no avisó que ya mostró «Reiniciando…»")
         orden = ["Descargando actualización…", "Verificando archivos…", "Instalando actualización…", "Reiniciando 939 Host…"]
         reales = [t for t in vistos if t in orden]
         if reales != orden: fallos.append(f"[{theme}] estados en otro orden o faltantes: {vistos}")
@@ -74,11 +75,12 @@ with sync_playwright() as p:
         if t and (not vistos or vistos[-1] != t): vistos.append(t)
         pg.wait_for_timeout(60)
     emitir(pg, st(status="instalando", available="1.1.0"))
-    for _ in range(15):
+    emitir(pg, st(status="reiniciando", available="1.1.0"))
+    for _ in range(40):
         t = texto(pg)
         if t and (not vistos or vistos[-1] != t): vistos.append(t)
         pg.wait_for_timeout(60)
-    if "Verificando archivos…" not in vistos or "Instalando actualización…" not in vistos: fallos.append(f"descarga instantánea: faltan estados {vistos}")
+    if [t for t in vistos if t in ("Verificando archivos…", "Instalando actualización…", "Reiniciando 939 Host…")] != ["Verificando archivos…", "Instalando actualización…", "Reiniciando 939 Host…"]: fallos.append(f"instalación instantánea: faltan estados {vistos}")
     ctx.close()
     # 3) Error de verificación: se explica y se puede reintentar o seguir.
     ctx, pg = abrir(b, st(status="descargando", available="1.1.0", progress=0.5))

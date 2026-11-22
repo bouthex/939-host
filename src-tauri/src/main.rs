@@ -415,6 +415,7 @@ fn main() {
             updates::update_install,
             updates::update_confirm,
             updates::update_notice_seen,
+            updates::update_restart_now,
             v3::image_read,
             v3::profile_photo_get,
             v3::profile_photo_set,

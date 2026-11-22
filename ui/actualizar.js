@@ -12,7 +12,11 @@ const UPD_MIN_MS = 520;
    haya sido instantánea, «Verificando…» se llega a leer). El reinicio y los errores se muestran ya. */
 function updSay(text, now) {
   if (!UPD.el) return;
-  const put = (t) => { const s = UPD.el?.querySelector('#upd-status'); if (s) s.textContent = t; UPD.said = t; UPD.saidAt = performance.now(); };
+  const put = (t) => {
+    const s = UPD.el?.querySelector('#upd-status'); if (s) s.textContent = t; UPD.said = t; UPD.saidAt = performance.now();
+    // Ya se lee «Reiniciando…»: un instante después, el programa se cierra y el vigía sigue.
+    if (t === 'Reiniciando 939 Host…') setTimeout(() => invoke('update_restart_now').catch(() => {}), 700);
+  };
   if (now) { clearTimeout(UPD.timer); UPD.timer = null; UPD.queue = []; if (text !== UPD.said) put(text); return; }
   const last = UPD.queue.length ? UPD.queue[UPD.queue.length - 1] : UPD.said;
   if (text === last) return;
@@ -102,7 +106,7 @@ function updOnStatus(v) {
     updActs('');
   } else if (st === 'reiniciando') {
     UPD.el.classList.add('done');
-    updSay('Reiniciando 939 Host…', true);
+    updSay('Reiniciando 939 Host…');
     updBar(null);
     updActs('');
   } else if (st === 'buscando') {
