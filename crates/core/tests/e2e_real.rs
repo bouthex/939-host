@@ -1043,11 +1043,14 @@ async fn e2e_resourcepacks_cliente_real() {
         cmd.args([&script, &mc, &format!("127.0.0.1:{port}"), dir.to_str().unwrap(), name_p, &secs.to_string()]).env("ACEPTAR_PACKS", accept);
         if let Some(o) = opcional { cmd.env("PACK_OPCIONAL", o); } else { cmd.env_remove("PACK_OPCIONAL"); }
         let mut child = cmd.spawn().expect("cliente");
-        let ok = wait_for(Duration::from_secs(secs + 300), || mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} joined the game"))));
+        let ok = wait_for(Duration::from_secs(secs + if accept == "0" && opcional.is_none() { 30 } else { 300 }), || mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} joined the game"))));
         // Que se quede un momento conectado (no lo echan después de entrar).
         let kicked = ok && { std::thread::sleep(Duration::from_secs(8)); mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} lost connection")) || l.contains(&format!("{name_p} left the game"))) };
+        // Cerrar el juego de verdad (el script lo abre como otro proceso) y esperar a que salga.
+        let _ = std::process::Command::new("pkill").args(["-f", "quickPlayMultiplayer"]).status();
         let _ = child.kill();
         let _ = child.wait();
+        if ok { wait_for(Duration::from_secs(40), || mgr.console(&id).iter().skip(start).any(|l| l.contains(&format!("{name_p} left the game")) || l.contains(&format!("{name_p} lost connection")))); }
         std::thread::sleep(Duration::from_secs(3));
         ok && !kicked
     };

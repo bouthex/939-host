@@ -401,6 +401,10 @@ async fn ensure_loader(mc: &Path, plan: &Plan, vid: &str, progress: &mut impl Fn
             progress(&format!("Instalando {name} en el Minecraft de esta PC (puede tardar unos minutos)"), 0.35);
             let flag = if plan.loader == Loader::NeoForge { "--install-client" } else { "--installClient" };
             let (mc2, inst2) = (mc.to_path_buf(), installer.clone());
+            // El instalador oficial también agrega o cambia su propio perfil («NeoForge» o «forge»)
+            // en el Launcher, y podría pisar uno que la persona ya tenía: los archivos de perfiles se
+            // guardan antes y se vuelven a dejar exactamente igual después (939 Host crea el suyo).
+            let saved: Vec<(PathBuf, Vec<u8>)> = launcher_files(mc).into_iter().filter_map(|f| std::fs::read(&f).ok().map(|b| (f, b))).collect();
             let work = paths::cache().join("installers").join("cliente");
             std::fs::create_dir_all(&work).ok();
             let out = tokio::task::spawn_blocking(move || {
@@ -412,6 +416,9 @@ async fn ensure_loader(mc: &Path, plan: &Plan, vid: &str, progress: &mut impl Fn
                 c.output()
             }).await.map_err(|e| AppError::new("install", "El instalador se interrumpió").with_detail(e))?
               .map_err(|e| AppError::io("No se pudo ejecutar el instalador", e))?;
+            for (f, b) in &saved {
+                if std::fs::read(f).ok().as_deref() != Some(b.as_slice()) { paths::write_atomic(f, b)?; }
+            }
             if !out.status.success() || !version_json_path(mc, vid).is_file() {
                 let mut log = out.stdout.clone(); log.extend_from_slice(&out.stderr);
                 let tail: String = String::from_utf8_lossy(&log).lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
