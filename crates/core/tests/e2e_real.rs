@@ -276,9 +276,15 @@ async fn e2e_cliente_real() {
             assert!(up.health.map(|h| (h - 15.0).abs() <= 1.0).unwrap_or(false), "vida tras curar y ajustar: {:?}", up.health);
             // Botones − y + (un paso) y matar, con el jugador conectado.
             use host939_core::playeredit::{adjust, kill, Stat};
-            let h0 = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().health.unwrap();
-            adjust(&mgr, &cfg, name, "", true, Stat::Health, false, "prueba").expect("bajar medio corazón");
-            let h1 = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().health.unwrap();
+            // Con el hambre llena Minecraft regenera sola (hasta ~0,7 por segundo) y puede tapar medio
+            // corazón entre la lectura y el ajuste: se prueba hasta tres veces.
+            let (mut h0, mut h1) = (0.0, 0.0);
+            for _ in 0..3 {
+                h0 = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().health.unwrap();
+                adjust(&mgr, &cfg, name, "", true, Stat::Health, false, "prueba").expect("bajar medio corazón");
+                h1 = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().health.unwrap();
+                if h1 < h0 { break; }
+            }
             assert!(h1 < h0 && (h0 - h1) <= 2.0, "bajar un paso: {h0} → {h1}");
             let l0 = host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().xp_level.unwrap();
             adjust(&mgr, &cfg, name, "", true, Stat::Xp, true, "prueba").expect("subir un nivel");

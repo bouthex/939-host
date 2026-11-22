@@ -75,7 +75,13 @@ pub fn server_backups_dir(id: &str) -> PathBuf { server_dir(id).join("backups") 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> AppResult<()> {
     let dir = path.parent().ok_or_else(|| AppError::invalid("Ruta inválida"))?;
     std::fs::create_dir_all(dir).map_err(|e| AppError::io("No se pudo crear la carpeta", e))?;
-    let tmp = path.with_extension("tmp-939");
+    // Temporal propio de cada escritura: dos hilos que guardan el mismo archivo a la vez (por
+    // ejemplo, la lista del grupo desde la red y desde un comando) no se pisan el temporal; antes,
+    // el segundo podía encontrarlo ya renombrado («el archivo no existe») y perder su escritura.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+    let tmp = dir.join(format!("{name}.{}-{n}.tmp-939", std::process::id()));
     std::fs::write(&tmp, bytes).map_err(|e| AppError::io("No se pudo escribir el archivo", e))?;
     // En Windows, reemplazar un archivo que otro hilo está leyendo en ese instante falla con
     // «acceso denegado»: se reintenta en lugar de perder la escritura.
@@ -132,4 +138,17 @@ pub fn dir_size(path: &Path) -> u64 {
 pub fn windows_program(name: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
     if name.eq_ignore_ascii_case("explorer.exe") { root.join(name) } else { root.join("System32").join(name) }
+}
+
+#[cfg(test)]
+mod escritura_atomica {
+    #[test]
+    fn escrituras_simultaneas_del_mismo_archivo() {
+        let d = std::env::temp_dir().join(format!("939-atomica-{}", std::process::id()));
+        let p = d.join("share.json");
+        let hs: Vec<_> = (0..8).map(|i| { let p = p.clone(); std::thread::spawn(move || { for j in 0..40 { super::write_atomic(&p, format!("{i}-{j}").as_bytes()).expect("ninguna escritura se pierde"); } }) }).collect();
+        for h in hs { h.join().unwrap(); }
+        assert!(std::fs::read_dir(&d).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".tmp-939")), "sin temporales");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
