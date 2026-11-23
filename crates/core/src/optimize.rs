@@ -24,7 +24,7 @@
 
 use crate::error::{AppError, AppResult};
 use crate::model::{Loader, ServerConfig};
-use crate::modrinth::{self, DependencyType, Source};
+use crate::modrinth::{DependencyType, Source};
 use crate::mods;
 use serde::Serialize;
 
@@ -96,7 +96,7 @@ pub async fn candidates<S: Source>(src: &S, mc: &str, loader: Loader, installed:
         let Some(p) = p else { c.unavailable_reason = Some("No se encontró en Modrinth.".into()); out.push(c); continue };
         c.installed = installed.contains(&p.id);
         if p.server_side == "unsupported" { c.unavailable_reason = Some("Solo funciona en el Minecraft de cada jugador, no en el servidor.".into()); out.push(c); continue; }
-        match src.project_versions(&p.id, mc, lid).await.ok().and_then(|v| modrinth::best_version(v, mc, lid)) {
+        match mods::best_compatible(src, &p.id, mc, lid).await {
             Some(v) => {
                 c.available = true;
                 c.version_number = Some(v.version_number.clone());
@@ -112,8 +112,8 @@ pub async fn candidates<S: Source>(src: &S, mc: &str, loader: Loader, installed:
     // si existe algo). Se comprueba que tenga un archivo para la versión y el loader.
     let hits = src.search_optimization(mc, lid).await.unwrap_or_default();
     for h in hits.into_iter().filter(|h| !CATALOG.iter().any(|k| k.slug == h.slug)
-        && (h.server_side == "required" || h.server_side == "optional")).take(10) {
-        let Some(v) = src.project_versions(&h.project_id, mc, lid).await.ok().and_then(|v| modrinth::best_version(v, mc, lid)) else { continue };
+        && (h.server_side == "required" || h.server_side == "optional")).take(14) {
+        let Some(v) = mods::best_compatible(src, &h.project_id, mc, lid).await else { continue };
         out.push(Candidate {
             slug: h.slug.clone(), project_id: Some(h.project_id.clone()), title: h.title.clone(), icon_url: h.icon_url.clone(), summary: h.description.clone(),
             what: h.description.clone(), tier: "custom".into(), experimental: false, available: true, unavailable_reason: None,

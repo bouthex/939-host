@@ -11,6 +11,14 @@
 - Jugadores: inventario en vivo (dar, quitar, mover, cambiar cantidad) con comprobación; la propietaria administra desde su PC aunque lo aloje otra (la anfitriona comprueba el permiso).
 - Recomendación de anfitriona con la red medida entre las PCs (latencia, variación, pérdida, directa o relay), equipo y subida.
 - Amigos: grupos de chat (crear, cambiar nombre, salir) e indicador «está escribiendo».
+- Hambre y saturación de a un paso con el jugador conectado (antes solo se podía llenar): efectos de Minecraft medidos en un bucle cerrado hasta el valor exacto. Vida con el jugador conectado desde 1.13 (antes 1.19.4), con veneno medido en versiones sin `/damage`. Probado con el cliente real de Minecraft 26.2 y 1.20.4.
+- Inventario en vivo también en 1.13 a 1.20.4 (mover y cambiar cantidad conservando encantamientos, nombre y desgaste).
+- TPS reales en todas las versiones (en las que no tienen `tick query`, con `debug start/stop`, sin dejar archivos).
+- Grupo de dos PCs: si la anfitriona se cae, la otra lo levanta sola cuando tiene internet; la que vuelve aparta su copia sin perderla.
+- Chat de voz también al entrar por 127.0.0.1 (no solo por la dirección .939host).
+- Mods de rendimiento para versiones viejas de Fabric: se buscan en toda la serie (por ejemplo 1.14.x) y se comprueba en el propio mod que acepte la versión exacta.
+- La dirección del grupo se ofrece para activar sola al llegar.
+- La protección contra Log4Shell se baja del servidor actual de Mojang (piston-data).
 
 ### 1.2.0 (rama rediseno-v3, sin release)
 - «Preparar para jugar» conserva los datos de Minecraft: el perfil nuevo recibe una copia de las preferencias del último perfil usado (idioma, teclas, accesibilidad, gráficos, sonido) y de la lista de servidores; nada original se modifica. Causa del problema anterior: el perfil usaba una carpeta propia vacía, por eso arrancaba con opciones por defecto y sin los servidores (los mundos y la lista seguían en el perfil de siempre).

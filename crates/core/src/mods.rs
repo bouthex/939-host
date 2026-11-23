@@ -76,6 +76,61 @@ pub fn mods_dir(id: &str) -> PathBuf { paths::server_run_dir(id).join("mods") }
 pub fn load_manifest(id: &str) -> Manifest { paths::read_json(&manifest_path(id)).unwrap_or_default() }
 pub fn save_manifest(id: &str, m: &Manifest) -> AppResult<()> { paths::write_json(&manifest_path(id), m) }
 
+/* ── Compatibilidad comprobada en el propio mod (versiones viejas de Fabric/Quilt) ──
+   Muchos mods se publicaron en Modrinth solo con la última versión de una serie (por ejemplo
+   1.14.4), pero su `fabric.mod.json` acepta toda la serie («1.14.x», «>=1.14»). Para no dejar a
+   esas versiones sin opciones, se buscan versiones de la misma serie y se baja el archivo
+   (verificado por hash) para leer qué versiones de Minecraft declara aceptar. Solo cuenta si el
+   propio mod lo declara. */
+
+static VERIFIED: std::sync::LazyLock<std::sync::Mutex<HashSet<(String, String)>>> = std::sync::LazyLock::new(Default::default);
+
+/// Versiones de la misma serie: «1.14» → 1.14, 1.14.1 … 1.14.9.
+pub fn mc_series(mc: &str) -> Vec<String> {
+    let parts: Vec<&str> = mc.split('.').collect();
+    if parts.len() < 2 || !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) { return vec![mc.to_string()]; }
+    let base = format!("{}.{}", parts[0], parts[1]);
+    std::iter::once(base.clone()).chain((1..=9).map(|n| format!("{base}.{n}"))).collect()
+}
+
+/// ¿Sirve esta versión del mod para `mc`? Por Modrinth o porque el mod lo declara (comprobado).
+pub fn compatible(v: &Version, mc: &str, loader: &str) -> bool {
+    v.supports(mc, loader) || (v.loaders.iter().any(|l| l == loader) && VERIFIED.lock().unwrap().contains(&(v.id.clone(), mc.to_string())))
+}
+
+/// Baja el archivo del mod (con su hash) y mira si su `fabric.mod.json` acepta `mc`.
+pub async fn jar_accepts(v: &Version, mc: &str, loader: &str) -> bool {
+    if !matches!(loader, "fabric" | "quilt") || !v.loaders.iter().any(|l| l == loader) { return false; }
+    let Some(f) = v.primary_file() else { return false };
+    if f.size > 40 * 1024 * 1024 { return false; }
+    let dest = crate::paths::cache().join("mods-comprobados").join(&f.hashes.sha1).join(&f.filename);
+    if !dest.exists() && crate::net::download(&f.url, &dest, crate::net::Hash::Sha1(&f.hashes.sha1), |_, _| {}).await.is_err() { return false; }
+    let jar = crate::repair::read_jar(&dest);
+    let ok = jar.kind == "fabric" && jar.environment != "client" && jar.depends.get("minecraft").map(|c| c.iter().any(|c| crate::repair::fabric_matches(c, mc))).unwrap_or(true) && !jar.corrupt;
+    if ok { VERIFIED.lock().unwrap().insert((v.id.clone(), mc.to_string())); }
+    ok
+}
+
+/// La mejor versión de un proyecto para `mc`: la publicada para esa versión exacta o, si no hay,
+/// una de la misma serie que el propio mod declare compatible.
+pub async fn best_compatible<S: Source>(src: &S, project: &str, mc: &str, loader: &str) -> Option<Version> {
+    if let Some(v) = src.project_versions(project, mc, loader).await.ok().and_then(|l| modrinth::best_version(l, mc, loader)) { return Some(v); }
+    if !matches!(loader, "fabric" | "quilt") { return None; }
+    let mut cands: Vec<Version> = vec![];
+    for g in mc_series(mc).into_iter().filter(|g| g != mc) {
+        if let Ok(l) = src.project_versions(project, &g, loader).await { for v in l { if !cands.iter().any(|c| c.id == v.id) { cands.push(v); } } }
+    }
+    cands.retain(|v| v.primary_file().is_some());
+    // Más viejas primero: las primeras de la serie suelen aceptar también las versiones anteriores.
+    cands.sort_by(|a, b| a.date_published.cmp(&b.date_published));
+    for kind in ["release", "beta"] {
+        for v in cands.iter().filter(|v| v.version_type == kind).take(6) {
+            if jar_accepts(v, mc, loader).await { return Some(v.clone()); }
+        }
+    }
+    None
+}
+
 /// Arma el plan para instalar `version_id` (o la mejor versión del proyecto) con sus
 /// dependencias obligatorias, verificando incompatibilidades y el lado (cliente/servidor).
 pub async fn plan_install<S: Source>(src: &S, cfg: &ServerConfig, project_id: &str, version_id: Option<&str>) -> AppResult<InstallPlan> {
@@ -86,10 +141,10 @@ pub async fn plan_install<S: Source>(src: &S, cfg: &ServerConfig, project_id: &s
 
     let root = match version_id {
         Some(v) => src.version(v).await?,
-        None => modrinth::best_version(src.project_versions(project_id, mc, loader).await?, mc, loader)
+        None => best_compatible(src, project_id, mc, loader).await
             .ok_or_else(|| AppError::invalid(format!("Este mod no tiene una versión para {} {mc}.", loader_title(loader))))?,
     };
-    if !root.supports(mc, loader) {
+    if !compatible(&root, mc, loader) && !jar_accepts(&root, mc, loader).await {
         return Err(AppError::invalid(format!("La versión {} no es compatible con {} {mc}.", root.version_number, loader_title(loader))));
     }
 
@@ -119,10 +174,10 @@ pub async fn plan_install<S: Source>(src: &S, cfg: &ServerConfig, project_id: &s
                     if installed.contains_key(pid.as_str()) || seen.contains(&pid) { continue; }
                     let dv = match &dep.version_id {
                         Some(vid) => src.version(vid).await?,
-                        None => modrinth::best_version(src.project_versions(&pid, mc, loader).await?, mc, loader)
+                        None => best_compatible(src, &pid, mc, loader).await
                             .ok_or_else(|| AppError::invalid(format!("Falta una dependencia obligatoria sin versión para {mc}: {pid}. No se puede instalar sin ella.")))?,
                     };
-                    if !dv.supports(mc, loader) {
+                    if !compatible(&dv, mc, loader) && !jar_accepts(&dv, mc, loader).await {
                         return Err(AppError::invalid(format!("La dependencia {} no es compatible con {} {mc}.", dv.name, loader_title(loader))));
                     }
                     queue.push_back((dv, format!("Necesario para {}", version.name), false));

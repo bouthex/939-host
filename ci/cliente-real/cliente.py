@@ -103,7 +103,7 @@ java_bin = os.environ.get("JAVA_BIN", "java")
 args = [java_bin, "-Xmx2G", f"-Djava.library.path={natives}", "-Dorg.lwjgl.util.Debug=false", "-cp", os.pathsep.join(cp), vj["mainClass"],
         "--username", name, "--version", ver, "--gameDir", game, "--assetsDir", f"{root}/assets", "--assetIndex", idx["id"],
         "--uuid", offline.hex, "--accessToken", "0", "--userType", "legacy", "--width", "854", "--height", "480",
-        "--quickPlayMultiplayer", f"{host}:{port}"]
+        *(["--quickPlayMultiplayer", f"{host}:{port}"] if "quickPlay" in json.dumps(vj.get("arguments", {})) else ["--server", host, "--port", port])]
 print("abriendo el juego…", flush=True)
 p = subprocess.Popen(args, stdout=open(f"{root}/salida.txt", "w"), stderr=subprocess.STDOUT)
 end = time.time() + secs

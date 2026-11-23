@@ -236,7 +236,8 @@ fn group_protocol_fake_servers() {
 fn two_pcs_manual_recovery_and_no_stale_start() {
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
-    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    // B sin internet (como una PC que se quedó sin conexión): no tiene que levantar el servidor sola.
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_PRUEBA_SIN_INTERNET", "1")]);
     let sid = a.ok("create Duo 25821").as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
@@ -250,10 +251,10 @@ fn two_pcs_manual_recovery_and_no_stale_start() {
     // A se congela: B NO debe tomar el servidor sola (sin mayoría posible).
     let pid_a = a.pid();
     signal(pid_a, "STOP");
-    std::thread::sleep(Duration::from_secs(14));
-    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "con dos PCs no hay toma automática");
+    std::thread::sleep(Duration::from_secs(22));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "sin internet B no toma el servidor");
     assert!(b.err(&format!("start {sid}")).contains("no responde"));
-    println!("✔ dos PCs: sin mayoría, B no tomó el servidor sola; ofrece «Recuperar aquí»");
+    println!("✔ dos PCs: B sin internet no tomó el servidor sola; ofrece «Recuperar aquí»");
     b.ok(&format!("take {sid}"));
     assert!(b.ok(&format!("running {sid}")).as_bool().unwrap());
     assert_eq!(b.ok(&format!("read {sid} marca.txt")).as_str(), Some("d1"));
@@ -285,6 +286,36 @@ fn two_pcs_manual_recovery_and_no_stale_start() {
     a.ok(&format!("start {sid}"));
     assert_eq!(a.ok(&format!("read {sid} marca.txt")).as_str(), Some("d2"));
     println!("✔ el permiso soltado exige el último punto: A encendió recién al tenerlo (d2)");
+}
+
+/// Dos PCs con internet: si la anfitriona deja de responder (se apagó de golpe), la otra levanta el
+/// servidor sola con el último estado; cuando la anfitriona vuelve, se detiene y aparta su copia.
+#[test]
+fn two_pcs_automatic_recovery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok("create Duo2 25831").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} 25832"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} marca.txt e1"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    let pid_a = a.pid();
+    signal(pid_a, "STOP");
+    let t0 = Instant::now();
+    wait("B levanta el servidor sola", Duration::from_secs(60), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(t0.elapsed() >= Duration::from_secs(13), "no antes del doble del tiempo normal");
+    assert_eq!(b.ok(&format!("read {sid} marca.txt")).as_str(), Some("e1"));
+    println!("✔ dos PCs: B levantó el servidor sola a los {:.0} s con el último estado (e1)", t0.elapsed().as_secs_f32());
+    signal(pid_a, "CONT");
+    wait("A se detiene al volver", Duration::from_secs(30), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("A aparta su copia", Duration::from_secs(20), || a.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
+    assert!(b.ok(&format!("running {sid}")).as_bool().unwrap(), "B sigue alojando");
+    println!("✔ A volvió, se detuvo y apartó su copia: nunca dos servidores a la vez después de reconectar");
 }
 
 /// Una PC con copia vieja no puede encender aunque el permiso esté libre: tiene que tener

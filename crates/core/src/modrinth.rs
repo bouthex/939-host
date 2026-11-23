@@ -279,7 +279,17 @@ impl Modrinth {
 
 impl Source for Modrinth {
     async fn search_optimization(&self, mc: &str, loader: &str) -> AppResult<Vec<SearchHit>> {
-        Ok(self.search_filtered("", mc, loader, &["optimization".to_string()], "", "downloads", 0).await?.hits)
+        // La versión exacta y, en Fabric/Quilt, también el resto de su serie (después se comprueba
+        // en cada mod que acepte la versión exacta).
+        let series = if matches!(loader, "fabric" | "quilt") { crate::mods::mc_series(mc) } else { vec![mc.to_string()] };
+        let facets = serde_json::to_string(&vec![
+            vec!["project_type:mod".to_string()], vec![format!("categories:{loader}")], vec!["categories:optimization".to_string()],
+            series.iter().map(|v| format!("versions:{v}")).collect::<Vec<_>>(),
+            vec!["server_side:required".into(), "server_side:optional".into()],
+        ])?;
+        let url = format!("{API}/search?query=&facets={}&limit=30&offset=0&index=downloads", enc(&facets));
+        let r: SearchResult = net::get_json(&url, "Modrinth").await?;
+        Ok(r.hits)
     }
     async fn version(&self, id: &str) -> AppResult<Version> {
         net::get_json(&format!("{API}/version/{}", enc(id)), "Modrinth").await

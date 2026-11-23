@@ -359,8 +359,8 @@ function stepper(d, stat, what, unit) {
   if (!a?.allowed || !d || d.source === 'none') return '';
   const live = d.source === 'live';
   let why = '';
-  if (live && (stat === 'food' || stat === 'saturation')) why = 'Con el jugador conectado Minecraft no permite cambiar esto de a poco. Se puede cuando esté desconectado.';
-  else if (live && stat === 'health' && !a.liveHealth) why = 'Cambiar la vida con el jugador conectado necesita Minecraft 1.19.4 o más nuevo.';
+  if (live && (stat === 'food' || stat === 'saturation') && !a.liveFeed) why = 'Con el jugador conectado hace falta Minecraft 1.13 o más nuevo. Se puede cuando esté desconectado.';
+  else if (live && stat === 'health' && !a.liveHealth) why = 'Cambiar la vida con el jugador conectado necesita Minecraft 1.13 o más nuevo.';
   else if (live && stat === 'xp' && !a.liveXp) why = 'Esta versión de Minecraft no tiene el comando de experiencia.';
   const busy = !!pl.busy[stat];
   const dis = busy || !!why;

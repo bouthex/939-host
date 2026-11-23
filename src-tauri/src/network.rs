@@ -101,14 +101,14 @@ impl LocalHost for AppLocal {
     fn run_stats(&self, server: &str) -> Option<host939_cluster::RunStats> {
         let cfg = instance::load(server).ok()?;
         let rt = self.0.state::<Manager>().runtime(server);
-        let (pid, mspt, p95, started, names) = {
+        let (pid, mspt, p95, tps, started, names) = {
             let r = rt.lock().unwrap();
             if !r.is_active() { return None; }
-            (r.pid, r.mspt, r.mspt_p95, r.started_at, r.players.iter().cloned().collect::<Vec<_>>())
+            (r.pid, r.mspt, r.mspt_p95, r.tps, r.started_at, r.players.iter().cloned().collect::<Vec<_>>())
         };
         let usage = pid.and_then(|p| host939_core::hardware::process_usage(&self.0.state::<Probe>(), p));
         Some(host939_cluster::RunStats {
-            mspt, mspt_p95: p95, memory_mb: usage.map(|u| u.0), memory_max_mb: cfg.memory_mb, cpu_pct: usage.map(|u| u.1),
+            mspt, mspt_p95: p95, tps, memory_mb: usage.map(|u| u.0), memory_max_mb: cfg.memory_mb, cpu_pct: usage.map(|u| u.1),
             uptime_secs: started.map(|t| (chrono::Local::now() - t).num_seconds().max(0) as u64), max_players: cfg.max_players, player_names: names,
         })
     }

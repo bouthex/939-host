@@ -75,8 +75,8 @@ pub fn release_at_least(mc: &str, minor: u32, patch: u32) -> bool {
 
 /// Qué se puede editar con el jugador conectado en esta versión.
 pub fn online_support(mc: &str) -> (bool, bool, bool) {
-    // (vida exacta, llenar hambre, nivel de experiencia)
-    (release_at_least(mc, 19, 4), release_at_least(mc, 13, 0), release_at_least(mc, 13, 0))
+    // (vida, hambre y saturación, nivel de experiencia)
+    (release_at_least(mc, 13, 0), release_at_least(mc, 13, 0), release_at_least(mc, 13, 0))
 }
 
 pub fn audit(server: &str, what: &str, who: &str) {
@@ -149,7 +149,8 @@ pub fn apply_offline(mgr: &Manager, cfg: &ServerConfig, name: &str, uuid: &str, 
 /// Edición con el jugador conectado (comandos). Devuelve el texto para mostrar.
 pub fn apply_online(mgr: &Manager, cfg: &ServerConfig, name: &str, e: &Edit, who: &str) -> AppResult<String> {
     if !crate::players::valid_name(name) { return Err(AppError::invalid("Jugador inválido.")); }
-    let (hp_ok, feed_ok, xp_ok) = online_support(&cfg.mc_version);
+    let (_, feed_ok, xp_ok) = online_support(&cfg.mc_version);
+    let hp_ok = release_at_least(&cfg.mc_version, 19, 4);
     let read = || -> AppResult<serde_json::Value> {
         let line = mgr.query(&cfg.id, &format!("data get entity {name}"), &[&format!("{name} has the following entity data"), "No entity was found"], Duration::from_secs(4))?;
         playerdata::parse_reply(&line, name)
@@ -157,10 +158,11 @@ pub fn apply_online(mgr: &Manager, cfg: &ServerConfig, name: &str, e: &Edit, who
     let before = read()?;
     let max_hp = max_health(&before);
     validate(e, max_hp)?;
-    if e.saturation.is_some() || e.food.map(|f| f != 20).unwrap_or(false) {
-        return Err(AppError::invalid("Con el jugador conectado Minecraft solo permite llenar el hambre (y la saturación). Para un valor exacto, cambialo cuando esté desconectado."));
-    }
-    if e.health.is_some() && !hp_ok { return Err(AppError::invalid("Cambiar la vida con el jugador conectado necesita Minecraft 1.19.4 o más nuevo. Hacelo cuando esté desconectado.")); }
+    let food_change = e.food.is_some() || e.saturation.is_some();
+    // Antes de 1.19.4 no existe `/damage`: se baja con veneno (1 punto cada 12 ticks, nunca mata)
+    // midiendo la vida real hasta llegar al valor, y se quita el efecto. Comprobado con un
+    // servidor 1.16.5 real. El veneno no baja de 1 punto de vida.
+    if let (Some(h), false) = (e.health, hp_ok) { if h < 1.0 { return Err(AppError::invalid("En esta versión de Minecraft la vida se puede bajar con el jugador conectado hasta medio corazón (1 punto).")); } }
     if (e.food.is_some() && !feed_ok) || (e.xp_level.is_some() && !xp_ok) { return Err(AppError::invalid("Esta versión de Minecraft no tiene los comandos necesarios. Hacelo con el jugador desconectado.")); }
     let send = |c: &str| mgr.send_command(&cfg.id, c);
     if let Some(h) = e.health {
@@ -176,14 +178,30 @@ pub fn apply_online(mgr: &Manager, cfg: &ServerConfig, name: &str, e: &Edit, who
             }
         }
         let diff = cur - h;
-        if diff > 0.01 { send(&format!("damage {name} {:.2} minecraft:generic_kill", diff))?; }
+        if diff > 0.01 {
+            if hp_ok { send(&format!("damage {name} {:.2} minecraft:generic_kill", diff))?; }
+            else {
+                let health = || -> AppResult<f64> {
+                    let line = mgr.query(&cfg.id, &format!("data get entity {name} Health"), &[&format!("{name} has the following entity data"), "No entity was found"], Duration::from_secs(3))?;
+                    line.rsplit("entity data: ").next().unwrap_or("").trim().trim_end_matches(|c: char| c.is_ascii_alphabetic()).parse::<f64>().map_err(|_| AppError::invalid("No se pudo leer la vida."))
+                };
+                send(&format!("effect give {name} minecraft:poison {} 1 true", (diff * 0.7).ceil() as i64 + 5))?;
+                let end = std::time::Instant::now() + Duration::from_millis((diff * 700.0) as u64 + 5000);
+                while std::time::Instant::now() < end { if health()? <= h + 0.01 { break; } }
+                send(&format!("effect clear {name} minecraft:poison"))?;
+            }
+        }
     }
-    if e.food == Some(20) { send(&format!("effect give {name} minecraft:saturation 1 255 true"))?; }
+    let mut food_note = String::new();
+    if food_change {
+        let (f, s) = set_food_live(mgr, cfg, name, e.food, e.saturation)?;
+        if e.food.map(|w| w != f).unwrap_or(false) || e.saturation.map(|w| (w - s).abs() > 1.0).unwrap_or(false) { food_note = format!(" (hambre {f}, saturación {}: Minecraft gasta primero la saturación y la sube junto con el hambre)", fmt(s)); }
+    }
     if let Some(x) = e.xp_level { send(&format!("xp set {name} {x} levels"))?; }
     std::thread::sleep(Duration::from_millis(400));
     let after = read().ok();
     let got_hp = after.as_ref().and_then(|v| v.get("Health")).and_then(|x| x.as_f64());
-    let mut msg = format!("Listo para {name}");
+    let mut msg = format!("Listo para {name}{food_note}");
     if let (Some(want), Some(got)) = (e.health, got_hp) {
         // Hasta 1 punto de diferencia es la regeneración natural del juego mientras se lee.
         if (want - got).abs() > 1.0 { msg = format!("Se aplicó, pero {name} quedó con {} de vida (pedido {}): sus efectos o su absorción lo cambian.", fmt(got), fmt(want)); }
@@ -215,6 +233,113 @@ mod tests {
     }
 }
 
+/* ───────── Hambre y saturación con el jugador conectado ───────── */
+//
+// Minecraft no tiene un comando para fijar el hambre, pero sí efectos con reglas exactas:
+// - «saturation» es instantáneo: con `effect give` la duración se cuenta en ticks, así que
+//   `saturation 1 <a>` se aplica una sola vez: hambre +(a+1) y saturación +2·(a+1) (con tope en
+//   el hambre).
+// - «hunger» suma 0,005·(a+1) de cansancio por tick; cada vez que el cansancio pasa de 4 el juego
+//   gasta 1 de saturación o, si la saturación está en 0, 1 de hambre.
+// Con el cansancio actual del jugador (`foodExhaustionLevel`) se calcula el efecto justo para gastar
+// exactamente k puntos, y después se vuelve a leer para confirmar el resultado real.
+// Reglas del juego que no se pueden saltar: en creativo y espectador el juego no gasta hambre, y en
+// pacífico la rellena solo.
+
+fn read_food(mgr: &Manager, cfg: &ServerConfig, name: &str) -> AppResult<(i64, f64, f64, String)> {
+    let line = mgr.query(&cfg.id, &format!("data get entity {name}"), &[&format!("{name} has the following entity data"), "No entity was found"], Duration::from_secs(4))?;
+    let v = playerdata::parse_reply(&line, name)?;
+    let food = v.get("foodLevel").and_then(|x| x.as_i64()).unwrap_or(20);
+    let sat = v.get("foodSaturationLevel").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let ex = v.get("foodExhaustionLevel").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let gm = v.get("playerGameType").and_then(|x| x.as_i64()).map(|g| ["survival", "creative", "adventure", "spectator"].get(g as usize).unwrap_or(&"survival").to_string()).unwrap_or_else(|| "survival".into());
+    Ok((food, sat, ex, gm))
+}
+
+/// Gasta exactamente `k` puntos (primero saturación, después hambre) con el efecto «hunger»:
+/// se aplica un efecto fuerte (un punto cada ~5 ticks) y se mide el hambre y la saturación reales
+/// hasta llegar al valor buscado; ahí se quita el efecto. Medido con un jugador real: el tiempo
+/// que dura un efecto de «1 segundo» varía unos ticks, así que no se puede calcular de antemano.
+fn spend(mgr: &Manager, cfg: &ServerConfig, name: &str, k: i64, _exhaustion: f64) -> AppResult<()> {
+    if k <= 0 { return Ok(()); }
+    let field = |f: &str| -> AppResult<f64> {
+        let line = mgr.query(&cfg.id, &format!("data get entity {name} {f}"), &[&format!("{name} has the following entity data"), "No entity was found", "Found no elements"], Duration::from_secs(3))?;
+        let v = line.rsplit("entity data: ").next().unwrap_or("").trim().trim_end_matches(|c: char| c.is_ascii_alphabetic()).to_string();
+        v.parse::<f64>().map_err(|_| AppError::invalid(&format!("No se pudo leer {f}: {}", line.trim())))
+    };
+    let (f0, s0) = (field("foodLevel")? as i64, field("foodSaturationLevel")?);
+    let on_sat = if s0 > 0.0 { (s0.ceil() as i64).min(k) } else { 0 };
+    let target_sat = if on_sat > 0 { (s0 - on_sat as f64).max(0.0) } else { s0 };
+    let target_food = (f0 - (k - on_sat)).max(0);
+    mgr.send_command(&cfg.id, &format!("effect give {name} minecraft:hunger {} 159 true", (k + 5).min(1000)))?;
+    let end = std::time::Instant::now() + Duration::from_millis(400 * k as u64 + 6000);
+    let mut ok = false;
+    while std::time::Instant::now() < end {
+        let sat = field("foodSaturationLevel")?;
+        if sat <= target_sat + 0.001 {
+            if target_food == f0 || field("foodLevel")? as i64 <= target_food { ok = true; break; }
+        }
+    }
+    mgr.send_command(&cfg.id, &format!("effect clear {name} minecraft:hunger"))?;
+    std::thread::sleep(Duration::from_millis(150));
+    if !ok { return Err(AppError::invalid(&format!("Minecraft todavía no aplica cambios a {name}: suele pasar mientras termina de cargar el mundo al entrar. Probá de nuevo en unos segundos."))); }
+    Ok(())
+}
+
+/// Lleva el hambre y/o la saturación de un jugador conectado a los valores pedidos. Devuelve
+/// (hambre, saturación) reales al terminar.
+pub fn set_food_live(mgr: &Manager, cfg: &ServerConfig, name: &str, food: Option<i64>, sat: Option<f64>) -> AppResult<(i64, f64)> {
+    if !release_at_least(&cfg.mc_version, 13, 0) { return Err(AppError::invalid("Con el jugador conectado hace falta Minecraft 1.13 o más nuevo. Cambialo cuando esté desconectado.")); }
+    let (f0, s0, _e0, gm) = read_food(mgr, cfg, name)?;
+    let want_f = food.unwrap_or(f0).clamp(0, 20);
+    let want_s = sat.map(|s| s.clamp(0.0, 20.0)).unwrap_or(s0).min(want_f as f64);
+    let lowers = want_f < f0 || want_s < s0 - 0.01;
+    if lowers && (gm == "creative" || gm == "spectator") {
+        return Err(AppError::invalid(&format!("{name} está en modo {}: ahí Minecraft no gasta hambre ni saturación, así que no se puede bajar. Se puede subir, o bajarlo cuando esté en supervivencia o aventura.", if gm == "creative" { "creativo" } else { "espectador" })));
+    }
+    if lowers && cfg.difficulty == "peaceful" {
+        return Err(AppError::invalid("En dificultad pacífica Minecraft rellena el hambre solo: no se puede bajar."));
+    }
+    let give = |n: i64| -> AppResult<()> {
+        if n <= 0 { return Ok(()); }
+        mgr.send_command(&cfg.id, &format!("effect give {name} minecraft:saturation 1 {} true", (n - 1).clamp(0, 255)))?;
+        std::thread::sleep(Duration::from_millis(250));
+        Ok(())
+    };
+    // 1) Hambre hacia arriba: «saturation» (sube también la saturación; se ajusta en el paso 3).
+    if want_f > f0 { give(want_f - f0)?; }
+    // 2) Hambre hacia abajo: primero se gasta toda la saturación y después el hambre que sobra.
+    if want_f < f0 {
+        let (_, s, e, _) = read_food(mgr, cfg, name)?;
+        spend(mgr, cfg, name, s.ceil() as i64 + (f0 - want_f), e)?;
+    }
+    // 3) Saturación: hacia arriba con «saturation» (si el hambre está llena no cambia; si no, el
+    //    juego también la sube y se compensa), hacia abajo gastando de a 1.
+    let (f1, s1, e1, _) = read_food(mgr, cfg, name)?;
+    // Sin una saturación pedida: al bajar el hambre queda la que deja el juego (en 0, la gastó
+    // primero); al subirla se devuelve la que tenía antes.
+    let want_s = if sat.is_none() && want_f < f0 { s1 } else { want_s };
+    if want_s > s1 + 0.01 {
+        let need = ((want_s - s1) / 2.0).ceil() as i64;
+        give(need)?;
+        let (f2, s2, e2, _) = read_food(mgr, cfg, name)?;
+        // El efecto subió el hambre además de la saturación: no se puede bajar el hambre sin gastar
+        // antes toda la saturación, así que el hambre queda más alta (se informa).
+        let _ = f2;
+        if s2 > want_s + 0.01 { spend(mgr, cfg, name, (s2 - want_s).floor() as i64, e2)?; }
+    } else if s1 > want_s + 0.01 {
+        spend(mgr, cfg, name, (s1 - want_s).floor().max(if want_s <= 0.0 { s1.ceil() } else { 0.0 }) as i64, e1)?;
+    }
+    let _ = f1;
+    let (f, s, _, _) = read_food(mgr, cfg, name)?;
+    // Nada cambió: el juego todavía no procesa a ese jugador (desde 1.21.4 un jugador que recién
+    // entra no recibe efectos hasta que su Minecraft termina de cargar el mundo).
+    if f == f0 && (s - s0).abs() < 0.01 && (want_f != f0 || (want_s - s0).abs() > 0.01) {
+        return Err(AppError::invalid(&format!("Minecraft todavía no aplica cambios a {name}: suele pasar mientras termina de cargar el mundo al entrar. Probá de nuevo en unos segundos.")));
+    }
+    Ok((f, s))
+}
+
 /* ───────── Controles + y − (de a un paso) y matar ───────── */
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -244,7 +369,19 @@ pub fn adjust(mgr: &Manager, cfg: &ServerConfig, name: &str, uuid: &str, live: b
     let sign = if up { 1.0 } else { -1.0 };
     if live {
         match stat {
-            Stat::Food | Stat::Saturation => return Err(AppError::invalid("Con el jugador conectado Minecraft no permite cambiar el hambre ni la saturación de a poco (solo llenarlas). Se puede cuando esté desconectado.")),
+            Stat::Food | Stat::Saturation => {
+                let (f0, s0) = (d.food.unwrap_or(20), d.saturation.unwrap_or(0.0));
+                let (tf, ts) = if stat == Stat::Food { (Some(f0 + if up { 1 } else { -1 }), None) } else { (None, Some((s0.floor() + if up { 1.0 } else { -1.0 }).max(0.0))) };
+                if let Some(t) = tf { if !(0..=20).contains(&t) { return Err(AppError::invalid(if up { "El hambre ya está llena." } else { "El hambre ya está en cero." })); } }
+                if stat == Stat::Saturation && !up && s0 <= 0.0 { return Err(AppError::invalid("La saturación ya está en cero.")); }
+                if stat == Stat::Saturation && up && s0 + 0.01 >= f0 as f64 && f0 >= 20 { return Err(AppError::invalid("La saturación ya está al máximo (no puede superar al hambre).")); }
+                let (f, s) = set_food_live(mgr, cfg, name, tf, ts)?;
+                audit(&cfg.id, &format!("jugador-editado {name} (conectado): hambre {f}, saturación {}", fmt(s)), who);
+                let mut msg = format!("Hambre {f} · saturación {}", fmt(s));
+                if stat == Stat::Food && !up && s0 > 0.0 { msg.push_str(". Minecraft gasta primero la saturación, por eso quedó en 0"); }
+                if stat == Stat::Saturation && up && f > f0 { msg.push_str(&format!(". Para subir la saturación Minecraft también subió el hambre ({f0} → {f})")); }
+                return Ok(msg);
+            }
             Stat::Xp => {
                 let (_, _, xp_ok) = online_support(&cfg.mc_version);
                 if !xp_ok { return Err(AppError::invalid("Esta versión de Minecraft no tiene el comando para cambiar la experiencia.")); }
@@ -355,6 +492,34 @@ pub fn item_id(s: &str) -> Option<String> {
     (ok(ns) && ok(path) && !ns.contains('/')).then_some(full)
 }
 
+/// El objeto de un casillero como argumento de comando, con sus datos (encantamientos, nombre,
+/// desgaste): `minecraft:diamond_sword{Damage: 5, …}`. Para versiones anteriores a 1.20.5 (en las
+/// nuevas se usa `item modify`). Se lee el texto tal cual lo escribe Minecraft, con sus tipos.
+fn item_with_tag(mgr: &Manager, cfg: &ServerConfig, name: &str, group: &str, slot: i64, id: &str) -> AppResult<String> {
+    let list = if group == "ender" { "EnderItems" } else { "Inventory" };
+    let line = mgr.query(&cfg.id, &format!("data get entity {name} {list}[{{Slot:{slot}b}}]"), &[&format!("{name} has the following entity data"), "Found no elements", "No entity was found"], Duration::from_secs(4))?;
+    let marker = "has the following entity data: ";
+    let Some(pos) = line.find(marker) else { return Err(AppError::invalid("Ese casillero está vacío.")) };
+    let snbt = &line[pos + marker.len()..];
+    // `tag: {…}` con llaves balanceadas (respetando textos entre comillas).
+    let tag = snbt.find("tag: {").map(|i| {
+        let b = &snbt[i + 5..];
+        let (mut depth, mut q, mut esc) = (0i32, None::<char>, false);
+        let mut end = b.len();
+        for (j, c) in b.char_indices() {
+            if let Some(qc) = q { if esc { esc = false } else if c == '\\' { esc = true } else if c == qc { q = None } continue; }
+            match c { '"' | '\'' => q = Some(c), '{' => depth += 1, '}' => { depth -= 1; if depth == 0 { end = j + 1; break; } } _ => {} }
+        }
+        b[..end].to_string()
+    }).unwrap_or_default();
+    Ok(format!("{id}{tag}"))
+}
+
+/// Pone `count` de `item` en un casillero (1.13 a 1.20.4: `replaceitem` / `item replace … with`).
+fn replace_cmd(mc: &str, name: &str, slot: &str, item: &str, count: i64) -> String {
+    if release_at_least(mc, 17, 0) { format!("item replace entity {name} {slot} with {item} {count}") } else { format!("replaceitem entity {name} {slot} {item} {count}") }
+}
+
 fn item_at(d: &playerdata::PlayerDetail, group: &str, slot: i64) -> Option<playerdata::Item> {
     if group == "ender" { return d.ender.iter().find(|i| i.slot == slot).cloned(); }
     let e = &d.equipment;
@@ -397,18 +562,19 @@ pub fn inventory(mgr: &Manager, cfg: &ServerConfig, name: &str, uuid: &str, op: 
             (format!("Quitaste {} × {} de {name}.", it.count, it.id), Box::new(move |d| item_at(d, &g, s).is_none()))
         }
         InvOp::Move { group, from, to } => {
-            if !release_at_least(mc, 17, 0) { return Err(AppError::invalid("Mover objetos entre casilleros necesita Minecraft 1.17 o más nuevo (el comando /item).")); }
+            if !release_at_least(mc, 13, 0) { return Err(AppError::invalid("Mover objetos con el jugador conectado necesita Minecraft 1.13 o más nuevo.")); }
             let (sf, st) = (slot_name(group, *from).ok_or_else(|| AppError::invalid("Casillero inválido."))?, slot_name(group, *to).ok_or_else(|| AppError::invalid("Casillero inválido."))?);
             let it = item_at(&before, group, *from).ok_or_else(|| AppError::invalid("El casillero de origen está vacío."))?;
             if item_at(&before, group, *to).is_some() { return Err(AppError::invalid("El casillero de destino está ocupado: elegí uno vacío.")); }
-            send(&format!("item replace entity {name} {st} from entity {name} {sf}"))?;
+            if release_at_least(mc, 17, 0) { send(&format!("item replace entity {name} {st} from entity {name} {sf}"))?; }
+            else { let item = item_with_tag(mgr, cfg, name, group, *from, &it.id)?; send(&replace_cmd(mc, name, &st, &item, it.count))?; }
             settle();
             // Solo se vacía el origen si la copia quedó en el destino (nunca se pierde el objeto).
             let mid = read()?;
             if item_at(&mid, group, *to).map(|x| x.id != it.id || x.count != it.count).unwrap_or(true) {
                 return Err(AppError::invalid("Minecraft no copió el objeto al casillero nuevo (puede que ese casillero no acepte ese objeto, como una armadura en otro lugar). No se cambió nada."));
             }
-            send(&format!("item replace entity {name} {sf} with minecraft:air"))?;
+            if release_at_least(mc, 17, 0) { send(&format!("item replace entity {name} {sf} with minecraft:air"))?; } else { send(&format!("replaceitem entity {name} {sf} minecraft:air"))?; }
             let (g, f, t, id, n) = (group.clone(), *from, *to, it.id.clone(), it.count);
             (format!("Moviste {} × {} de casillero.", it.count, it.id), Box::new(move |d| item_at(d, &g, f).is_none() && item_at(d, &g, t).map(|x| x.id == id && x.count == n).unwrap_or(false)))
         }
@@ -429,12 +595,12 @@ pub fn inventory(mgr: &Manager, cfg: &ServerConfig, name: &str, uuid: &str, op: 
                         if let Ok(l2) = try_key("type") { if l2.contains("Failed") || l2.contains("Expected") || l2.contains("Unknown") { return Err(AppError::invalid(&format!("Minecraft no aceptó el cambio: {}", l2.trim()))); } }
                     } else if !line.contains("No entity") { return Err(AppError::invalid(&format!("Minecraft no aceptó el cambio: {}", line.trim()))); }
                 }
-            } else if (*count as i64) < it.count && group != "ender" {
-                let same = before.inventory.iter().filter(|i| i.id == it.id).count() + [&before.equipment.head, &before.equipment.chest, &before.equipment.legs, &before.equipment.feet, &before.equipment.offhand].iter().filter(|x| x.as_ref().map(|x| x.id == it.id).unwrap_or(false)).count();
-                if same != 1 { return Err(AppError::invalid("En esta versión de Minecraft (anterior a 1.20.5) solo se puede bajar la cantidad si ese objeto está en un único casillero. Para un casillero exacto hace falta 1.20.5 o más nuevo.")); }
-                send(&format!("clear {name} {} {}", it.id, it.count - *count as i64))?;
+            } else if release_at_least(mc, 13, 0) {
+                // Antes de 1.20.5: se vuelve a poner el mismo objeto (con todos sus datos) con la cantidad nueva.
+                let item = item_with_tag(mgr, cfg, name, group, *slot, &it.id)?;
+                send(&replace_cmd(mc, name, &sn, &item, *count as i64))?;
             } else {
-                return Err(AppError::invalid("Subir la cantidad de un casillero necesita Minecraft 1.20.5 o más nuevo. Podés usar «Dar» para agregar más."));
+                return Err(AppError::invalid("Cambiar la cantidad con el jugador conectado necesita Minecraft 1.13 o más nuevo. Podés usar «Dar» para agregar más."));
             }
             let (g, s, n) = (group.clone(), *slot, *count as i64);
             (format!("{} ahora tiene {count} × {} en ese casillero.", name, it.id), Box::new(move |d| item_at(d, &g, s).map(|x| x.count == n).unwrap_or(false)))

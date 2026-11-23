@@ -37,7 +37,13 @@ pub struct Runtime {
     stop_requested: bool,
     pub mspt: Option<f64>,
     pub mspt_p95: Option<f64>,
+    /// Ticks por segundo medidos (con `tick query` se calcula del tiempo por tick; en versiones sin
+    /// ese comando, con `debug start`/`debug stop`, que existe desde siempre).
+    pub tps: Option<f64>,
     metrics_supported: bool,
+    /// Medición con `debug` (versiones anteriores a 1.20.3): None = sin probar todavía.
+    debug_metrics: Option<bool>,
+    debug_running: bool,
     suppress_until: Option<Instant>,
     pub save_counter: u64,
     pub installing: bool,
@@ -125,7 +131,22 @@ static RE_DONE: Lazy<Regex> = Lazy::new(|| Regex::new(r"Done \([0-9.,]+s\)!").un
 static RE_AVG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)average time per tick:\s*([0-9.]+)\s*ms").unwrap());
 static RE_P95: Lazy<Regex> = Lazy::new(|| Regex::new(r"P95:\s*([0-9.]+)\s*ms").unwrap());
 static RE_BIND: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)failed to bind to port").unwrap());
-const TICK_PATTERNS: &[&str] = &["The game is running normally", "Target tick rate", "Average time per tick", "Percentiles", "The game is frozen", "The game is sprinting", "Unknown or incomplete command", "<--[HERE]"];
+const TICK_PATTERNS: &[&str] = &["The game is running normally", "Target tick rate", "Average time per tick", "Percentiles", "The game is frozen", "The game is sprinting", "Unknown or incomplete command", "<--[HERE]",
+    "Started debug profiling", "Started tick profiling", "Stopped debug profiling", "Stopped tick profiling", "profiling", "Profiler"];
+static RE_DEBUG_TPS: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)stopped (?:debug |tick )?profiling after ([0-9.,]+) seconds and (\d+) ticks \(([0-9.,]+) ticks? per second\)").unwrap());
+
+/// Borra los perfiles que deja `debug stop` (solo los de 939 Host: los de los últimos minutos).
+fn clean_debug_profiles(dir: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let n = e.file_name().to_string_lossy().to_lowercase();
+        let recent = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map(|d| d < Duration::from_secs(300)).unwrap_or(false);
+        if recent && (n.starts_with("profile-results") || n.starts_with("profiling") || n.ends_with("-server.txt") || n.ends_with("-server")) {
+            let p = e.path();
+            if p.is_dir() { let _ = std::fs::remove_dir_all(&p); } else { let _ = std::fs::remove_file(&p); }
+        }
+    }
+}
 
 impl Manager {
     pub fn new(events: Arc<dyn Events>) -> Self {
@@ -350,7 +371,10 @@ impl Manager {
             rt.last_output = Some(Instant::now());
             rt.mspt = None;
             rt.mspt_p95 = None;
-            rt.metrics_supported = true;
+            rt.tps = None;
+            rt.metrics_supported = crate::playeredit::release_at_least(&cfg.mc_version, 20, 3);
+            rt.debug_metrics = None;
+            rt.debug_running = false;
             rt.reset_live();
             rt.phase = Some("Abriendo Java".into());
             let mods = std::fs::read_dir(run_dir.join("mods")).map(|r| r.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".jar")).count()).unwrap_or(0);
@@ -419,16 +443,34 @@ impl Manager {
             // ven el tiempo por tick real de esta.
             let rt = rt_arc.clone();
             let sid = cfg.id.clone();
+            let debug_dir = run_dir.join("debug");
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(20));
                 let shared = crate::network::load_share(&sid).enabled;
                 let mut r = rt.lock().unwrap();
+                let wanted = shared || METRICS_WANTED.load(std::sync::atomic::Ordering::Relaxed);
                 match r.status() {
-                    RunStatus::Running if r.metrics_supported && (shared || METRICS_WANTED.load(std::sync::atomic::Ordering::Relaxed)) => {
+                    RunStatus::Running if r.metrics_supported && wanted => {
                         if let Some(stdin) = r.stdin.as_mut() {
                             if writeln!(stdin, "tick query").and_then(|_| stdin.flush()).is_ok() {
                                 r.suppress_until = Some(Instant::now() + Duration::from_secs(3));
                             }
+                        }
+                    }
+                    // Sin `tick query`: una medición de 20 s con `debug start` / `debug stop` (el
+                    // resultado dice cuántos ticks por segundo hizo el servidor). El archivo de
+                    // perfil que deja Minecraft se borra enseguida.
+                    RunStatus::Running if !r.metrics_supported && r.debug_metrics != Some(false) && (wanted || r.debug_running) => {
+                        let cmd = if r.debug_running { "debug stop" } else { "debug start" };
+                        if let Some(stdin) = r.stdin.as_mut() {
+                            if writeln!(stdin, "{cmd}").and_then(|_| stdin.flush()).is_ok() {
+                                r.debug_running = !r.debug_running;
+                                r.suppress_until = Some(Instant::now() + Duration::from_secs(3));
+                            }
+                        }
+                        if !r.debug_running {
+                            let dir = debug_dir.clone();
+                            std::thread::spawn(move || { std::thread::sleep(Duration::from_secs(4)); clean_debug_profiles(&dir); });
                         }
                     }
                     RunStatus::Starting | RunStatus::Running => {}
@@ -624,10 +666,21 @@ fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: S
         if let Some(until) = r.suppress_until {
             if Instant::now() < until && TICK_PATTERNS.iter().any(|p| line.contains(p)) {
                 hide = true;
-                if line.contains("Unknown or incomplete command") { r.metrics_supported = false; }
+                if line.contains("Unknown or incomplete command") {
+                    if r.metrics_supported { r.metrics_supported = false; } else { r.debug_metrics = Some(false); r.debug_running = false; }
+                }
             }
         }
-        if let Some(c) = RE_AVG.captures(&line) { r.mspt = c[1].parse().ok(); changed = true; }
+        if let Some(c) = RE_DEBUG_TPS.captures(&line) {
+            let tps: Option<f64> = c[3].replace(',', ".").parse().ok();
+            r.tps = tps.map(|t| t.min(20.0));
+            // Con menos de 20 TPS el servidor tarda más de 50 ms por tick: se puede estimar.
+            r.mspt = tps.filter(|t| *t < 19.5 && *t > 0.0).map(|t| 1000.0 / t);
+            r.debug_metrics = Some(true);
+            r.debug_running = false;
+            changed = true;
+        }
+        if let Some(c) = RE_AVG.captures(&line) { r.mspt = c[1].parse().ok(); r.tps = r.mspt.map(|m| (1000.0 / m.max(0.01)).min(20.0)); changed = true; }
         if let Some(c) = RE_P95.captures(&line) { r.mspt_p95 = c[1].parse().ok(); }
         if r.status() == RunStatus::Starting && RE_DONE.is_match(&line) {
             r.status = Some(RunStatus::Running);

@@ -131,6 +131,9 @@ async function boot() {
   // Momento en que la app queda usable (para medir el arranque en las pruebas).
   window.__h939Ready = performance.timeOrigin + performance.now();
   splashDone();
+  // Direcciones del grupo: se revisan al abrir y cada pocos minutos (llegan solas por el grupo).
+  setTimeout(() => offerGroupAliases().catch(() => {}), 8000);
+  setInterval(() => offerGroupAliases().catch(() => {}), 180000);
   if (autoUpdate) openUpdateScreen(upd, true);
   else paintUpdateBar(upd);
   // Una actualización que se descargó pero no pasó la verificación: se avisa (se reintenta sola más tarde).

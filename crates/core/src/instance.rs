@@ -45,6 +45,7 @@ pub fn view(mgr: &Manager, probe: &Probe, cfg: ServerConfig, with_size: bool) ->
         started_at: r.started_at.map(|t| t.to_rfc3339()),
         memory_used_mb,
         mspt: r.mspt,
+        tps: r.tps,
         mspt_p95: r.mspt_p95,
         last_error: r.last_error.clone().or_else(|| cfg.install_error.clone()),
         needs_restart: r.needs_restart,

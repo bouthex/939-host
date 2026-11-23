@@ -203,13 +203,14 @@ tabDraw.summary = async (el) => {
   clearTimeout(remoteStatsTimer);
   if (remoteHost) remoteStatsTimer = setTimeout(() => { if (state.route === 'server' && state.tab === 'summary' && state.params.id === c.id) refreshServer(); }, 5000);
   const mspt = rs ? rs.mspt : v.mspt, p95 = rs ? rs.msptP95 : v.msptP95, mem = rs ? rs.memoryMb : v.memoryUsedMb;
+  const tps = rs ? rs.tps : v.tps;
   const nPlayers = rs ? rs.playerNames.length : running ? v.players.length : null;
   el.innerHTML = `<div class="stack" style="gap:16px">
     ${ji ? `<div class="issue" role="status">${icon('alert', 18)}<div class="stack" style="gap:4px"><b>${esc(ji.title)}</b><span class="sm t2">${esc(ji.detail)}</span><span class="mono" title="Línea de la consola del servidor">${esc(ji.logLine)}</span></div>
       <div class="btns">${c.loader !== 'vanilla' ? `<button class="btn s" data-a="tab" data-v="mods">${icon('box', 14)}Mods del servidor</button>` : ''}<button class="btn s quiet" data-a="issue-ok">Entendido</button></div></div>` : ''}
     <div class="kpis">
       <div class="card kpi"><span class="l">Jugadores</span><span class="v">${nPlayers ?? '—'}<small>de ${rs?.maxPlayers || c.maxPlayers}</small></span>${rs?.playerNames?.length ? `<span class="xs t3 ellipsis">${esc(rs.playerNames.join(', '))}</span>` : ''}</div>
-      <div class="card kpi"><span class="l">Tiempo por tick</span><span class="v">${mspt != null ? mspt.toFixed(1).replace('.', ',') : '—'}<small>ms${p95 != null ? ` · p95 ${p95.toFixed(1).replace('.', ',')}` : ''}${mspt != null ? ` · ${Math.min(20, 1000 / Math.max(mspt, 0.01)).toFixed(1).replace('.', ',')} TPS` : ''}</small></span><span class="xs t3">${mspt == null ? (rs ? 'Esta versión de Minecraft no lo informa' : 'Disponible con el servidor encendido') : mspt < 40 ? 'Fluido (menos de 50 ms)' : mspt < 50 ? 'Al límite' : 'Con demoras'}</span></div>
+      <div class="card kpi"><span class="l">${mspt != null ? 'Tiempo por tick' : 'Ticks por segundo'}</span><span class="v">${mspt != null ? `${mspt.toFixed(1).replace('.', ',')}<small>ms${p95 != null ? ` · p95 ${p95.toFixed(1).replace('.', ',')}` : ''}${tps != null ? ` · ${tps.toFixed(1).replace('.', ',')} TPS` : ''}</small>` : tps != null ? `${tps.toFixed(1).replace('.', ',')}<small>TPS de 20</small>` : '—'}</span><span class="xs t3">${mspt == null && tps == null ? 'Se mide a los pocos segundos de encenderse' : (mspt ?? 0) < 40 && (tps ?? 20) >= 19.5 ? 'Fluido' : (mspt ?? 0) < 50 && (tps ?? 20) >= 18 ? 'Al límite' : 'Con demoras'}</span></div>
       <div class="card kpi"><span class="l">Memoria${rs?.cpuPct != null ? ' · CPU' : ''}</span><span class="v">${mem != null ? fmtMB(mem) : '—'}<small>en uso · ${fmtMB(rs?.memoryMaxMb || c.memoryMb)} asignados${rs?.cpuPct != null ? ` · CPU ${Math.round(rs.cpuPct)} %` : ''}</small></span>${mem != null ? `<div class="bar"><i style="width:${Math.min(100, Math.round(mem / (rs?.memoryMaxMb || c.memoryMb) * 100))}%"></i></div>` : ''}${rs ? `<span class="xs t3">En la PC de ${esc(remoteHost)}${rs.uptimeSecs != null ? ` · encendido hace ${fmtDuration(rs.uptimeSecs)}` : ''}${gg.hostState?.rttMs != null ? ` · ${gg.hostState.rttMs} ms hasta esa PC` : ''}</span>` : ''}</div>
       <div class="card kpi"><span class="l">Mundo</span><span class="v">${fmtMB(v.worldSizeMb)}</span><span class="xs t3">${DIFF[c.difficulty] || c.difficulty} · ${MODE[c.gamemode] || c.gamemode}</span></div>
     </div>
@@ -396,7 +397,7 @@ tabDraw.group = async (el) => {
           </div>
           ${g.canStart && g.canStart.Err && !g.iAmHost ? `<p class="sm t3" style="margin:0">${esc(g.canStart.Err)}</p>` : ''}</div>
         <div class="card pad stack"><h2>Opciones</h2><div>
-          <label class="switch"><div class="grow"><b>Recuperación automática</b><span class="sm t2">Si el anfitrión deja de responder, las PCs conectadas eligen otra por mayoría (hacen falta ${g.majority} de ${g.members.length}).${g.members.length < 3 ? ' Con dos PCs no hay mayoría posible: queda «Recuperar aquí».' : ''}</span></div><input type="checkbox" id="opt-failover" ${g.autoFailover ? 'checked' : ''}></label>
+          <label class="switch"><div class="grow"><b>Recuperación automática</b><span class="sm t2">Si el anfitrión deja de responder, las PCs conectadas eligen otra por mayoría (hacen falta ${g.majority} de ${g.members.length}).${g.members.length < 3 ? ' Con dos PCs: si la anfitriona no responde por más de un minuto y esta PC tiene internet, lo levanta esta PC; si la otra vuelve, aparta su copia sin perderla.' : ''}</span></div><input type="checkbox" id="opt-failover" ${g.autoFailover ? 'checked' : ''}></label>
           <label class="switch"><div class="grow"><b>Pasar al salir</b><span class="sm t2">Al salir de 939 Host, pasar el servidor a otra PC conectada en vez de apagarlo.</span></div><input type="checkbox" id="opt-handover" ${g.handoverOnQuit ? 'checked' : ''}></label></div></div>
         ${rankingCard(g)}
       </div>

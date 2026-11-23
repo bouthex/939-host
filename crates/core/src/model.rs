@@ -174,6 +174,7 @@ pub struct ServerView {
     pub started_at: Option<String>,
     pub memory_used_mb: Option<u64>,
     pub mspt: Option<f64>,
+    pub tps: Option<f64>,
     pub mspt_p95: Option<f64>,
     pub last_error: Option<String>,
     pub needs_restart: bool,

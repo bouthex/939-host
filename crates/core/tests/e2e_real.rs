@@ -41,11 +41,14 @@ fn init() {
     INIT.call_once(|| {
         let t = tempfile::tempdir().unwrap();
         paths::init(t.path().to_path_buf()).unwrap();
-        if let Ok(j) = std::env::var("HOST939_TEST_JAVA25") {
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&j, paths::runtimes().join("java-25")).unwrap();
-            #[cfg(not(unix))]
-            let _ = j;
+        // Java ya instalado en la máquina de prueba (no se descarga): HOST939_TEST_JAVA<n>.
+        for major in [8, 17, 21, 25] {
+            if let Ok(j) = std::env::var(format!("HOST939_TEST_JAVA{major}")) {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&j, paths::runtimes().join(format!("java-{major}"))).unwrap();
+                #[cfg(not(unix))]
+                let _ = j;
+            }
         }
         #[allow(static_mut_refs)]
         unsafe { ROOT = Some(t) };
@@ -290,7 +293,7 @@ async fn e2e_cliente_real() {
             adjust(&mgr, &cfg, name, "", true, Stat::Xp, true, "prueba").expect("subir un nivel");
             std::thread::sleep(Duration::from_millis(300));
             assert_eq!(host939_core::playerdata::detail(&mgr, &cfg, name, "", true).unwrap().xp_level, Some(l0 + 1));
-            assert!(adjust(&mgr, &cfg, name, "", true, Stat::Food, true, "prueba").is_err(), "hambre de a uno no se ofrece conectado");
+            assert!(adjust(&mgr, &cfg, name, "", true, Stat::Food, true, "prueba").is_err(), "con el hambre llena no se puede subir más");
             println!("✔ − y + en vivo: vida {h0} → {h1}, nivel {l0} → {}", l0 + 1);
             let msg = kill(&mgr, &cfg, name, "prueba").expect("matar");
             println!("✔ matar en vivo: {msg}");
@@ -1110,4 +1113,180 @@ async fn e2e_resourcepacks_cliente_real() {
     assert!(join("0", Some(&opt), 90), "un pack opcional no impide entrar");
     println!("✔ pack opcional instalado en el perfil del jugador y ninguno obligatorio: entra sin problemas");
     mgr.stop_all();
+}
+
+
+/// Jugador conectado con el cliente real, en varias versiones (E2E_VERSIONES, separadas por coma):
+/// hambre y saturación de a un paso, vida, inventario (dar, cantidad, mover, quitar) y TPS medidos.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_jugador_en_vivo() {
+    init();
+    let script = std::env::var("CLIENTE_REAL").expect("CLIENTE_REAL");
+    let versions = std::env::var("E2E_VERSIONES").unwrap_or_else(|_| "26.2".into());
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let mut port = 25900;
+    use host939_core::playeredit::{adjust, inventory, InvOp, Stat};
+    use host939_core::playerdata::detail;
+    for mc in versions.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        port += 1;
+        let mut inp = input(&format!("Vivo {mc}"), mc, Loader::Vanilla, port);
+        inp.online_mode = false;
+        inp.difficulty = "easy".into();
+        let cfg = instance::create(inp, 8192).await.expect("crear");
+        instance::install(&mgr, cfg.id.clone()).await;
+        let cfg = instance::load(&cfg.id).unwrap();
+        assert!(cfg.installed, "{mc}: {:?}", cfg.install_error);
+        mgr.start(&probe, &cfg).expect("iniciar");
+        let rt = mgr.runtime(&cfg.id);
+        assert!(wait_for(Duration::from_secs(400), || rt.lock().unwrap().status() == RunStatus::Running), "{mc}: no arrancó");
+        assert!(wait_for(Duration::from_secs(60), || rt.lock().unwrap().reach.as_deref() == Some("ok")), "{mc}: no atiende conexiones");
+        let name = "Jugador939";
+        let java = std::env::var(format!("HOST939_TEST_JAVA{}", cfg.java_major)).map(|j| format!("{j}/bin/java")).unwrap_or_else(|_| "java".into());
+        let dir = std::env::var("CLIENTE_CACHE").map(|c| std::path::PathBuf::from(c).join(mc)).unwrap_or_else(|_| paths::root().join(format!("cliente-vivo-{mc}")));
+        let _ = std::fs::remove_dir_all(dir.join("game")); // perfil de juego nuevo en cada prueba
+        // Si la prueba falla, el cliente y el servidor se cierran igual (no quedan procesos).
+        struct Cierre<'a>(&'a Manager, String, Option<std::process::Child>);
+        impl Drop for Cierre<'_> { fn drop(&mut self) { if let Some(c) = self.2.as_mut() { let _ = c.kill(); let _ = c.wait(); } let _ = self.0.kill(&self.1); } }
+        let child = std::process::Command::new("python3").env("JAVA_BIN", java)
+            .args([&script, mc, &format!("127.0.0.1:{port}"), dir.to_str().unwrap(), name, "420"]).spawn().expect("cliente");
+        let mut cierre = Cierre(&mgr, cfg.id.clone(), Some(child));
+        let joined = wait_for(Duration::from_secs(420), || mgr.console(&cfg.id).iter().any(|l| l.contains(&format!("{name} joined the game"))));
+        if !joined {
+            let log = std::fs::read_to_string(dir.join("salida.txt")).unwrap_or_default();
+            panic!("{mc}: el cliente no entró\n{}", log.lines().rev().take(30).collect::<Vec<_>>().join("\n"));
+        }
+        // El cliente con OpenGL por software tarda en terminar de cargar el mundo (hasta entonces,
+        // desde 1.21.4, el servidor no le aplica efectos).
+        std::thread::sleep(Duration::from_secs(25));
+        let d = || detail(&mgr, &cfg, name, "", true).unwrap();
+        let tag = format!("[{mc}]");
+        // ── Hambre y saturación de a un paso ──
+        mgr.send_command(&cfg.id, &format!("gamemode survival {name}")).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let a = d();
+        println!("{tag} inicial: hambre {:?} saturación {:?}", a.food, a.saturation);
+        if std::env::var("E2E_DEPURAR").is_ok() {
+            for (sec, amp) in [(1, 239), (1, 100), (2, 100), (3, 100)] {
+                mgr.send_command(&cfg.id, &format!("effect give {name} minecraft:hunger {sec} {amp} true")).unwrap();
+                std::thread::sleep(Duration::from_millis(sec * 1000 + 600));
+                let x = d(); println!("    hunger {sec}s amp {amp}: hambre {:?} sat {:?}", x.food, x.saturation);
+                mgr.send_command(&cfg.id, &format!("effect give {name} minecraft:saturation 1 30 true")).unwrap();
+                std::thread::sleep(Duration::from_millis(500));
+                let x = d(); println!("    saturation: hambre {:?} sat {:?}", x.food, x.saturation);
+            }
+            for l in mgr.console(&cfg.id).iter().rev().take(16).rev() { println!("    consola: {l}"); }
+        }
+        let r = adjust(&mgr, &cfg, name, "", true, Stat::Food, false, "prueba");
+        if r.is_err() { for l in mgr.console(&cfg.id).iter().rev().take(40).rev() { println!("    consola: {l}"); } }
+        let m = r.expect("hambre −1");
+        let b = d();
+        println!("{tag} hambre −1: {m}");
+        assert_eq!(b.food, Some(a.food.unwrap() - 1), "{tag} hambre −1");
+        let m = adjust(&mgr, &cfg, name, "", true, Stat::Food, false, "prueba").expect("hambre −1 otra vez");
+        let c = d();
+        println!("{tag} hambre −1: {m}");
+        assert_eq!(c.food, Some(b.food.unwrap() - 1), "{tag} hambre −1 (sin saturación)");
+        let m = adjust(&mgr, &cfg, name, "", true, Stat::Food, true, "prueba").expect("hambre +1");
+        let e = d();
+        println!("{tag} hambre +1: {m}");
+        assert_eq!(e.food, Some(c.food.unwrap() + 1), "{tag} hambre +1");
+        let s0 = e.saturation.unwrap_or(0.0);
+        let m = adjust(&mgr, &cfg, name, "", true, Stat::Saturation, true, "prueba").expect("saturación +1");
+        let f = d();
+        println!("{tag} saturación +1: {m}");
+        assert!((f.saturation.unwrap() - (s0.floor() + 1.0)).abs() < 0.01, "{tag} saturación +1: {s0} → {:?}", f.saturation);
+        let m = adjust(&mgr, &cfg, name, "", true, Stat::Saturation, false, "prueba").expect("saturación −1");
+        let g = d();
+        println!("{tag} saturación −1: {m}");
+        assert!((g.saturation.unwrap() - (f.saturation.unwrap() - 1.0)).abs() < 0.01, "{tag} saturación −1: {:?} → {:?}", f.saturation, g.saturation);
+        println!("✔ {tag} hambre y saturación de a un paso con el jugador conectado");
+        // ── Vida ──
+        let h0 = d().health.unwrap();
+        let r = adjust(&mgr, &cfg, name, "", true, Stat::Health, false, "prueba");
+        let h1 = d().health.unwrap();
+        println!("{tag} vida −1: {r:?} ({h0} → {h1})");
+        assert!(r.is_ok() && h1 < h0, "{tag} vida −1");
+        println!("✔ {tag} vida de a un paso");
+        // ── Inventario ──
+        let m = inventory(&mgr, &cfg, name, "", &InvOp::Give { item: "minecraft:diamond".into(), count: 5 }, "prueba").expect("dar");
+        println!("{tag} {m}");
+        let inv = d().inventory;
+        let dia = inv.iter().find(|i| i.id == "minecraft:diamond").expect("tiene los diamantes").clone();
+        assert_eq!(dia.count, 5);
+        let m = inventory(&mgr, &cfg, name, "", &InvOp::SetCount { group: "inv".into(), slot: dia.slot, count: 3 }, "prueba").expect("cantidad 3");
+        println!("{tag} {m}");
+        let m = inventory(&mgr, &cfg, name, "", &InvOp::SetCount { group: "inv".into(), slot: dia.slot, count: 9 }, "prueba").expect("cantidad 9");
+        println!("{tag} {m}");
+        assert_eq!(d().inventory.iter().find(|i| i.slot == dia.slot).map(|i| i.count), Some(9));
+        // Un objeto con datos (encantado) se mueve sin perderlos.
+        let ench = if host939_core::playeredit::release_at_least(mc, 21, 5) { "minecraft:diamond_sword[minecraft:enchantments={\"minecraft:sharpness\":3}]".to_string() } else if host939_core::playeredit::release_at_least(mc, 20, 5) { "minecraft:diamond_sword[minecraft:enchantments={levels:{\"minecraft:sharpness\":3}}]".to_string() } else { "minecraft:diamond_sword{Enchantments:[{id:\"minecraft:sharpness\",lvl:3s}]}".to_string() };
+        mgr.send_command(&cfg.id, &format!("give {name} {ench} 1")).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let sword = d().inventory.into_iter().find(|i| i.id == "minecraft:diamond_sword").expect("espada");
+        assert!(!sword.enchantments.is_empty(), "{tag} la espada tiene encantamiento");
+        let used: Vec<i64> = d().inventory.iter().map(|i| i.slot).collect();
+        let to = (9..36).find(|s| !used.contains(s)).unwrap();
+        let m = inventory(&mgr, &cfg, name, "", &InvOp::Move { group: "inv".into(), from: sword.slot, to }, "prueba").expect("mover");
+        println!("{tag} {m}");
+        let moved = d().inventory.into_iter().find(|i| i.slot == to).expect("en el destino");
+        assert_eq!(moved.id, "minecraft:diamond_sword");
+        assert_eq!(moved.enchantments, sword.enchantments, "{tag} conserva el encantamiento");
+        let m = inventory(&mgr, &cfg, name, "", &InvOp::Remove { group: "inv".into(), slot: to }, "prueba").expect("quitar");
+        println!("{tag} {m}");
+        assert!(!d().inventory.iter().any(|i| i.slot == to));
+        println!("✔ {tag} inventario en vivo: dar, cantidad (bajar y subir), mover con encantamiento, quitar");
+        // ── TPS medidos (tick query o debug) ──
+        host939_core::process::set_metrics_wanted(true);
+        let got = wait_for(Duration::from_secs(70), || rt.lock().unwrap().tps.is_some());
+        let (tps, mspt) = { let r = rt.lock().unwrap(); (r.tps, r.mspt) };
+        println!("{tag} TPS {tps:?} · ms por tick {mspt:?}");
+        assert!(got, "{tag} no se midieron los TPS");
+        let leftovers = std::fs::read_dir(paths::server_run_dir(&cfg.id).join("debug")).map(|r| r.count()).unwrap_or(0);
+        assert_eq!(leftovers, 0, "{tag} quedaron perfiles de debug");
+        println!("✔ {tag} TPS medidos");
+        if let Some(mut c) = cierre.2.take() { let _ = c.kill(); let _ = c.wait(); }
+        mgr.stop(&cfg.id).unwrap();
+        assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
+    }
+}
+
+
+/// Fabric 1.14 (el caso real que daba «ninguno»): el buscador encuentra mods de rendimiento que
+/// funcionan en el servidor, se instalan y el servidor arranca con ellos (Java 8 real).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn e2e_optimizacion_fabric_vieja() {
+    use host939_core::optimize;
+    init();
+    let rec = Arc::new(Recorder::default());
+    let mgr = Manager::new(rec.clone());
+    let probe = Probe::new();
+    let mc = std::env::var("E2E_MC_VIEJA").unwrap_or_else(|_| "1.14".into());
+    let cs = optimize::candidates(&modrinth::Modrinth, &mc, Loader::Fabric, &[]).await.unwrap();
+    for c in &cs { println!("  Fabric {mc} · {:<24} {} {} {}", c.slug, if c.available { "disponible" } else { "—" }, c.version_number.clone().unwrap_or_default(), c.unavailable_reason.clone().unwrap_or_default()); }
+    let avail: Vec<String> = cs.iter().filter(|c| c.available).map(|c| c.slug.clone()).collect();
+    assert!(!avail.is_empty(), "Fabric {mc}: ningún mod de rendimiento disponible");
+    // Se instalan todos los disponibles que no choquen entre sí.
+    let mut pick: Vec<String> = vec![];
+    for c in cs.iter().filter(|c| c.available) { if !c.avoid_with.iter().any(|a| pick.contains(a)) { pick.push(c.slug.clone()); } }
+    let mut inp = input("Optimizado viejo", &mc, Loader::Fabric, 25966);
+    inp.optimize = pick.clone();
+    let cfg = instance::create(inp, 8192).await.unwrap();
+    instance::install(&mgr, cfg.id.clone()).await;
+    let cfg = instance::load(&cfg.id).unwrap();
+    assert!(cfg.installed, "{:?}", cfg.install_error);
+    let man = mods::load_manifest(&cfg.id);
+    println!("  instalados: {:?}", man.mods.iter().map(|m| m.title.as_str()).collect::<Vec<_>>());
+    assert!(!man.mods.is_empty(), "no se instaló ninguno");
+    mgr.start(&probe, &cfg).expect("iniciar");
+    let rt = mgr.runtime(&cfg.id);
+    let ok = wait_for(Duration::from_secs(400), || { let s = rt.lock().unwrap().status(); s == RunStatus::Running || s == RunStatus::Crashed });
+    let st = rt.lock().unwrap().status();
+    assert!(ok && st == RunStatus::Running, "Fabric {mc} con mods de rendimiento no arrancó:\n{}", mgr.console(&cfg.id).iter().rev().take(40).rev().cloned().collect::<Vec<_>>().join("\n"));
+    println!("✔ Fabric {mc}: arrancó con {} mods de rendimiento (Java {})", man.mods.len(), cfg.java_major);
+    mgr.stop(&cfg.id).unwrap();
+    assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
 }

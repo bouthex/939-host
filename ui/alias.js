@@ -52,3 +52,18 @@ A['alias-hosts'] = async (el) => {
   await loadAliases();
   tabRefresh.summary?.();
 };
+
+/* Una dirección .939host que llegó del grupo y todavía no está activa en esta PC: se avisa una
+   vez por dirección (sin esto, la persona tenía que encontrarla en la pantalla del servidor). */
+async function offerGroupAliases() {
+  const st = await loadAliases();
+  const pend = (st?.items || []).filter((x) => !x.inHosts && !x.error);
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem('alias-ofrecidas') || '[]'); } catch { seen = []; }
+  const nuevas = pend.filter((x) => !seen.includes(x.address));
+  if (!nuevas.length) return;
+  try { localStorage.setItem('alias-ofrecidas', JSON.stringify([...seen, ...nuevas.map((x) => x.address)])); } catch { /* sin almacenamiento */ }
+  const r = await dialog({ title: 'Dirección del grupo', confirm: 'Activar',
+    body: `<p>Tu grupo usa ${nuevas.map((x) => `<b class="mono">${esc(x.address)}</b>`).join(', ')} para entrar desde Minecraft (lleve a la PC que aloje el servidor en ese momento, también con el chat de voz).</p><p class="sm t2">Para que funcione en esta PC, Windows pide permiso una vez para «Windows PowerShell», que agrega la dirección al archivo hosts. No cambia nada más.</p>` });
+  if (r) await A['alias-hosts']();
+}

@@ -319,6 +319,9 @@ pub struct RunStats {
     /// Milisegundos por tick (promedio). `None`: esta versión de Minecraft no lo informa.
     pub mspt: Option<f64>,
     pub mspt_p95: Option<f64>,
+    /// Ticks por segundo medidos (también en versiones que no informan el tiempo por tick).
+    #[serde(default)]
+    pub tps: Option<f64>,
     /// Memoria en uso del proceso de Java y la asignada.
     pub memory_mb: Option<u64>,
     pub memory_max_mb: u32,
@@ -1337,6 +1340,13 @@ impl GroupNode {
             }
         });
         routes.insert(server.to_string(), task);
+        // Voz también por esta dirección (127.0.0.1): Simple Voice Chat usa la misma IP con la que
+        // se entró al servidor y el puerto de voz de la anfitriona.
+        let vkey = format!("voice-watch-route:{server}");
+        if let Some(t) = routes.remove(&vkey) { t.abort(); }
+        let node = self.clone();
+        let sid = server.to_string();
+        routes.insert(vkey, tokio::spawn(async move { node.voice_watch(&sid, std::net::Ipv4Addr::LOCALHOST).await; }));
         Ok(port)
     }
 
@@ -1371,21 +1381,27 @@ impl GroupNode {
     /// Mantiene la escucha de voz de una dirección: abierta en el puerto de voz que informa la
     /// anfitriona (si es otra PC y tiene Simple Voice Chat), cerrada si no.
     async fn voice_watch(&self, server: &str, ip: std::net::Ipv4Addr) {
-        let mut open: Option<(u16, tokio::task::JoinHandle<()>)> = None;
+        // Al cerrar la escucha (se aborta esta tarea) también se cierra el socket de voz.
+        struct Abort(tokio::task::JoinHandle<()>);
+        impl Drop for Abort { fn drop(&mut self) { self.0.abort(); } }
+        let mut open: Option<(u16, Abort)> = None;
         loop {
             let want = lease::read(server).filter(|l| l.state == LeaseState::Hosting && l.host != self.inner.me).and_then(|l| {
                 self.inner.with_state(server, |s| s.infos.get(&l.host).and_then(|i| i.voice_port))
             });
+            // En 127.0.0.1 el puerto de voz podría necesitarlo un servidor de esta misma PC con
+            // Simple Voice Chat: si hay uno encendido con ese puerto, se le deja libre.
+            let want = want.filter(|w| !ip.is_loopback() || ip != std::net::Ipv4Addr::LOCALHOST || !host939_core::instance::list_configs().iter().any(|c| c.id != server && self.inner.local.is_running(&c.id) && host939_core::voice::port(&c.id, self.inner.local.mc_port(&c.id)) == Some(*w)));
             match (&open, want) {
                 (Some((p, _)), Some(w)) if *p == w => {}
                 (_, Some(w)) => {
-                    if let Some((_, t)) = open.take() { t.abort(); }
+                    open = None;
                     match self.open_voice(server, std::net::SocketAddr::from((ip, w))).await {
-                        Ok(t) => open = Some((w, t)),
+                        Ok(t) => open = Some((w, Abort(t))),
                         Err(e) => debug(&format!("voz: no se pudo escuchar en {ip}:{w}: {e}")),
                     }
                 }
-                (Some(_), None) => { if let Some((_, t)) = open.take() { t.abort(); } }
+                (Some(_), None) => { open = None; }
                 (None, None) => {}
             }
             tokio::time::sleep(self.inner.timing.poll).await;
@@ -1443,7 +1459,9 @@ impl GroupNode {
     }
 
     pub async fn close_route(&self, server: &str) {
-        if let Some(t) = self.inner.routes.lock().await.remove(server) { t.abort(); }
+        let mut r = self.inner.routes.lock().await;
+        if let Some(t) = r.remove(server) { t.abort(); }
+        if let Some(t) = r.remove(&format!("voice-watch-route:{server}")) { t.abort(); }
     }
 
     /* ── Encender, pasar, soltar, recuperar ── */
@@ -2260,6 +2278,15 @@ impl Inner {
     /// lo necesario para jugar (quién aloja, si está encendido, la revisión del grupo); nunca
     /// direcciones de red, puntos de restauración ni capacidad de hardware. Las direcciones solo
     /// van a quien puede hostear, y sin IPs cuando hay relays.
+    /// ¿Esta PC tiene internet? Con relays: conectada a su relay. Sin relays (desactivados en
+    /// Configuración) no hay forma de saberlo y se asume que sí.
+    fn internet_ok(&self) -> bool {
+        use iroh::Watcher as _;
+        if std::env::var("H939_PRUEBA_SIN_INTERNET").is_ok() { return false; }
+        let st = self.ep.home_relay_status().get();
+        st.is_empty() || st.iter().any(|r| r.is_connected())
+    }
+
     fn my_links(&self, server: &str) -> Vec<LinkQuality> {
         self.with_state(server, |s| s.net.iter().map(|(n, q)| link_from_samples(n, q, s.direct.get(n).copied(), s.kbps_from.get(n).copied())).collect())
     }
@@ -2968,6 +2995,19 @@ impl Inner {
             }
         }
         debug(&format!("{}: votos {votes}/{need} ({})", self.name(), voters.join(", ")));
+        if votes < need && share.members.len() == 2 {
+            // Dos PCs: no puede haber mayoría sin la anfitriona. Se recupera solo si la anfitriona
+            // no responde hace el doble del tiempo normal y esta PC SÍ tiene internet (está
+            // conectada a su relay): así no levanta el servidor la PC que se quedó sin conexión.
+            // Si la anfitriona vuelve, ve el permiso nuevo, se detiene y aparta su copia (no se
+            // pierde nada: queda como punto aparte para volver).
+            if since.elapsed() < self.timing.host_dead * 2 || !self.internet_ok() { return; }
+            if self.new_lease(server, l.epoch, LeaseKind::Takeover).is_err() { return; }
+            self.local.note(server, &format!("{} no responde hace más de {} s y esta PC tiene conexión: levantando el servidor acá (grupo de dos PCs).", nice(&l.host_name), since.elapsed().as_secs()));
+            self.broadcast_lease(server).await;
+            self.become_host(server, None, None).await;
+            return;
+        }
         if votes < need { return; }
         // Puede que otra PC haya avanzado mientras tanto: falla si la época cambió.
         let Ok(mut next) = lease::draft_claim(server, l.epoch, &self.name(), LeaseKind::Elected) else { return };

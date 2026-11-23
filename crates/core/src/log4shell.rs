@@ -28,8 +28,8 @@ pub enum Fix {
     Config { url: &'static str, sha1: &'static str },
 }
 
-const CFG_112_116: Fix = Fix::Config { url: "https://launcher.mojang.com/v1/objects/02937d122c86ce73319ef9975b58896fc1b491d1/log4j2_112-116.xml", sha1: "02937d122c86ce73319ef9975b58896fc1b491d1" };
-const CFG_17_111: Fix = Fix::Config { url: "https://launcher.mojang.com/v1/objects/4bb89a97a66f350bc9f73b3ca8509632682aea2e/log4j2_17-111.xml", sha1: "4bb89a97a66f350bc9f73b3ca8509632682aea2e" };
+const CFG_112_116: Fix = Fix::Config { url: "https://piston-data.mojang.com/v1/objects/02937d122c86ce73319ef9975b58896fc1b491d1/log4j2_112-116.xml", sha1: "02937d122c86ce73319ef9975b58896fc1b491d1" };
+const CFG_17_111: Fix = Fix::Config { url: "https://piston-data.mojang.com/v1/objects/4bb89a97a66f350bc9f73b3ca8509632682aea2e/log4j2_17-111.xml", sha1: "4bb89a97a66f350bc9f73b3ca8509632682aea2e" };
 
 /// Qué protección necesita una versión de Minecraft.
 pub fn fix_for(mc: &str) -> Fix {

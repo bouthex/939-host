@@ -114,6 +114,21 @@ jobs:
             dist/VERSION-DE-PRUEBA.txt
           retention-days: 30
 
+  # Los archivos de la versión de prueba también en el registro (base64 con su SHA-256), para
+  # poder bajarlos desde donde no se puede descargar el artefacto. No publica nada.
+  version-de-prueba-registro:
+    name: Versión de prueba en el registro
+    runs-on: ubuntu-24.04
+    needs: version-de-prueba
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: 939Host-version-de-prueba
+          path: dist
+      - run: |
+          cd dist && sha256sum *.exe *.zip
+          for f in *.exe *.zip SHA256SUMS.txt; do echo "@@INICIO $f"; base64 -w 120 "$f"; echo "@@FIN $f"; done
+
   version-de-prueba-windows:
     name: Versión de prueba instalada en Windows
     runs-on: windows-2025
@@ -198,6 +213,9 @@ jobs:
       - name: Mods de rendimiento (Fabric y NeoForge reales + Chunky)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_optimizacion -- --ignored --nocapture
+      - name: Mods de rendimiento en Fabric 1.14 (versión vieja, Java 8)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_optimizacion_fabric_vieja -- --ignored --nocapture
       - name: Servidor desde un modpack (.mrpack real)
         if: ${{ !cancelled() }}
         run: cargo test --locked -p host939-core --test e2e_real e2e_modpack_mrpack -- --ignored --nocapture
@@ -701,6 +719,20 @@ jobs:
         run: |
           export HOST939_TEST_JAVA25="$JAVA_HOME" JAVA_BIN="$JAVA_HOME/bin/java"
           xvfb-run -a -s "-screen 0 1280x720x24" cargo test --locked -p host939-core --test e2e_real e2e_cliente_real -- --ignored --nocapture
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Jugador conectado con el cliente real (hambre, vida, inventario, TPS · 26.2 y 1.20.4)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          CLIENTE_REAL: ${{ github.workspace }}/ci/cliente-real/cliente.py
+          E2E_VERSIONES: "26.2,1.20.4"
+        run: |
+          export HOST939_TEST_JAVA25="$JAVA_HOME_25_X64" HOST939_TEST_JAVA17="$JAVA_HOME_17_X64" HOST939_TEST_JAVA21="$JAVA_HOME_25_X64"
+          xvfb-run -a -s "-screen 0 1280x720x24" cargo test --locked -p host939-core --test e2e_real e2e_jugador_en_vivo -- --ignored --nocapture
       - name: Resource pack obligatorio y opcional con el cliente real
         if: ${{ !cancelled() }}
         timeout-minutes: 30
@@ -709,5 +741,5 @@ jobs:
           CLIENTE_REAL: ${{ github.workspace }}/ci/cliente-real/cliente.py
           E2E_MC: "26.2"
         run: |
-          export HOST939_TEST_JAVA25="$JAVA_HOME" JAVA_BIN="$JAVA_HOME/bin/java"
+          export HOST939_TEST_JAVA25="$JAVA_HOME_25_X64" JAVA_BIN="$JAVA_HOME_25_X64/bin/java"
           xvfb-run -a -s "-screen 0 1280x720x24" cargo test --locked -p host939-core --test e2e_real e2e_resourcepacks_cliente_real -- --ignored --nocapture
