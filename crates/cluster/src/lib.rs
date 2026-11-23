@@ -252,6 +252,62 @@ pub struct Info {
     /// Estadísticas reales del servidor encendido en esta PC (solo la anfitriona las informa).
     #[serde(default)]
     pub stats: Option<RunStats>,
+    /// Calidad de la conexión medida desde esta PC hacia cada otra PC del grupo.
+    #[serde(default)]
+    pub links: Vec<LinkQuality>,
+}
+
+/// Calidad medida de una conexión entre dos PCs del grupo (desde la que informa hacia `node`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkQuality {
+    pub node: String,
+    pub rtt_ms: Option<u32>,
+    pub jitter_ms: Option<u32>,
+    /// Consultas sin respuesta, en % de las últimas.
+    pub loss_pct: u32,
+    pub samples: u32,
+    /// Directa (no pasa por un relay).
+    pub direct: Option<bool>,
+    /// Velocidad medida desde `node` hacia esta PC al copiar el mundo (kbit/s).
+    pub kbps_from: Option<u32>,
+}
+
+/// Resume las muestras de una conexión: mediana, variación media entre muestras y pérdida.
+pub fn link_from_samples(node: &str, q: &std::collections::VecDeque<Option<u32>>, direct: Option<bool>, kbps_from: Option<u32>) -> LinkQuality {
+    let ok: Vec<u32> = q.iter().flatten().copied().collect();
+    let mut sorted = ok.clone(); sorted.sort();
+    let rtt = sorted.get(sorted.len() / 2).copied();
+    let jitter = (ok.len() >= 2).then(|| (ok.windows(2).map(|w| w[0].abs_diff(w[1]) as u64).sum::<u64>() / (ok.len() as u64 - 1)) as u32);
+    let loss = if q.is_empty() { 0 } else { ((q.len() - ok.len()) * 100 / q.len()) as u32 };
+    LinkQuality { node: node.into(), rtt_ms: rtt, jitter_ms: jitter, loss_pct: loss, samples: q.len() as u32, direct, kbps_from }
+}
+
+/// Puntaje de una conexión (0 a 100): latencia, variación, pérdida y si es directa.
+pub fn link_score(l: &LinkQuality) -> f64 {
+    let Some(rtt) = l.rtt_ms else { return 0.0 };
+    let lat = (1.0 - (rtt as f64 - 25.0).max(0.0) / 275.0).clamp(0.0, 1.0);
+    let jit = (1.0 - l.jitter_ms.unwrap_or(0) as f64 / 80.0).clamp(0.0, 1.0);
+    let loss = (1.0 - l.loss_pct as f64 / 15.0).clamp(0.0, 1.0);
+    let path = match l.direct { Some(false) => 0.8, _ => 1.0 };
+    100.0 * (0.45 * lat + 0.25 * jit + 0.30 * loss) * path
+}
+
+/// Recomendación de anfitriona para el grupo.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HostRank {
+    pub node: String,
+    pub name: String,
+    /// Total 0 a 100 (la red pesa más: 55 %; equipo 30 %; velocidad de subida 15 %).
+    pub score: u32,
+    pub network: Option<u32>,
+    pub hardware: u32,
+    pub upload_kbps: Option<u32>,
+    pub reasons: Vec<String>,
+    pub recommended: bool,
+    /// Por qué no puede alojar ahora (sin copia, no permite alojar, desconectada).
+    pub blocked: Option<String>,
 }
 
 /// Estadísticas del servidor encendido, medidas en la PC que lo aloja.
@@ -334,6 +390,13 @@ struct SrvState {
     answer: Option<(bool, String, Instant)>,
     /// Veces que una PC dejó de responder desde que se abrió 939 Host (estabilidad).
     drops: HashMap<String, u32>,
+    /// Últimas consultas a cada PC: tiempo de ida y vuelta medido (ms) o `None` si no respondió.
+    /// Con esto se calculan latencia, variación (jitter) y pérdida reales entre PCs del grupo.
+    net: HashMap<String, std::collections::VecDeque<Option<u32>>>,
+    /// Velocidad medida al copiar el mundo desde cada PC (kbit/s): su subida real hacia esta.
+    kbps_from: HashMap<String, u32>,
+    /// Si la conexión con cada PC es directa (true) o pasa por un relay (false).
+    direct: HashMap<String, bool>,
     /// PCs con una consulta en curso (no se les manda otra hasta que respondan o venza).
     inflight: HashSet<String>,
     /// Respuestas recibidas que todavía no se procesaron (permiso, grupo, nombres).
@@ -426,6 +489,8 @@ pub struct GroupStatus {
     pub members: Vec<MemberStatus>,
     /// Si esta PC puede pedir ser anfitriona ahora (y si no, por qué).
     pub can_request: Result<(), String>,
+    /// PCs ordenadas por lo bien que alojarían el servidor (red, equipo y subida medidos).
+    pub ranking: Vec<HostRank>,
     /// Solicitud recibida (esta PC es la anfitriona).
     pub incoming_request: Option<RequestView>,
     /// Solicitud enviada por esta PC que espera respuesta.
@@ -1686,7 +1751,7 @@ impl GroupNode {
             host_state,
             server: server.into(), me: inner.me.clone(), lease: l, i_am_host, host_online, my_latest, has_copy: has_copy(server), fenced, busy,
             can_start, auto_failover: share.auto_failover, handover_on_quit: share.handover_on_quit, majority: majority(share.members.len()), members,
-            can_request, incoming_request, outgoing_request, last_answer,
+            can_request, incoming_request, outgoing_request, last_answer, ranking: inner.host_ranking(server),
         }
     }
 
@@ -2193,6 +2258,65 @@ impl Inner {
     /// lo necesario para jugar (quién aloja, si está encendido, la revisión del grupo); nunca
     /// direcciones de red, puntos de restauración ni capacidad de hardware. Las direcciones solo
     /// van a quien puede hostear, y sin IPs cuando hay relays.
+    fn my_links(&self, server: &str) -> Vec<LinkQuality> {
+        self.with_state(server, |s| s.net.iter().map(|(n, q)| link_from_samples(n, q, s.direct.get(n).copied(), s.kbps_from.get(n).copied())).collect())
+    }
+
+    /// Ranking de PCs para alojar: red medida entre las PCs del grupo (55 %), equipo (30 %) y
+    /// velocidad de subida medida al copiar el mundo (15 %). Con explicación de cada puesto.
+    fn host_ranking(&self, server: &str) -> Vec<HostRank> {
+        let share = network::load_share(server);
+        let window = self.timing.host_dead;
+        let my_links = self.my_links(server);
+        let (infos, online): (HashMap<String, Info>, HashSet<String>) = self.with_state(server, |s| (s.infos.clone(), s.last_ok.iter().filter(|(_, t)| t.elapsed() < window).map(|(n, _)| n.clone()).collect()));
+        let my_hw = self.local.score();
+        let mine_copy = has_copy(server);
+        let cands: Vec<&Member> = share.members.iter().filter(|m| m.can_host()).collect();
+        let max_hw = cands.iter().map(|m| if m.node_id == self.me { my_hw } else { infos.get(&m.node_id).map(|i| i.score).unwrap_or(0) }).max().unwrap_or(1).max(1);
+        // Conexión entre dos PCs: lo que midió cualquiera de las dos (se usa la peor si ambas midieron).
+        let link = |a: &str, b: &str| -> Option<LinkQuality> {
+            let from = |x: &str, y: &str| -> Option<LinkQuality> {
+                if x == self.me { my_links.iter().find(|l| l.node == y).cloned() } else { infos.get(x).and_then(|i| i.links.iter().find(|l| l.node == y).cloned()) }
+            };
+            match (from(a, b), from(b, a)) {
+                (Some(x), Some(y)) => Some(if link_score(&x) <= link_score(&y) { x } else { y }),
+                (x, y) => x.or(y),
+            }
+        };
+        let mut out: Vec<HostRank> = cands.iter().map(|m| {
+            let is_me = m.node_id == self.me;
+            let i = infos.get(&m.node_id);
+            let hw = if is_me { my_hw } else { i.map(|i| i.score).unwrap_or(0) };
+            let hardware = (hw as f64 * 100.0 / max_hw as f64).round() as u32;
+            let others: Vec<&Member> = share.members.iter().filter(|o| o.node_id != m.node_id).collect();
+            let ls: Vec<LinkQuality> = others.iter().filter_map(|o| link(&m.node_id, &o.node_id)).filter(|l| l.samples >= 3).collect();
+            let network = (!ls.is_empty()).then(|| (ls.iter().map(link_score).sum::<f64>() / ls.len() as f64).round() as u32);
+            // Subida: lo que midieron las demás PCs al copiar el mundo desde esta.
+            let ups: Vec<u32> = others.iter().filter_map(|o| if o.node_id == self.me { my_links.iter().find(|l| l.node == m.node_id).and_then(|l| l.kbps_from) } else { infos.get(&o.node_id).and_then(|i| i.links.iter().find(|l| l.node == m.node_id)).and_then(|l| l.kbps_from) }).collect();
+            let upload_kbps = (!ups.is_empty()).then(|| ups.iter().sum::<u32>() / ups.len() as u32);
+            let up_score = upload_kbps.map(|k| (k as f64 / 20_000.0).min(1.0) * 100.0).unwrap_or(50.0);
+            let score = (0.55 * network.map(|n| n as f64).unwrap_or(50.0) + 0.30 * hardware as f64 + 0.15 * up_score).round() as u32;
+            let mut reasons = vec![];
+            if let Some(n) = network {
+                let worst = ls.iter().min_by(|a, b| link_score(a).partial_cmp(&link_score(b)).unwrap()).unwrap();
+                let avg_rtt = ls.iter().filter_map(|l| l.rtt_ms).sum::<u32>() / ls.len().max(1) as u32;
+                reasons.push(format!("Red {n}/100: {avg_rtt} ms en promedio con las demás PCs{}{}.",
+                    if ls.iter().any(|l| l.loss_pct > 0) { format!(", hasta {} % de consultas perdidas", ls.iter().map(|l| l.loss_pct).max().unwrap_or(0)) } else { String::new() },
+                    if ls.iter().any(|l| l.direct == Some(false)) { ", alguna conexión por relay".to_string() } else { String::new() }));
+                if worst.jitter_ms.unwrap_or(0) > 30 { reasons.push(format!("Conexión inestable con alguna PC (variación de {} ms).", worst.jitter_ms.unwrap_or(0))); }
+            } else { reasons.push("Todavía no hay mediciones de red suficientes con esta PC (hace falta que esté conectada un rato).".into()); }
+            reasons.push(format!("Equipo {hardware}/100 (CPU y memoria libre, comparado con las demás PCs)."));
+            match upload_kbps { Some(k) => reasons.push(format!("Subida medida: {:.1} Mbit/s.", k as f64 / 1000.0)), None => reasons.push("Subida sin medir todavía (se mide al copiar el mundo desde esta PC).".into()) }
+            let blocked = if !(is_me || online.contains(&m.node_id)) { Some("No está conectada.".into()) }
+                else if !(if is_me { mine_copy && self.local.allow_hosting(server) } else { i.map(|i| i.can_host && i.has_copy).unwrap_or(false) }) { Some("No tiene copia del mundo o no permite alojar.".into()) }
+                else { None };
+            HostRank { node: m.node_id.clone(), name: if is_me { self.name() } else { i.map(|i| i.name.clone()).unwrap_or_else(|| m.name.clone()) }, score, network, hardware, upload_kbps, reasons, recommended: false, blocked }
+        }).collect();
+        out.sort_by(|a, b| a.blocked.is_some().cmp(&b.blocked.is_some()).then(b.score.cmp(&a.score)));
+        if let Some(f) = out.first_mut() { if f.blocked.is_none() { f.recommended = true; } }
+        out
+    }
+
     fn my_info(&self, server: &str, requester: &str) -> Info {
         let share = network::load_share(server);
         let copy = has_copy(server);
@@ -2210,6 +2334,8 @@ impl Inner {
             voice_port: if self.local.is_running(server) && lease::read(server).map(|l| l.held_by(&self.me)).unwrap_or(false) { host939_core::voice::port(server, self.local.mc_port(server)) } else { None },
             entrance: self.entrance_info(server),
             alias: host939_core::alias::load().get(server).cloned(),
+            // Solo a quien puede alojar (decide la recomendación); a una jugadora no le hace falta.
+            links: if trusted { self.my_links(server) } else { vec![] },
             stats: if self.local.is_running(server) && lease::read(server).map(|l| l.held_by(&self.me)).unwrap_or(false) { self.local.run_stats(server) } else { None },
         };
         let (state, state_detail, players) = self.state_of(server);
@@ -2286,12 +2412,20 @@ impl Inner {
 
     /// Mejor PC para hostear entre esta y las conectadas: estado más reciente, después mejor
     /// hardware, después id menor (para que todas elijan la misma).
-    fn best_candidate(&self, server: &str, include_me: bool) -> Option<String> {
+    fn best_candidate(&self, server: &str, include_me: bool) -> Option<String> { self.best_candidate_by(server, include_me, true) }
+
+    /// `by_rank`: a igual estado del mundo decide el ranking (red medida). La recuperación por
+    /// mayoría usa solo el puntaje de equipo, que todas las PCs ven igual (si cada una midiera la
+    /// red distinto, podrían no ponerse de acuerdo en quién levanta el servidor).
+    fn best_candidate_by(&self, server: &str, include_me: bool, by_rank: bool) -> Option<String> {
         let share = network::load_share(server);
         let window = self.timing.poll * 3;
         let mut c: Vec<((u64, u64), u32, String)> = vec![];
+        // A igual estado del mundo, gana la de mejor puntaje del ranking (red medida, equipo, subida).
+        let rank: HashMap<String, u32> = if by_rank { self.host_ranking(server).into_iter().map(|r| (r.node, r.score)).collect() }
+            else { self.with_state(server, |s| s.infos.iter().map(|(n, i)| (n.clone(), i.score)).collect::<HashMap<_, _>>()).into_iter().chain([(self.me.clone(), self.local.score())]).collect() };
         if include_me && has_copy(server) && share.member(&self.me).map(|m| m.can_host()).unwrap_or(false) && self.local.allow_hosting(server) {
-            c.push((fresh(&snapshots::latest(server)), self.local.score(), self.me.clone()));
+            c.push((fresh(&snapshots::latest(server)), rank.get(&self.me).copied().unwrap_or(0), self.me.clone()));
         }
         let l = lease::read(server);
         self.with_state(server, |s| {
@@ -2301,7 +2435,7 @@ impl Inner {
                 if ok && !is_host && info.can_host && share.member(node).map(|m| m.can_host()).unwrap_or(false) {
                     // Una época que esta PC no verificó no cuenta (el anuncio no tiene firma).
                     let f = match &info.latest { Some(x) if l.as_ref().map(|l| x.epoch <= l.epoch).unwrap_or(false) => x.freshness(), _ => (0, 0) };
-                    c.push((f, info.score, node.clone()));
+                    c.push((f, rank.get(node).copied().unwrap_or(0), node.clone()));
                 }
             }
         });
@@ -2453,6 +2587,12 @@ impl Inner {
             }
         }
         let info = snapshots::import_manifest(server, &man, from).map_err(|e| anyhow!(e.message))?;
+        // Velocidad real de esa PC hacia esta (solo con una copia de tamaño útil para medir).
+        let secs = started.elapsed().as_secs_f64();
+        if total >= 32 && secs > 0.5 {
+            let kbps = ((total * snapshots::BLOCK) as f64 * 8.0 / 1000.0 / secs) as u32;
+            self.with_state(server, |s| { s.kbps_from.insert(from.to_string(), kbps); });
+        }
         if total > 256 { self.local.op_end(server, &title, None); }
         if total > 0 {
             self.local.note(server, &format!("Sincronizado «{}»: {} bloques nuevos en {:.1} s.", info.label, total, started.elapsed().as_secs_f32()));
@@ -2540,9 +2680,17 @@ impl Inner {
             let me = self.clone();
             let srv = server.to_string();
             handles.push(tokio::spawn(async move {
+                let t0 = Instant::now();
                 let r = me.rpc_timeout(&node, &Req::Info { server: srv.clone() }, Duration::from_secs(4)).await;
+                let rtt = t0.elapsed().as_millis().min(60_000) as u32;
+                let direct = me.conns.lock().await.get(&(node.clone(), ALPN_CTRL)).filter(|c| c.close_reason().is_none())
+                    .and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| !p.is_relay()));
                 me.with_state(&srv, |s| {
+                    if let Some(d) = direct { s.direct.insert(node.clone(), d); }
                     s.inflight.remove(&node);
+                    let q = s.net.entry(node.clone()).or_default();
+                    q.push_back(matches!(r, Ok(Resp::Info(_))).then_some(rtt));
+                    while q.len() > 36 { q.pop_front(); }
                     match r {
                         Ok(Resp::Info(info)) => {
                             s.last_ok.insert(node.clone(), Instant::now());
@@ -2796,7 +2944,7 @@ impl Inner {
     async fn failover_check(self: &Arc<Self>, server: &str, l: &Lease, share: &ShareConfig) {
         let since = self.with_state(server, |s| s.last_ok.get(&l.host).copied()).unwrap_or(self.started);
         if since.elapsed() < self.timing.host_dead { return; }
-        let best = self.best_candidate(server, true);
+        let best = self.best_candidate_by(server, true, false);
         debug(&format!("{}: anfitrión sin respuesta hace {:?}; mejor candidata {:?}", self.name(), since.elapsed(), best.as_ref().map(|b| &b[..8])));
         let Some(best) = best else { return };
         if best != self.me { return; }
@@ -3631,5 +3779,23 @@ mod sync_sources {
         assert!(!ok((5, 3), "cand", true, false), "una jugadora no puede ser candidata");
         assert!(!vote_conditions(&l, "yo", 4, "cand", "cand", (5, 3), (5, 3), true, true), "época de la votación vieja");
         assert!(!vote_conditions(&l, "anfitriona", 5, "cand", "cand", (5, 3), (5, 3), true, true), "la anfitriona no vota contra sí misma");
+    }
+}
+
+#[cfg(test)]
+mod red_medida {
+    use super::*;
+    #[test]
+    fn latencia_variacion_y_perdida() {
+        let q: std::collections::VecDeque<Option<u32>> = [Some(20), Some(40), None, Some(30), Some(20)].into_iter().collect();
+        let l = link_from_samples("x", &q, Some(true), None);
+        assert_eq!(l.rtt_ms, Some(30), "mediana de 20,20,30,40");
+        assert_eq!(l.jitter_ms, Some(13), "(20+10+10)/3");
+        assert_eq!(l.loss_pct, 20);
+        let buena = LinkQuality { node: "a".into(), rtt_ms: Some(20), jitter_ms: Some(2), loss_pct: 0, samples: 10, direct: Some(true), kbps_from: None };
+        let relay = LinkQuality { direct: Some(false), ..buena.clone() };
+        let lejana = LinkQuality { rtt_ms: Some(250), jitter_ms: Some(60), loss_pct: 10, ..buena.clone() };
+        assert!(link_score(&buena) > 95.0 && link_score(&relay) < link_score(&buena) && link_score(&lejana) < 30.0);
+        assert_eq!(link_score(&LinkQuality { rtt_ms: None, ..buena }), 0.0, "sin respuesta no suma");
     }
 }

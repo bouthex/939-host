@@ -398,6 +398,7 @@ tabDraw.group = async (el) => {
         <div class="card pad stack"><h2>Opciones</h2><div>
           <label class="switch"><div class="grow"><b>Recuperación automática</b><span class="sm t2">Si el anfitrión deja de responder, las PCs conectadas eligen otra por mayoría (hacen falta ${g.majority} de ${g.members.length}).${g.members.length < 3 ? ' Con dos PCs no hay mayoría posible: queda «Recuperar aquí».' : ''}</span></div><input type="checkbox" id="opt-failover" ${g.autoFailover ? 'checked' : ''}></label>
           <label class="switch"><div class="grow"><b>Pasar al salir</b><span class="sm t2">Al salir de 939 Host, pasar el servidor a otra PC conectada en vez de apagarlo.</span></div><input type="checkbox" id="opt-handover" ${g.handoverOnQuit ? 'checked' : ''}></label></div></div>
+        ${rankingCard(g)}
       </div>
       <div class="stack" style="gap:16px">
         <div class="card"><div class="card-head"><h2>PCs del grupo</h2><span class="sm t3">${online} de ${g.members.length} conectadas</span></div><div class="list">
@@ -673,6 +674,18 @@ A['remote-stop'] = async (el) => {
 };
 
 /* Estado del servidor en la PC que lo aloja: el mismo para todas las PCs del grupo. */
+/* Qué PC conviene que aloje el servidor: red medida entre las PCs del grupo (pesa más), equipo
+   y subida. Es una recomendación: la elección sigue siendo manual. */
+function rankingCard(g) {
+  const r = g.ranking || [];
+  if (r.length < 2) return '';
+  return `<div class="card pad stack"><div class="spread"><h2>Mejor PC para alojar</h2><span class="xs t3">Red 55 % · equipo 30 % · subida 15 %</span></div>
+    <div class="list">${r.map((x) => `<div class="li" style="align-items:flex-start"><div class="grow stack" style="gap:2px">
+      <div class="row" style="gap:8px"><b>${esc(x.name)}</b>${x.recommended ? '<span class="chip s fill">Recomendada</span>' : ''}${x.blocked ? `<span class="chip s">${esc(x.blocked)}</span>` : ''}<span class="mono sm t2" style="margin-left:auto">${x.score}/100</span></div>
+      ${x.reasons.map((t) => `<span class="xs t3">${esc(t)}</span>`).join('')}</div></div>`).join('')}</div>
+    <p class="xs t3" style="margin:0">Medido en vivo entre las PCs del grupo (latencia, variación y pérdida de las consultas de los últimos minutos; subida al copiar el mundo). Para cambiar de anfitriona usá «Solicitar ser anfitrión» o «Pasar a…».</p></div>`;
+}
+
 const REMOTE_STATE = { stopped: 'Apagado', starting: 'Iniciando', preparing: 'Preparando', ready: 'Listo', running: 'En ejecución', saving: 'Guardando',
   restarting: 'Reiniciando', transferring: 'Transfiriendo anfitrión', recovering: 'Recuperándose', error: 'Error', unreachable: 'Sin respuesta', unknown: 'En otra PC' };
 function remoteStatePill(g) {
