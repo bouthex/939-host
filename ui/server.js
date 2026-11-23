@@ -71,9 +71,16 @@ function drawHeader() {
     const host = g.members.find((m) => m.isHost);
     const canReq = g.canRequest && g.canRequest.Ok !== undefined;
     const coHost = g.members.find((m) => m.isMe)?.role !== 'jugador';
+    // Iniciar y Detener actúan en la PC que lo aloja (no cambian de anfitriona). Pedir alojarlo
+    // en esta PC es otra acción («Solicitar ser anfitrión»).
+    const hs = g.hostState?.state;
+    const canStartThere = g.hostOnline && (hs === 'stopped' || hs === 'error');
+    const canStopThere = coHost && g.hostOnline && ['ready', 'running', 'preparing', 'saving'].includes(hs);
     ctl = `<span class="host-chip row" style="gap:8px">${pcAvatar(host?.symbol, 26, '', host?.avatar)}<span class="sm"><span class="t3">Lo aloja</span> <b>${esc(host?.name || g.lease.hostName || 'otra PC')}</b>${g.hostOnline ? '' : ' <span class="t3">· no responde</span>'}</span></span>`
+      + (canStartThere ? btn('start', 'play', 'Iniciar', { pri: true, disabled: !!pendingOps[c.id], title: `Se enciende en la PC de ${host?.name || 'quien lo aloja'}` }) : '')
+      + (canStopThere ? `<button class="btn" data-a="remote-stop" data-id="${id}" data-tone="halt" title="Lo apaga la PC que lo aloja, guardando el mundo">${icon('stop', 16)}Detener</button>` : '')
       + (g.outgoingRequest ? `<button class="btn" disabled>${SHAPES.ring}Solicitud enviada</button>`
-        : coHost ? `<button class="btn pri" data-a="req-send" data-id="${id}" ${canReq ? '' : `disabled title="${esc(g.canRequest?.Err || '')}"`}>${icon('host', 16)}Solicitar ser anfitrión</button>` : '');
+        : coHost ? `<button class="btn ${canStartThere ? '' : 'pri'}" data-a="req-send" data-id="${id}" ${canReq ? '' : `disabled title="${esc(g.canRequest?.Err || '')}"`}>${icon('host', 16)}Solicitar ser anfitrión</button>` : '');
   } else if (s.key === 'stopped' || s.key === 'error') {
     ctl = `${s.key === 'error' && c.installed ? btn('repair', 'wrench', 'Reparar') : ''}${btn('start', 'play', 'Iniciar', { pri: true, disabled: busy })}`;
   } else {
@@ -97,7 +104,7 @@ function drawHeader() {
     ${g?.outgoingRequest ? `<div class="note">${SHAPES.ring}<div class="grow"><b>Le pediste a ${esc(g.outgoingRequest.hostName)} alojar este servidor</b><span class="sm t2">Le apareció un aviso en su 939 Host. La solicitud vence en ${fmtDuration(g.outgoingRequest.expiresInSecs)}.</span></div><button class="btn s" data-a="req-cancel" data-id="${id}">Cancelar</button></div>` : ''}
     ${g?.lastAnswer && !g.outgoingRequest ? `<div class="note ${g.lastAnswer.accepted ? '' : 'strong'}">${icon(g.lastAnswer.accepted ? 'check' : 'info')}<div class="grow"><b>${g.lastAnswer.accepted ? 'Solicitud aceptada' : 'Solicitud sin éxito'}</b><span class="sm t2">${esc(g.lastAnswer.message)}</span></div></div>` : ''}
     ${g?.incomingRequest ? `<div class="note strong">${pcAvatar(g.incomingRequest.symbol, 32)}<div class="grow"><b>${esc(g.incomingRequest.name)} quiere alojar este servidor</b><span class="sm t2">${g.incomingRequest.warnings.length ? `${g.incomingRequest.warnings.length === 1 ? '1 aviso' : `${g.incomingRequest.warnings.length} avisos`} para revisar antes de decidir.` : 'No vemos limitaciones importantes.'}</span></div><div class="btns"><button class="btn s" data-a="req-no" data-id="${id}">Rechazar</button><button class="btn s pri" data-a="req-review" data-id="${id}">Revisar</button></div></div>` : ''}
-    ${v.lastError && !v.installing && !isActive(v) ? `<div class="note strong">${icon('alert')}<div class="grow"><b>${!c.installed ? 'La instalación no se completó' : 'El servidor se detuvo con un error'}</b><span class="sm t2">${esc(v.lastError)}</span></div>
+    ${(v.lastError || !c.installed) && !v.installing && !isActive(v) ? `<div class="note strong">${icon('alert')}<div class="grow"><b>${!c.installed ? 'La instalación no se completó' : 'El servidor se detuvo con un error'}</b><span class="sm t2">${esc(v.lastError || 'La instalación se interrumpió (por ejemplo, se cerró 939 Host mientras descargaba).')}</span></div>
       <div class="btns">${!c.installed ? `<button class="btn s pri" data-a="reinstall">Reintentar</button>` : `<button class="btn s" data-a="tab" data-v="console">Ver consola</button><button class="btn s pri" data-a="repair" data-id="${id}">${icon('wrench', 14)}Reparar</button>`}</div></div>` : ''}
     ${v.needsRestart && isActive(v) ? `<div class="note">${icon('restart')}<div class="grow"><b>Hay cambios que se aplican al reiniciar</b><span class="sm t2">Ajustes o mods nuevos quedan activos después de reiniciar el servidor.</span></div><button class="btn s" data-a="restart" data-id="${id}">Reiniciar</button></div>` : ''}`;
 }
@@ -649,6 +656,13 @@ A.delete = async () => {
   if (isActive(state.server)) { toast('Detené el servidor antes de borrarlo.', 'error'); return; }
   if (!(await dialog({ title: `Borrar «${name}»`, danger: true, body: '<p>El servidor, su mundo, sus mods y sus copias van a la <b>Papelera</b>. Se conservan 30 días y podés restaurarlos completos desde <b>Papelera</b> en la barra lateral.</p>', confirm: 'Mover a la Papelera', requireText: name }))) return;
   try { await invoke('delete_server', { id: state.params.id, confirmName: name }); toast('Movido a la Papelera · se conserva 30 días'); srvEdit.cfg = null; guards.length = 0; refreshTrashCount(); go('servers'); } catch (e) { fail(e); }
+};
+
+A['remote-stop'] = async (el) => {
+  const id = el.dataset.id;
+  if (!(await dialog({ title: 'Detener el servidor', body: '<p>Lo apaga la PC que lo aloja: guarda el mundo y los jugadores conectados se desconectan.</p>', confirm: 'Detener' }))) return;
+  el.disabled = true;
+  try { toast(await invoke('group_stop_remote', { id })); } catch (e) { fail(e); el.disabled = false; }
 };
 
 /* Estado del servidor en la PC que lo aloja: el mismo para todas las PCs del grupo. */

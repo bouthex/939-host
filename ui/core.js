@@ -429,7 +429,9 @@ function serverState(v) {
     else if (pend.what === 'start') return { key: 'starting', label: 'Iniciando servidor…', shape: 'ring', detail: 'Revisando que todo esté listo para arrancar' };
   }
   if (v.installing) return { key: 'starting', label: 'Instalando', shape: 'ring' };
-  if (!v.config.installed) return v.lastError ? { key: 'error', label: 'Instalación fallida', shape: 'tri' } : { key: 'starting', label: 'Preparando', shape: 'ring' };
+  // Sin instalar y sin instalación en curso (p. ej. la app se cerró a mitad): no es «Preparando»
+  // para siempre; se ofrece reintentar.
+  if (!v.config.installed) return { key: 'error', label: v.lastError ? 'Instalación fallida' : 'Instalación incompleta', shape: 'tri', detail: v.lastError ? '' : 'Reintentá la instalación' };
   if (v.restarting) return { key: 'restarting', label: 'Reiniciando', shape: 'ring' };
   switch (v.status) {
     case 'running':

@@ -34,7 +34,12 @@ struct LinePayload<'a> { id: &'a str, line: &'a str }
 struct ModsPayload<'a> { id: &'a str, message: &'a str, fraction: f64 }
 
 impl Events for TauriEvents {
-    fn server_changed(&self, id: &str) { let _ = self.0.emit("server-changed", IdPayload { id }); }
+    fn server_changed(&self, id: &str) {
+        let _ = self.0.emit("server-changed", IdPayload { id });
+        // Si esta PC aloja el servidor de un grupo, avisa ya a las demás PCs (estado en vivo).
+        let (app, id) = (self.0.clone(), id.to_string());
+        tauri::async_runtime::spawn(async move { if let Some(n) = app.state::<network::Cluster>().try_node() { n.push_state(&id); } });
+    }
     fn console_line(&self, id: &str, line: &str) { let _ = self.0.emit("console-line", LinePayload { id, line }); }
     fn install_progress(&self, p: &InstallProgress) { let _ = self.0.emit("install-progress", p); }
     fn mods_progress(&self, id: &str, message: &str, fraction: f64) { let _ = self.0.emit("mods-progress", ModsPayload { id, message, fraction }); }
@@ -424,6 +429,7 @@ fn main() {
             packs::rp_set,
             packs::rp_open_folder,
             network::client_prepare_undo,
+            network::group_stop_remote,
             network::client_import_prefs,
             network::minecraft_dirs,
             network::minecraft_dir_set,

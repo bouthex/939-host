@@ -34,11 +34,18 @@ function serverRow(s) {
     ${srvLogo(s.logoUrl)}
     <div class="grow"><div class="b ellipsis">${esc(c.name)}</div><div class="sm t3 ellipsis">${versionLabel(c)}${c.description ? ` · ${esc(c.description)}` : ''}</div></div>
     <div class="cols">
-      <div class="c" style="min-width:132px">${away ? `<span class="st">${away.hostOnline ? SHAPES.dot : SHAPES.off}En otra PC</span><span class="xs t3 ellipsis">Lo aloja ${esc(away.hostName || 'otra PC')}</span>` : `${stateHTML(s)}${st.detail ? `<span class="xs t3 ellipsis">${esc(st.detail)}</span>` : ''}`}</div>
-      <div class="c"><span class="xs t3">Jugadores</span><span class="mono sm">${s.status === 'running' ? `${s.players.length}/${c.maxPlayers}` : '—'}</span></div>
+      <div class="c" style="min-width:132px">${away ? awayState(away) : `${stateHTML(s)}${st.detail ? `<span class="xs t3 ellipsis">${esc(st.detail)}</span>` : ''}`}</div>
+      <div class="c"><span class="xs t3">Jugadores</span><span class="mono sm">${away ? (['running', 'ready'].includes(away.state) ? `${away.players}/${c.maxPlayers}` : '—') : s.status === 'running' ? `${s.players.length}/${c.maxPlayers}` : '—'}</span></div>
       <div class="c opt"><span class="xs t3">Memoria</span><span class="mono sm">${s.memoryUsedMb != null ? fmtMB(s.memoryUsedMb) : fmtMB(c.memoryMb)}</span></div>
       <div class="c" style="min-width:96px;align-items:flex-end">${away ? pcAvatar(away.hostSymbol, 30) : quickAction(s)}</div>
     </div>${icon('chev', 16)}</div>`;
+}
+/* Estado real del servidor en la PC que lo aloja (el mismo que ven todas las PCs del grupo). */
+function awayState(a) {
+  const st = !a.hostOnline ? 'unreachable' : (a.state || 'unknown');
+  const label = REMOTE_STATE[st] || 'En otra PC';
+  const shape = st === 'unreachable' || st === 'stopped' ? SHAPES.off : ['starting', 'preparing', 'saving', 'restarting', 'transferring', 'recovering'].includes(st) ? SHAPES.ring : st === 'error' ? SHAPES.tri : SHAPES.dot;
+  return `<span class="st">${shape}${esc(label)}</span><span class="xs t3 ellipsis" title="${esc(a.detail || '')}">En la PC de ${esc(a.hostName || 'otra PC')}</span>`;
 }
 function quickAction(s) {
   const id = esc(s.config.id);

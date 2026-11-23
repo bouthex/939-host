@@ -149,7 +149,7 @@ fn group_protocol_fake_servers() {
     // B no puede encender en paralelo: A lo tiene encendido. (Con A apagada se lo pasaría sola:
     // ver `tierra_e_inventario_no_retroceden`.)
     a.ok(&format!("start {sid}"));
-    assert!(b.err(&format!("start {sid}")).contains("hosteando"));
+    assert!(b.err(&format!("start {sid}")).contains("encendido en la PC"));
     a.ok(&format!("write {sid} marca.txt m1"));
     let s1 = a.ok(&format!("snapshot {sid}"));
     println!("✔ A es anfitriona; B no puede encender en paralelo (un solo escritor)");
@@ -175,7 +175,7 @@ fn group_protocol_fake_servers() {
     assert!(slp(port_b).contains("hosteado por B"));
     let lb = b.status(&sid)["lease"].clone();
     println!("✔ traspaso A→B: B encendió con el mundo de A (marca m1), época {}; la misma dirección ahora lleva a B", lb["epoch"]);
-    assert!(a.err(&format!("start {sid}")).contains("hosteando"));
+    assert!(a.err(&format!("start {sid}")).contains("encendido en la PC"));
 
     // B juega y guarda; A y C copian.
     b.ok(&format!("write {sid} marca.txt m2"));
@@ -202,7 +202,7 @@ fn group_protocol_fake_servers() {
     wait("B se detiene sola", Duration::from_secs(30), || !b.ok(&format!("running {sid}")).as_bool().unwrap());
     // La copia de seguridad se toma justo después de apagar: se espera a que aparezca.
     wait("B aparta su copia", Duration::from_secs(20), || b.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
-    assert!(b.err(&format!("start {sid}")).contains("hosteando"));
+    assert!(b.err(&format!("start {sid}")).contains("encendido en la PC"));
     println!("✔ B volvió, detectó que C tomó el servidor, se detuvo y apartó su copia (no se mezclan mundos)");
 
     // ── Soltar ordenadamente: C apaga y suelta; A lo enciende con el último estado ──
@@ -708,9 +708,19 @@ fn tierra_e_inventario_no_retroceden() {
     wait("B recibe el estado final sin traspaso", Duration::from_secs(25), || fresh(&b.status(&sid)["myLatest"]) > fresh(&s1));
     println!("✔ «Detener» publicó el estado final y B lo copió");
 
-    // B enciende: A está conectada y apagada, así que se lo pasa sola.
+    // «Iniciar» en B con A conectada y apagada: se enciende en A (iniciar no es pedir ser anfitriona).
     let e = b.err(&format!("start {sid}"));
-    assert!(e.contains("te lo está pasando"), "{e}");
+    assert!(e.starts_with("PEDIDO:") && e.contains("Encendiéndose en la PC de A"), "{e}");
+    wait("A enciende a pedido de B", Duration::from_secs(30), || a.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "B no aloja por iniciar");
+    wait("B ve el estado real de A", Duration::from_secs(20), || b.status(&sid)["hostState"]["state"].as_str().map(|s| s != "stopped" && s != "unknown").unwrap_or(false));
+    // «Detener» desde B (coanfitriona): lo apaga A guardando.
+    b.ok(&format!("stopremote {sid}"));
+    wait("A se detiene a pedido de B", Duration::from_secs(30), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
+    println!("✔ B encendió y detuvo el servidor en la PC de A sin pedir ser anfitriona");
+    // Pedir ser anfitriona es otra acción: A está apagada, así que se lo pasa sola.
+    let e = b.ok(&format!("request {sid}")).to_string();
+    assert!(!e.is_empty());
     wait("B queda alojando", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
     assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "la tierra sigue colocada");
     assert_eq!(b.ok(&format!("read {sid} inventario.txt")).as_str(), Some("vacio"), "el inventario no vuelve atrás");
@@ -761,9 +771,8 @@ fn tras_un_cierre_inesperado_se_publica_lo_que_guardo_el_guardian() {
     wait("B recibe el estado que guardó el guardián", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) > fresh(&s1));
     assert!(!dir.join("pendiente-publicar").exists(), "la marca se usó una vez");
     assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "no se enciende solo");
-    // B aloja después: tiene lo jugado antes del cierre inesperado.
-    let e = b.err(&format!("start {sid}"));
-    assert!(e.contains("te lo está pasando"), "{e}");
+    // B pide alojarlo: tiene lo jugado antes del cierre inesperado.
+    b.ok(&format!("request {sid}"));
     wait("B queda alojando", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
     assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "lo jugado antes del cierre inesperado no se pierde");
     assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos anfitrionas");
@@ -801,8 +810,7 @@ fn tras_un_corte_sin_guardian_no_se_publica_lo_no_confirmado() {
     println!("    tras volver a abrir A: aviso de cierre sin ver y el grupo sigue en el último punto");
     // B pide alojar: A le pasa lo que quedó en disco (es lo más nuevo), rotulado como sin confirmar,
     // y el punto anterior sigue disponible para volver.
-    let e = b.err(&format!("start {sid}"));
-    assert!(e.contains("te lo está pasando"), "{e}");
+    b.ok(&format!("request {sid}"));
     wait("B queda alojando", Duration::from_secs(60), || b.ok(&format!("running {sid}")).as_bool().unwrap());
     assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"));
     let snaps = b.ok(&format!("snapshots {sid}")).to_string();

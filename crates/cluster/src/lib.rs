@@ -93,6 +93,8 @@ pub trait LocalHost: Send + Sync + 'static {
     /// Llegó un mensaje de un amigo (para avisar en la interfaz).
     fn friend_message(&self, _node: &str) {}
     fn run_state(&self, server: &str) -> (String, String, u32) { (if self.is_running(server) { "running" } else { "stopped" }.into(), String::new(), 0) }
+    /// El servidor que aloja otra PC quedó listo («ready») o falló («error»): un aviso por cambio.
+    fn remote_event(&self, _server: &str, _kind: &str, _host_name: &str, _detail: &str) {}
 }
 
 /// Lo que una PC cuenta de sí misma al pedir ser anfitriona (solo para mostrar y advertir).
@@ -180,6 +182,10 @@ enum Req {
     ClientMod { server: String, filename: String },
     /// Un tramo de un resource pack del servidor (por SHA-1), para entregarlo al Minecraft del jugador.
     PackChunk { server: String, sha1: String, offset: u64 },
+    /// Un integrante pide encender el servidor en esta PC (la que lo aloja o la elegida).
+    StartRemote { server: String },
+    /// Un integrante que puede alojar pide apagarlo (guardando) en esta PC.
+    StopRemote { server: String },
 }
 
 impl Req {
@@ -187,7 +193,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } | Req::PackChunk { server, .. } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } | Req::PackChunk { server, .. } | Req::StartRemote { server } | Req::StopRemote { server } => server,
         }
     }
 }
@@ -257,6 +263,7 @@ enum Resp {
     ClientMod { data: String },
     /// Tramo de un resource pack (base64) y tamaño total.
     PackChunk { data: String, total: u64 },
+    Text { text: String },
     Err { msg: String },
 }
 
@@ -310,6 +317,10 @@ struct SrvState {
     /// OP sin autorizar vistos en `ops.json` y desde cuándo: se quitan recién después de un margen
     /// (así una lista firmada que todavía viene en camino no hace quitar un OP legítimo).
     op_unauthorized: HashMap<String, Instant>,
+    /// Último estado avisado al grupo por esta PC (anfitriona): no se repite el mismo aviso.
+    pushed: Option<(String, String, u32)>,
+    /// Encendido pedido por otra PC en curso (quién lo pidió): evita dos encendidos.
+    starting_for: Option<String>,
     /// PCs a las que todavía no les llegó el aviso del estado final (estaban desconectadas o esta
     /// PC recién arrancaba): se les reenvía en cuanto responden.
     final_pending: HashSet<String>,
@@ -484,6 +495,11 @@ pub struct MemberStatus {
 
 fn majority(n: usize) -> usize { n / 2 + 1 }
 
+/// Lo que la interfaz muestra de otra PC: si cambia, se actualiza la pantalla.
+fn seen_key(i: &Info) -> (String, String, u32, bool, Option<(u64, String, bool)>) {
+    (i.state.clone(), i.state_detail.clone(), i.players, i.running, i.lease.as_ref().map(|l| (l.epoch, l.host.clone(), l.state == LeaseState::Hosting)))
+}
+
 fn fresh(s: &Option<SnapshotInfo>) -> (u64, u64) { s.as_ref().map(|s| s.freshness()).unwrap_or((0, 0)) }
 
 /// ¿Se puede copiar de `source` un punto de la época `snap_epoch`? El anuncio de un punto (época
@@ -564,7 +580,7 @@ impl GroupNode {
             ep: ep.clone(), relays, key: iroh::SecretKey::from_bytes(&secret), me, name: RwLock::new((name.to_string(), String::new())), local, timing, started: Instant::now(),
             peers: RwLock::new(peers), conns: Default::default(), state: Default::default(), routes: Default::default(),
             stopping: Default::default(), join_limit: Mutex::new(RateLimit::new(5, 30)),
-            ctrl_limit: Mutex::new(RateLimit::new(CTRL_PER_MIN, 20_000)), sync_now_limit: Mutex::new(RateLimit::new(12, 200)),
+            ctrl_limit: Mutex::new(RateLimit::new(CTRL_PER_MIN, 20_000)), sync_now_limit: Mutex::new(RateLimit::new(40, 200)),
             data_limit: Mutex::new(RateLimit::new(3000, 50_000)),
             friends_live: Default::default(), unread: Default::default(), voice_slots: Default::default(),
             entrances: Default::default(), probe_limit: Mutex::new(RateLimit::new(6, 120)),
@@ -1338,12 +1354,21 @@ impl GroupNode {
                 let online = self.inner.recently_ok(server, &l.host, self.inner.timing.host_dead);
                 if online {
                     // Si allá está apagado, se le pide el servidor: lo pasa solo, con el estado final.
+                    // Iniciar no es pedir ser anfitriona: si allá está apagado, se enciende allá.
                     let host_running = matches!(self.inner.rpc_timeout(&l.host, &Req::Info { server: server.into() }, Duration::from_secs(4)).await, Ok(Resp::Info(i)) if i.running);
-                    if !host_running && self.can_request_check(server).is_ok() {
-                        let name = self.request_host(server).await?;
-                        bail!("PEDIDO:{} lo tenía apagado: te lo está pasando con el último estado del mundo. Se enciende solo en esta PC en unos segundos.", nice(&name));
+                    if !host_running {
+                        match self.start_on_host(server).await {
+                            Ok(m) => bail!("PEDIDO:{m}"),
+                            // Allá no se puede encender (no permite alojar, se quedó sin copia…): si
+                            // esta PC puede alojarlo, se le pide con el último estado del mundo.
+                            Err(e) if self.can_request_check(server).is_ok() => {
+                                let name = self.request_host(server).await.map_err(|e2| anyhow!("{e}. Tampoco se pudo pasar a esta PC: {e2}"))?;
+                                bail!("PEDIDO:En la PC de {} no se pudo encender ({e}): te lo está pasando con el último estado del mundo. Se enciende solo en esta PC en unos segundos.", nice(&name));
+                            }
+                            Err(e) => return Err(e),
+                        }
                     }
-                    bail!("Lo está hosteando {}. Pedile que te lo pase (botón «Pasar a…» en su 939 Host).", nice(&l.host_name));
+                    bail!("Ya está encendido en la PC de {}. Para alojarlo en esta PC, usá «Solicitar ser anfitrión».", nice(&l.host_name));
                 }
                 bail!("Lo tenía {} y no responde. Si sabés que se apagó, usá «Recuperar aquí».", nice(&l.host_name));
             }
@@ -1352,6 +1377,8 @@ impl GroupNode {
                 self.inner.tick_server(server).await;
                 let mine = fresh(&snapshots::latest(server));
                 if mine < l.required {
+                    // Otra PC conectada tiene la última versión: se enciende allá.
+                    if let Ok(m) = self.start_on_host(server).await { bail!("PEDIDO:{m}"); }
                     bail!("La última versión del mundo quedó en la PC de {}, que no está conectada. Esperá a que se conecte para copiarla, o usá «Recuperar aquí» con la versión que tenés.", nice(&l.host_name));
                 }
                 self.inner.new_lease(server, l.epoch, LeaseKind::Claim)?;
@@ -1359,6 +1386,49 @@ impl GroupNode {
                 self.inner.broadcast_lease(server).await;
                 Ok(())
             }
+        }
+    }
+
+    /// «Iniciar» desde una PC que no lo va a alojar: lo enciende la PC que tiene el permiso (si
+    /// está conectada) o, con el permiso soltado, la mejor PC conectada que tenga la última versión
+    /// (primero la propietaria). Devuelve el aviso para mostrar.
+    pub async fn start_on_host(&self, server: &str) -> Result<String> {
+        let inner = &self.inner;
+        inner.tick_server(server).await;
+        let l = lease::read(server).ok_or_else(|| anyhow!("Todavía no llegaron los datos del grupo. Esperá unos segundos con otra PC del grupo conectada."))?;
+        let window = inner.timing.host_dead;
+        let target = match l.state {
+            LeaseState::Hosting if l.host == inner.me => bail!("Esta PC tiene el permiso: encendelo acá."),
+            LeaseState::Hosting => {
+                if !inner.recently_ok(server, &l.host, window) { bail!("Lo aloja {} y no responde. Si sabés que se apagó, una PC con copia puede usar «Recuperar aquí».", nice(&l.host_name)); }
+                l.host.clone()
+            }
+            LeaseState::Released => {
+                let share = network::load_share(server);
+                let owner = signed::pin(&share);
+                let mut c: Vec<(bool, (u64, u64), u32, String)> = inner.with_state(server, |s| s.infos.iter()
+                    .filter(|(n, i)| s.last_ok.get(*n).map(|t| t.elapsed() < window).unwrap_or(false) && i.can_host && i.has_copy && share.member(n).map(|m| m.can_host()).unwrap_or(false))
+                    .filter(|(n, i)| usable_fresh(Some(&l), &share, n, &i.latest) >= l.required)
+                    .map(|(n, i)| (Some(n) == owner.as_ref(), i.latest.as_ref().map(|x| x.freshness()).unwrap_or((0, 0)), i.score, n.clone())).collect());
+                c.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
+                c.into_iter().next().map(|x| x.3).ok_or_else(|| anyhow!("Ninguna PC conectada que pueda alojarlo tiene la última versión del mundo (la tiene {}). Cuando se conecte, se puede encender.", nice(&l.host_name)))?
+            }
+        };
+        match inner.rpc_timeout(&target, &Req::StartRemote { server: server.into() }, Duration::from_secs(30)).await? {
+            Resp::Text { text } => { inner.tick_server(server).await; Ok(text) }
+            Resp::Err { msg } => bail!(msg),
+            _ => bail!("respuesta inesperada"),
+        }
+    }
+
+    /// «Detener» desde otra PC (solo propietaria y coanfitrionas): lo apaga la que lo aloja, guardando.
+    pub async fn stop_on_host(&self, server: &str) -> Result<String> {
+        let l = lease::read(server).filter(|l| l.state == LeaseState::Hosting).ok_or_else(|| anyhow!("Nadie lo está alojando."))?;
+        if l.host == self.inner.me { bail!("Lo aloja esta PC: detenelo acá."); }
+        match self.inner.rpc_timeout(&l.host, &Req::StopRemote { server: server.into() }, Duration::from_secs(15)).await? {
+            Resp::Text { text } => Ok(text),
+            Resp::Err { msg } => bail!(msg),
+            _ => bail!("respuesta inesperada"),
         }
     }
 
@@ -1471,6 +1541,20 @@ impl GroupNode {
 
     /// Fuerza una vuelta de consulta/sincronización ahora.
     pub async fn sync_now(&self, server: &str) { self.inner.tick_server(server).await; }
+
+    /// El estado del servidor cambió en esta PC (iniciando, en línea, guardando, jugadores…). Si
+    /// esta PC lo aloja, avisa enseguida a las demás PCs del grupo para que lo consulten ya (sin
+    /// esperar la vuelta de 5 s). El mismo estado no se avisa dos veces.
+    pub fn push_state(&self, server: &str) {
+        let share = network::load_share(server);
+        if !share.enabled || !lease::read(server).map(|l| l.held_by(&self.inner.me)).unwrap_or(false) { return; }
+        let now = self.inner.state_of(server);
+        if !self.inner.with_state(server, |s| if s.pushed.as_ref() == Some(&now) { false } else { s.pushed = Some(now.clone()); true }) { return; }
+        for m in share.members.iter().filter(|m| m.node_id != self.inner.me) {
+            let (inner, node, srv) = (self.inner.clone(), m.node_id.clone(), server.to_string());
+            tokio::spawn(async move { let _ = inner.rpc_timeout(&node, &Req::SyncNow { server: srv }, Duration::from_secs(3)).await; });
+        }
+    }
 
     async fn tick(&self, server: &str) { self.inner.tick_server(server).await; }
 
@@ -2185,6 +2269,45 @@ impl Inner {
         Ok(())
     }
 
+    /// Enciende el servidor en esta PC a pedido de un integrante. Si esta PC tiene el permiso, lo
+    /// enciende; si el permiso está soltado, lo toma (con la última versión) y lo enciende. Nunca
+    /// enciende dos veces: si ya está encendido o encendiéndose, lo dice.
+    async fn start_here_for(self: Arc<Self>, server: &str, who: &str) -> Result<String> {
+        if !has_copy(server) || !self.local.allow_hosting(server) || !network::load_share(server).member(&self.me).map(|m| m.can_host()).unwrap_or(false) {
+            bail!("La PC de {} no puede alojar este servidor.", self.name());
+        }
+        if self.local.is_running(server) { return Ok(format!("Ya está encendido en la PC de {}.", self.name())); }
+        if !self.with_state(server, |s| if s.busy.is_some() || s.starting_for.is_some() { false } else { s.starting_for = Some(who.to_string()); true }) {
+            return Ok(format!("La PC de {} ya lo está encendiendo.", self.name()));
+        }
+        let r = async {
+            match lease::read(server) {
+                Some(l) if l.held_by(&self.me) => {}
+                Some(l) if l.state == LeaseState::Released => {
+                    self.tick_server(server).await;
+                    if fresh(&snapshots::latest(server)) < l.required { bail!("La última versión del mundo no está en la PC de {}.", self.name()); }
+                    self.new_lease(server, l.epoch, LeaseKind::Claim)?;
+                    self.place_latest(server).await?;
+                    self.broadcast_lease(server).await;
+                }
+                Some(l) => bail!("Lo aloja {}.", nice(&l.host_name)),
+                None => bail!("Todavía no llegaron los datos del grupo a la PC de {}.", self.name()),
+            }
+            Ok(())
+        }.await;
+        if let Err(e) = r { self.with_state(server, |s| s.starting_for = None); return Err(e); }
+        self.local.note(server, &format!("{who} encendió el servidor desde su PC."));
+        let me = self.clone();
+        let srv = server.to_string();
+        tokio::spawn(async move {
+            let r = async { me.blocking(&srv, |l, s| l.prepare(s)).await?; me.blocking(&srv, |l, s| l.start(s)).await }.await;
+            me.with_state(&srv, |s| s.starting_for = None);
+            if let Err(e) = r { me.local.note(&srv, &format!("No se pudo encender el servidor: {e}")); }
+            me.local.changed(&srv);
+        });
+        Ok(format!("Encendiéndose en la PC de {}.", self.name()))
+    }
+
     /// Esta PC pasó a ser la anfitriona: copia lo que falte, coloca el estado y enciende.
     async fn become_host(self: &Arc<Self>, server: &str, from: Option<String>, snap: Option<String>) {
         self.set_busy(server, Some("Recibiendo el servidor".into()));
@@ -2216,7 +2339,7 @@ impl Inner {
     }
 
     /// Copia un punto desde otra PC (solo los bloques que faltan).
-    async fn pull(&self, server: &str, from: &str, snap: &str) -> Result<SnapshotInfo> {
+    async fn pull(self: &Arc<Self>, server: &str, from: &str, snap: &str) -> Result<SnapshotInfo> {
         if snapshots::has_snapshot(server, snap) {
             if let Some(i) = snapshots::list(server).into_iter().find(|s| s.id == snap) { return Ok(i); }
         }
@@ -2228,9 +2351,27 @@ impl Inner {
         if man.is_empty() { bail!("la otra PC ya no tiene ese punto"); }
         // Lo que dice el índice (época) se verifica contra el permiso de esta PC antes de bajar nada.
         let mi = snapshots::manifest_info(&man).map_err(|e| anyhow!(e.message))?;
-        if mi.id != snap || !sync_source_ok(lease::read(server).as_ref(), &network::load_share(server), from, mi.epoch) {
-            audit(server, "sync-source-rejected", from);
-            bail!("el punto que ofrece esa PC no se puede verificar (época o PC no autorizadas)");
+        if mi.id != snap { bail!("la otra PC mandó un punto distinto del pedido"); }
+        if !sync_source_ok(lease::read(server).as_ref(), &network::load_share(server), from, mi.epoch) {
+            // Lo más común: a esta PC no le llegó todavía el permiso más reciente (por ejemplo, el que
+            // tomó la anfitriona al encender). Se lo pide a esa PC y se acepta solo si se verifica
+            // (firma y cadena de permisos), igual que si hubiera llegado solo.
+            if lease::read(server).map(|l| l.epoch < mi.epoch).unwrap_or(true) {
+                if let Ok(Resp::Info(info)) = self.rpc_timeout(from, &Req::Info { server: server.into() }, Duration::from_secs(6)).await {
+                    if let Some(l) = info.lease.filter(|l| l.epoch >= mi.epoch) { let _ = self.accept_lease(server, &l, from).await; }
+                }
+            }
+            let cur = lease::read(server);
+            if !sync_source_ok(cur.as_ref(), &network::load_share(server), from, mi.epoch) {
+                audit(server, "sync-source-rejected", from);
+                let why = match &cur {
+                    None => "esta PC todavía no recibió el permiso de anfitriona del grupo".to_string(),
+                    Some(c) if mi.epoch > c.epoch => format!("el punto es de la época {} y el último permiso verificado en esta PC es de la {}", mi.epoch, c.epoch),
+                    Some(_) if !network::load_share(server).member(from).map(|m| m.can_host()).unwrap_or(false) => "esa PC no puede alojar este servidor según la lista firmada".to_string(),
+                    Some(c) => format!("el punto es de la época {} y esa PC no tenía el permiso en esa época (lo tenía {})", mi.epoch, nice(&c.host_name)),
+                };
+                bail!("el punto que ofrece esa PC no se puede verificar: {why}");
+            }
         }
         let missing = snapshots::missing_blobs(server, &man).map_err(|e| anyhow!(e.message))?;
         let total = missing.len();
@@ -2329,6 +2470,7 @@ impl Inner {
         // Cada PC se consulta por separado y su respuesta cuenta en cuanto llega: una PC lenta
         // (por ejemplo, la anfitriona vieja apagando su servidor) no puede hacer que las demás
         // parezcan caídas. No se manda otra consulta a una PC que todavía no respondió la anterior.
+        let prev_seen = self.with_state(server, |s| s.infos.iter().map(|(n, i)| (n.clone(), seen_key(i))).collect::<HashMap<_, _>>());
         let mut handles = vec![];
         for m in &others {
             let node = m.node_id.clone();
@@ -2357,6 +2499,23 @@ impl Inner {
         }
         // Se espera un momento a las respuestas rápidas; las lentas siguen y se procesan después.
         let _ = tokio::time::timeout(self.timing.poll * 2, futures_util::future::join_all(handles)).await;
+        // Si cambió lo que se ve de otra PC (estado del servidor, jugadores, quién aloja), la
+        // interfaz se actualiza ahora, sin esperar a que la persona cambie de pantalla.
+        let now_seen = self.with_state(server, |s| s.infos.iter().map(|(n, i)| (n.clone(), seen_key(i))).collect::<HashMap<_, _>>());
+        if now_seen != prev_seen {
+            // Aviso (sonido o notificación) cuando el servidor que aloja otra PC queda listo o falla:
+            // solo en el cambio, una vez por cambio (no en cada consulta).
+            if let Some(l) = lease::read(server).filter(|l| l.state == LeaseState::Hosting && l.host != self.me) {
+                let before = prev_seen.get(&l.host).map(|k| k.0.clone()).unwrap_or_default();
+                if let Some(k) = now_seen.get(&l.host) {
+                    let up = |st: &str| st == "ready" || st == "running";
+                    let detail = self.with_state(server, |s| s.infos.get(&l.host).map(|i| i.state_detail.clone()).unwrap_or_default());
+                    if up(&k.0) && !up(&before) && !before.is_empty() { self.local.remote_event(server, "ready", &l.host_name, &detail); }
+                    if k.0 == "error" && before != "error" && !before.is_empty() { self.local.remote_event(server, "error", &l.host_name, &detail); }
+                }
+            }
+            self.local.changed(server);
+        }
         let inbox = self.with_state(server, |s| std::mem::take(&mut s.inbox));
         let mut newest_share: Option<(u64, String)> = None;
         let mut names: Vec<(String, String)> = vec![];
@@ -2952,6 +3111,21 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
                 Ok((b, total))
             })();
             match r { Ok((b, total)) => Resp::PackChunk { data: data_encoding::BASE64.encode(&b), total }, Err(_) => Resp::Err { msg: "No se pudo leer el resource pack.".into() } }
+        }
+        Req::StartRemote { server } => {
+            if !inner.is_member(&server, remote) { return Resp::Err { msg: "No es integrante del grupo.".into() }; }
+            let who = inner.with_state(&server, |s| s.infos.get(remote).map(|i| i.name.clone())).unwrap_or_else(|| "Otra PC".into());
+            match inner.clone().start_here_for(&server, &who).await { Ok(m) => Resp::Text { text: m }, Err(e) => Resp::Err { msg: e.to_string() } }
+        }
+        Req::StopRemote { server } => {
+            if !network::load_share(&server).member(remote).map(|m| m.can_host()).unwrap_or(false) { return Resp::Err { msg: "Solo la propietaria y las coanfitrionas pueden detener el servidor.".into() }; }
+            if !lease::read(&server).map(|l| l.held_by(&inner.me)).unwrap_or(false) { return Resp::Err { msg: "Esta PC ya no aloja el servidor.".into() }; }
+            if !inner.local.is_running(&server) { return Resp::Text { text: "Ya estaba apagado.".into() }; }
+            let who = inner.with_state(&server, |s| s.infos.get(remote).map(|i| i.name.clone())).unwrap_or_else(|| "Otra PC".into());
+            inner.local.note(&server, &format!("{who} detuvo el servidor desde su PC (se guarda el mundo)."));
+            let inner2 = inner.clone();
+            tokio::spawn(async move { let _ = inner2.blocking(&server, |l, s| l.stop(s)).await; });
+            Resp::Text { text: "Deteniendo y guardando.".into() }
         }
         Req::Nudge { .. } => {
             // Una conexión nueva hacia esa PC, que se cierra enseguida (solo sirve para que su

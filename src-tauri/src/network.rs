@@ -83,6 +83,9 @@ impl LocalHost for AppLocal {
             RunStatus::Starting => ("starting", r.phase.clone().unwrap_or_default()),
             RunStatus::Running if r.saving => ("saving", String::new()),
             RunStatus::Running if r.reach.as_deref() == Some("ok") => (if players > 0 { "running" } else { "ready" }, String::new()),
+            // La comprobación automática falló: el servidor está encendido igual (no «preparando»
+            // para siempre en las demás PCs); se avisa el detalle.
+            RunStatus::Running if r.reach.as_deref() == Some("fail") => (if players > 0 { "running" } else { "ready" }, format!("Encendido; la comprobación automática de conexión falló: {}", r.reach_error.clone().unwrap_or_default())),
             RunStatus::Running => ("preparing", "Comprobando la conexión".into()),
             RunStatus::Stopping if r.restarting => ("restarting", "Guardando y deteniendo".into()),
             RunStatus::Stopping => ("saving", "Guardando y deteniendo".into()),
@@ -124,6 +127,16 @@ impl LocalHost for AppLocal {
             cpu: hw.cpu_model.clone(), cores: hw.logical_cores as u32, ram_total_mb: live.ram_total_mb, ram_free_mb: live.ram_available_mb,
             cpu_score: hw.benchmark.as_ref().map(|b| b.cpu_single_score),
             disk_free_gb: hw.disks.iter().find(|d| d.is_data_disk).map(|d| d.free_gb),
+        }
+    }
+    fn remote_event(&self, server: &str, kind: &str, host_name: &str, detail: &str) {
+        let name = instance::load(server).map(|c| c.name).ok().or_else(|| network::load_share(server).card.as_ref().and_then(|c| c.get("name")).and_then(|v| v.as_str()).map(String::from)).unwrap_or_else(|| "El servidor".into());
+        match kind {
+            "ready" => {
+                if settings::load().start_sound { host939_core::sound::play_start_chime(); }
+                let _ = self.0.emit("group-note", serde_json::json!({ "id": server, "message": format!("{name} está en línea en la PC de {host_name}.") }));
+            }
+            _ => { let _ = self.0.emit("group-note", serde_json::json!({ "id": server, "message": format!("{name} tuvo un error en la PC de {host_name}{}", if detail.is_empty() { ".".into() } else { format!(": {detail}") }) })); }
         }
     }
     fn host_request(&self, server: &str, from_name: &str) {
@@ -602,7 +615,7 @@ pub async fn host_requests_pending(cluster: State<'_, Cluster>) -> AppResult<Vec
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HostingView { pub id: String, pub i_am_host: bool, pub hosting: bool, pub host_name: String, pub host_symbol: String, pub host_online: bool }
+pub struct HostingView { pub id: String, pub i_am_host: bool, pub hosting: bool, pub host_name: String, pub host_symbol: String, pub host_online: bool, pub state: String, pub detail: String, pub players: u32 }
 
 /// Quién aloja cada servidor compartido (para la lista de servidores).
 #[tauri::command]
@@ -616,9 +629,17 @@ pub async fn servers_hosting(cluster: State<'_, Cluster>) -> AppResult<Vec<Hosti
             id: sid, i_am_host: st.i_am_host, hosting: st.lease.as_ref().map(|l| l.state == host939_core::lease::LeaseState::Hosting).unwrap_or(false),
             host_name: host.map(|m| m.name.clone()).or_else(|| st.lease.as_ref().map(|l| l.host_name.clone())).unwrap_or_default(),
             host_symbol: host.map(|m| m.symbol.clone()).unwrap_or_default(), host_online: st.host_online,
+            state: st.host_state.as_ref().map(|h| h.state.clone()).unwrap_or_default(), detail: st.host_state.as_ref().map(|h| h.detail.clone()).unwrap_or_default(),
+            players: st.host_state.as_ref().map(|h| h.players).unwrap_or(0),
         });
     }
     Ok(out)
+}
+
+/// «Detener» un servidor que aloja otra PC del grupo (lo apaga esa PC, guardando).
+#[tauri::command]
+pub async fn group_stop_remote(id: String, cluster: State<'_, Cluster>) -> AppResult<String> {
+    cluster.node().await?.stop_on_host(&id).await.map_err(|e| AppError::invalid(e.to_string()))
 }
 
 /* ── Amigos ── */

@@ -192,7 +192,7 @@ fn ataques_al_permiso_de_anfitrion() {
     println!("✔ permisos falsificados (jugadora y coanfitriona, 9 variantes): nadie los adoptó y A siguió alojando");
 
     // 5. Dos anfitrionas: B intenta encender mientras A tiene el permiso.
-    assert!(b.err(&format!("start {sid}")).contains("Lo está hosteando"));
+    assert!(b.err(&format!("start {sid}")).contains("Ya está encendido en la PC de"));
     println!("✔ B no puede encender mientras A tiene el permiso");
 
     // 6. Traspaso legítimo A → B, y después replay del permiso viejo de A.

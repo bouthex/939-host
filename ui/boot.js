@@ -89,7 +89,7 @@ async function boot() {
   });
   await listen('group-note', (ev) => {
     const m = ev.payload.message || '';
-    if (/anfitri|pasado|tomó|Recuperando|Deteniendo|se unió|no pudo|soltado|mod\(s\)/i.test(m)) toast(m, /no pudo|Deteniendo/.test(m) ? 'error' : 'ok');
+    if (/anfitri|pasado|tomó|Recuperando|Deteniendo|se unió|no pudo|soltado|mod\(s\)|en línea en la PC|encendió|detuvo|tuvo un error/i.test(m)) toast(m, /no pudo|Deteniendo|tuvo un error/.test(m) ? 'error' : 'ok');
   });
   // Primera vez que se cierra la ventana con servidores encendidos: se explica qué pasa.
   await listen('background-hint', async (ev) => {
