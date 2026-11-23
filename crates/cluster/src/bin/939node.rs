@@ -397,6 +397,7 @@ async fn main() {
                 "sync" => { node.sync_now(&p(1)).await; Ok(serde_json::json!(true)) }
                 "quit" => Ok(serde_json::json!(node.quit().await)),
                 "rename" => { node.set_identity(&p(1), &p(2)); Ok(serde_json::json!(true)) }
+                "playerop" => node.player_op(&p(1), serde_json::json!({ "kind": p(2), "name": "Steve" })).await.map_err(|e| e.to_string()),
                 "stopremote" => node.stop_on_host(&p(1)).await.map(|t| serde_json::json!(t)).map_err(|e| e.to_string()),
                 "request" => node.request_host(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
                 "cancelreq" => node.cancel_host_request(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),

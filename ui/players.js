@@ -428,8 +428,68 @@ function itemDetail(d) {
     <div><div class="kv"><span class="k">Cantidad</span><span class="mono">${it.count}</span></div>
     ${left != null ? `<div class="kv"><span class="k">Durabilidad</span><span class="mono">${left} / ${it.maxDamage}</span></div><div class="bar"><i style="width:${Math.round(left / it.maxDamage * 100)}%"></i></div>` : ''}</div>
     ${it.enchantments.length ? `<div><div class="sec" style="margin-bottom:4px">Encantamientos</div>${it.enchantments.map(([e, l]) => `<div class="kv"><span>${esc(enchName(e))}</span><span class="mono">${roman(l)}</span></div>`).join('')}</div>` : ''}
-    ${it.customName ? `<div class="xs t3">Nombre puesto en un yunque. Original: ${esc(itemName(it.id))}</div>` : ''}</div>`;
+    ${it.customName ? `<div class="xs t3">Nombre puesto en un yunque. Original: ${esc(itemName(it.id))}</div>` : ''}
+    ${invActions(d, it)}</div>`;
 }
+/* Acciones reales sobre el inventario (con el jugador conectado y permiso). */
+function invActions(d, it) {
+  if (!pl.access?.allowed) return '';
+  if (d.source !== 'live') return '<div class="xs t3">Para cambiar el inventario, el jugador tiene que estar conectado.</div>';
+  const busy = pl.busy.inv;
+  const dis = busy ? 'disabled aria-busy="true"' : '';
+  return `<div class="row wrap" style="gap:6px">
+    <button class="btn s icon" data-a="inv-count" data-d="-1" ${dis} aria-label="Uno menos" title="Uno menos">−</button>
+    <button class="btn s icon" data-a="inv-count" data-d="1" ${dis} aria-label="Uno más" title="Uno más">+</button>
+    <button class="btn s" data-a="inv-setcount" ${dis}>Cantidad…</button>
+    ${pl.picked.startsWith('ender:') || pl.picked.startsWith('inv:') ? `<button class="btn s" data-a="inv-move" ${dis}>Mover…</button>` : ''}
+    <button class="btn s danger-ghost" data-a="inv-remove" ${dis}>Quitar</button></div>`;
+}
+const pickedRef = () => { const [g, s] = (pl.picked || '').split(':'); return { group: g, slot: +s }; };
+async function invRun(op, done) {
+  const d = pl.detail;
+  if (!d || pl.busy.inv) return;
+  pl.busy.inv = true; paintProfile();
+  try { toast(await invoke('player_inventory', { id: state.params.id, name: d.name, op })); if (done) done(); } catch (e) { fail(e); }
+  finally { pl.busy.inv = false; }
+  await fetchDetail(true);
+}
+A['inv-count'] = (el) => { const it = findItem(pl.detail, pl.picked); if (!it) return; const n = it.count + +el.dataset.d; invRun(n <= 0 ? { op: 'remove', ...pickedRef() } : { op: 'setCount', ...pickedRef(), count: n }); };
+A['inv-setcount'] = async () => {
+  const it = findItem(pl.detail, pl.picked); if (!it) return;
+  let v = String(it.count);
+  const r = await dialog({ title: 'Cambiar la cantidad', confirm: 'Cambiar', body: `<label class="field">Cantidad en este casillero<input class="input mono" id="ic-n" type="number" min="0" max="99" value="${it.count}"></label><p class="xs t3">0 lo vacía. El máximo depende del objeto (64, 16 o 1).</p>`,
+    onMount: (dl) => { const i = dl.querySelector('#ic-n'); i.addEventListener('input', () => { v = i.value; }); i.select(); } });
+  if (!r) return;
+  const n = Math.max(0, Math.min(99, parseInt(v, 10) || 0));
+  if (n === it.count) return;
+  invRun(n === 0 ? { op: 'remove', ...pickedRef() } : { op: 'setCount', ...pickedRef(), count: n });
+};
+A['inv-remove'] = async () => {
+  const it = findItem(pl.detail, pl.picked); if (!it) return;
+  if (!(await dialog({ title: 'Quitar del inventario', body: `<p class="sm t2">Se borran ${it.count} × ${esc(it.customName || itemName(it.id))} del inventario de ${esc(pl.detail.name)}. No se puede deshacer.</p>`, confirm: 'Quitar', danger: true }))) return;
+  invRun({ op: 'remove', ...pickedRef() }, () => { pl.picked = null; });
+};
+A['inv-move'] = async () => {
+  const d = pl.detail, { group, slot } = pickedRef();
+  const used = new Set((group === 'ender' ? d.ender : d.inventory).map((i) => i.slot));
+  const max = group === 'ender' ? 27 : 36;
+  const free = []; for (let s = 0; s < max; s++) if (!used.has(s)) free.push(s);
+  if (!free.length) { toast('No hay casilleros vacíos a donde moverlo.', 'error'); return; }
+  const label = (s) => group === 'ender' ? `Cofre de ender · ${s + 1}` : s < 9 ? `Barra rápida · ${s + 1}` : `Inventario · ${s - 8}`;
+  let to = free[0];
+  const r = await dialog({ title: 'Mover a otro casillero', confirm: 'Mover', body: `<label class="field">Casillero vacío<select class="input" id="im-to">${free.map((s) => `<option value="${s}">${label(s)}</option>`).join('')}</select></label><p class="xs t3">Se mueve tal cual: encantamientos, nombre y desgaste incluidos.</p>`,
+    onMount: (dl) => { const i = dl.querySelector('#im-to'); i.addEventListener('change', () => { to = +i.value; }); } });
+  if (!r) return;
+  invRun({ op: 'move', group, from: slot, to }, () => { pl.picked = `${group}:${to}`; });
+};
+A['inv-give'] = async () => {
+  const d = pl.detail; if (!d) return;
+  let item = '', count = 1;
+  const r = await dialog({ title: `Dar un objeto a ${esc(d.name)}`, confirm: 'Dar', body: `<label class="field">Objeto<input class="input mono" id="ig-id" placeholder="minecraft:diamond" spellcheck="false"></label><label class="field">Cantidad<input class="input mono" id="ig-n" type="number" min="1" max="2304" value="1"></label><p class="xs t3">Id del objeto como en Minecraft (también de mods, como «create:cogwheel»). Si no tiene lugar, lo que sobra cae a sus pies.</p>`,
+    onMount: (dl) => { const a = dl.querySelector('#ig-id'), b = dl.querySelector('#ig-n'); a.addEventListener('input', () => { item = a.value.trim(); }); b.addEventListener('input', () => { count = parseInt(b.value, 10) || 1; }); a.focus(); } });
+  if (!r || !item) return;
+  invRun({ op: 'give', item, count });
+};
 /* Vista de lista: cada objeto con su nombre completo, cantidad, durabilidad y encantamientos. */
 pl.invView = 'grid';
 A['inv-view'] = (el) => { pl.invView = el.dataset.v; paintProfile(); };
@@ -466,7 +526,7 @@ function invBody(d) {
   }
   return `<div class="inv-wrap">
     <div class="stack">
-      ${viewToggle()}
+      <div class="spread">${viewToggle()}${pl.access?.allowed && d.source === 'live' ? `<button class="btn s" data-a="inv-give" ${pl.busy.inv ? 'disabled' : ''}>${icon('plus', 14)}Dar un objeto</button>` : ''}</div>
       <div class="body3"><div class="figure" id="pf-figure"><span class="avatar lg" style="border:0;background:none">${esc(initials(d.name))}</span></div>
         <div class="slotcol">${e(eq.head, 103, 'helmet', 'Casco')}${e(eq.chest, 102, 'chestplate', 'Pechera')}${e(eq.legs, 101, 'leggings', 'Pantalones')}${e(eq.feet, 100, 'boots', 'Botas')}</div>
         <div class="stack" style="gap:6px;justify-content:flex-end;align-self:flex-end"><span class="xs t3">Mano secundaria</span>${e(eq.offhand, -106, 'shield', 'Mano secundaria')}</div></div>

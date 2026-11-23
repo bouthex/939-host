@@ -551,6 +551,7 @@ fn main() {
             v3::player_edit,
             v3::player_adjust,
             v3::player_kill,
+            v3::player_inventory,
             v3::game_assets_prepare,
             v3::game_sprites,
             v3::game_names,

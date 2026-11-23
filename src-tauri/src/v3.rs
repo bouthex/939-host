@@ -91,33 +91,95 @@ pub fn players_online_count(app: AppHandle, id: String) -> usize { online_player
 
 /* ───────── Jugadores ───────── */
 
-#[tauri::command]
-pub async fn player_detail(app: AppHandle, id: String, name: String) -> AppResult<playerdata::PlayerDetail> {
-    blocking(move || {
-        let cfg = instance::load(&id)?;
-        let mgr = app.state::<Manager>();
-        let list = players::list(&mgr, &cfg);
-        let p = list.iter().find(|p| p.name.eq_ignore_ascii_case(&name)).ok_or_else(|| AppError::not_found("el jugador"))?;
-        playerdata::detail(&mgr, &cfg, &p.name, &p.uuid, p.online && mgr.runtime(&id).lock().unwrap().status() == RunStatus::Running)
-    }).await
-}
+/// Dónde se hace una operación sobre jugadores: en esta PC o, si el servidor lo aloja otra PC del
+/// grupo, allá (la anfitriona vuelve a comprobar el permiso).
+enum Route { Local(String), Remote }
 
-/// ¿Puede esta PC cambiar datos de jugadores de este servidor? Solo la PC propietaria y solo
-/// donde está el servidor (si lo aloja otra PC, los datos vivos están allá). Se comprueba acá,
-/// en el backend: la interfaz solo esconde lo que no se puede hacer.
-async fn edit_permission(app: &AppHandle, id: &str) -> Result<String, String> {
-    let share = host939_core::network::load_share(id);
-    if !share.enabled { return Ok("esta PC".into()); }
-    let me = match app.state::<crate::network::Cluster>().node().await { Ok(n) => n.id(), Err(_) => return Err("La red del grupo todavía no está lista.".into()) };
-    if share.member(&me).map(|m| m.role != "propietario").unwrap_or(true) {
-        return Err("Solo la PC propietaria del servidor puede cambiar la vida, el hambre o la experiencia de los jugadores.".into());
-    }
-    if let Some(l) = host939_core::lease::read(id) {
-        if l.state == host939_core::lease::LeaseState::Hosting && l.host != me {
-            return Err(format!("Ahora lo aloja {}: los datos de los jugadores están en esa PC. Cambialos cuando el servidor vuelva a esta PC.", l.host_name));
+/// Ficha del jugador. Si lo aloja otra PC y está encendido, se pide allá (datos en vivo).
+#[tauri::command]
+pub async fn player_detail(app: AppHandle, id: String, name: String) -> AppResult<serde_json::Value> {
+    if hosted_elsewhere(&app, &id).await {
+        let cl = app.state::<crate::network::Cluster>();
+        if let Ok(n) = cl.node().await {
+            match n.player_op(&id, serde_json::json!({ "kind": "detail", "name": name })).await {
+                Ok(v) if v.is_object() => return Ok(v),
+                _ => {}
+            }
         }
     }
-    Ok(me)
+    blocking(move || player_op_local(&app, &id, &serde_json::json!({ "kind": "detail", "name": name }), "")).await
+}
+
+pub async fn hosted_elsewhere(app: &AppHandle, id: &str) -> bool {
+    if !host939_core::network::load_share(id).enabled { return false; }
+    let cl = app.state::<crate::network::Cluster>();
+    let Some(n) = cl.try_node() else { return false };
+    let me = n.id();
+    host939_core::lease::read(id).map(|l| l.state == host939_core::lease::LeaseState::Hosting && l.host != me).unwrap_or(false)
+}
+
+/// Ejecuta una operación sobre un jugador en esta PC (la usan los comandos de la interfaz y los
+/// pedidos de la propietaria desde otra PC). `op.kind`: detail | adjust | kill | inventory | edit.
+pub fn player_op_local(app: &AppHandle, id: &str, op: &serde_json::Value, who: &str) -> AppResult<serde_json::Value> {
+    let cfg = instance::load(id)?;
+    let mgr = app.state::<Manager>();
+    if op.get("kind").and_then(|v| v.as_str()) == Some("list") { return serde_json::to_value(players::list(&mgr, &cfg)).map_err(|e| AppError::invalid(e.to_string())); }
+    let name = op.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let list = players::list(&mgr, &cfg);
+    let p = list.iter().find(|p| p.name.eq_ignore_ascii_case(&name)).ok_or_else(|| AppError::not_found("el jugador"))?;
+    let running = mgr.runtime(id).lock().unwrap().status() == RunStatus::Running;
+    let live = p.online && running;
+    let need_running = || if running { Ok(()) } else { Err(AppError::invalid("El servidor no está encendido.")) };
+    let parse = |k: &str| op.get(k).cloned().ok_or_else(|| AppError::invalid("Pedido incompleto."));
+    let text = |r: AppResult<String>| r.map(serde_json::Value::String);
+    match op.get("kind").and_then(|v| v.as_str()).unwrap_or_default() {
+        "detail" => serde_json::to_value(playerdata::detail(&mgr, &cfg, &p.name, &p.uuid, live)?).map_err(|e| AppError::invalid(e.to_string())),
+        "adjust" => {
+            let stat: host939_core::playeredit::Stat = serde_json::from_value(parse("stat")?).map_err(|_| AppError::invalid("Dato inválido."))?;
+            let up = op.get("up").and_then(|v| v.as_bool()).unwrap_or(false);
+            text(host939_core::playeredit::adjust(&mgr, &cfg, &p.name, &p.uuid, live, stat, up, who))
+        }
+        "kill" => { need_running()?; text(host939_core::playeredit::kill(&mgr, &cfg, &p.name, who)) }
+        "inventory" => {
+            need_running()?;
+            let iop: host939_core::playeredit::InvOp = serde_json::from_value(parse("op")?).map_err(|_| AppError::invalid("Operación inválida."))?;
+            text(host939_core::playeredit::inventory(&mgr, &cfg, &p.name, &p.uuid, &iop, who))
+        }
+        "edit" => {
+            let e: host939_core::playeredit::Edit = serde_json::from_value(parse("edit")?).map_err(|_| AppError::invalid("Dato inválido."))?;
+            text(if live { host939_core::playeredit::apply_online(&mgr, &cfg, &p.name, &e, who) } else { host939_core::playeredit::apply_offline(&mgr, &cfg, &p.name, &p.uuid, &e, who) })
+        }
+        _ => Err(AppError::invalid("Operación desconocida.")),
+    }
+}
+
+/// ¿Puede esta PC cambiar datos de jugadores de este servidor? Solo la PC propietaria. Si el
+/// servidor lo aloja otra PC, el cambio se hace allá (y allá se vuelve a comprobar). Se comprueba
+/// acá, en el backend: la interfaz solo esconde lo que no se puede hacer.
+async fn edit_permission(app: &AppHandle, id: &str) -> Result<Route, String> {
+    let share = host939_core::network::load_share(id);
+    if !share.enabled { return Ok(Route::Local("esta PC".into())); }
+    let me = match app.state::<crate::network::Cluster>().node().await { Ok(n) => n.id(), Err(_) => return Err("La red del grupo todavía no está lista.".into()) };
+    if share.member(&me).map(|m| m.role != "propietario").unwrap_or(true) {
+        return Err("Solo la PC propietaria del servidor puede cambiar la vida, el hambre, la experiencia o el inventario de los jugadores.".into());
+    }
+    if let Some(l) = host939_core::lease::read(id) {
+        if l.state == host939_core::lease::LeaseState::Hosting && l.host != me { return Ok(Route::Remote); }
+    }
+    Ok(Route::Local(me))
+}
+
+/// Corre una operación de jugador donde corresponda (esta PC o la anfitriona).
+async fn player_run(app: AppHandle, id: String, op: serde_json::Value) -> AppResult<String> {
+    match edit_permission(&app, &id).await.map_err(|r| AppError::new("forbidden", r))? {
+        Route::Remote => {
+            let cl = app.state::<crate::network::Cluster>();
+            let n = cl.node().await?;
+            let v = n.player_op(&id, op).await.map_err(|e| AppError::invalid(e.to_string()))?;
+            Ok(v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))
+        }
+        Route::Local(who) => blocking(move || player_op_local(&app, &id, &op, &who)).await.map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())),
+    }
 }
 
 #[derive(Serialize)]
@@ -134,47 +196,29 @@ pub async fn player_edit_access(app: AppHandle, id: String) -> AppResult<EditAcc
     })
 }
 
-/// Sube o baja un paso un atributo (botones + y −). Mismo permiso que la edición: solo la PC
-/// propietaria, con el servidor en esta PC.
+/// Sube o baja un paso un atributo (botones + y −). Solo la PC propietaria.
 #[tauri::command]
 pub async fn player_adjust(app: AppHandle, id: String, name: String, stat: host939_core::playeredit::Stat, up: bool) -> AppResult<String> {
-    let who = edit_permission(&app, &id).await.map_err(|r| AppError::new("forbidden", r))?;
-    blocking(move || {
-        let cfg = instance::load(&id)?;
-        let mgr = app.state::<Manager>();
-        let list = players::list(&mgr, &cfg);
-        let p = list.iter().find(|p| p.name.eq_ignore_ascii_case(&name)).ok_or_else(|| AppError::not_found("el jugador"))?;
-        let live = p.online && mgr.runtime(&id).lock().unwrap().status() == RunStatus::Running;
-        host939_core::playeredit::adjust(&mgr, &cfg, &p.name, &p.uuid, live, stat, up, &who)
-    }).await
+    player_run(app, id, serde_json::json!({ "kind": "adjust", "name": name, "stat": stat, "up": up })).await
 }
 
-/// Mata al jugador (comando de Minecraft). Solo conectado; mismo permiso que la edición.
+/// Inventario en vivo (dar, quitar, mover, cambiar cantidad). Solo la PC propietaria.
+#[tauri::command]
+pub async fn player_inventory(app: AppHandle, id: String, name: String, op: host939_core::playeredit::InvOp) -> AppResult<String> {
+    player_run(app, id, serde_json::json!({ "kind": "inventory", "name": name, "op": op })).await
+}
+
+/// Mata al jugador (comando de Minecraft). Solo conectado; solo la PC propietaria.
 #[tauri::command]
 pub async fn player_kill(app: AppHandle, id: String, name: String) -> AppResult<String> {
-    let who = edit_permission(&app, &id).await.map_err(|r| AppError::new("forbidden", r))?;
-    blocking(move || {
-        let cfg = instance::load(&id)?;
-        let mgr = app.state::<Manager>();
-        if mgr.runtime(&id).lock().unwrap().status() != RunStatus::Running { return Err(AppError::invalid("El servidor no está encendido.")); }
-        host939_core::playeredit::kill(&mgr, &cfg, &name, &who)
-    }).await
+    player_run(app, id, serde_json::json!({ "kind": "kill", "name": name })).await
 }
 
 /// Cambia vida, hambre, saturación o nivel. Con el jugador conectado usa comandos; desconectado
 /// edita su archivo (con copia previa). Queda en la auditoría del servidor.
 #[tauri::command]
 pub async fn player_edit(app: AppHandle, id: String, name: String, edit: host939_core::playeredit::Edit) -> AppResult<String> {
-    let who = edit_permission(&app, &id).await.map_err(|r| AppError::new("forbidden", r))?;
-    blocking(move || {
-        let cfg = instance::load(&id)?;
-        let mgr = app.state::<Manager>();
-        let list = players::list(&mgr, &cfg);
-        let p = list.iter().find(|p| p.name.eq_ignore_ascii_case(&name)).ok_or_else(|| AppError::not_found("el jugador"))?;
-        let live = p.online && mgr.runtime(&id).lock().unwrap().status() == RunStatus::Running;
-        if live { host939_core::playeredit::apply_online(&mgr, &cfg, &p.name, &edit, &who) }
-        else { host939_core::playeredit::apply_offline(&mgr, &cfg, &p.name, &p.uuid, &edit, &who) }
-    }).await
+    player_run(app, id, serde_json::json!({ "kind": "edit", "name": name, "edit": edit })).await
 }
 
 /// Skin del jugador como data URL; `None` si están desactivadas o no hay conexión (la interfaz

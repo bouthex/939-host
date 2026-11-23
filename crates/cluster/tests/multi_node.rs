@@ -176,6 +176,12 @@ fn group_protocol_fake_servers() {
     let lb = b.status(&sid)["lease"].clone();
     println!("✔ traspaso A→B: B encendió con el mundo de A (marca m1), época {}; la misma dirección ahora lleva a B", lb["epoch"]);
     assert!(a.err(&format!("start {sid}")).contains("encendido en la PC"));
+    // Administración de jugadores con el servidor en otra PC: la anfitriona (B) decide el permiso.
+    // (El nodo de prueba no tiene Minecraft: «no puede administrar» significa que el permiso pasó.)
+    assert!(a.err(&format!("playerop {sid} adjust")).contains("no puede administrar"), "la propietaria llega a la anfitriona");
+    assert!(c.err(&format!("playerop {sid} adjust")).contains("Solo la PC propietaria"), "una integrante no puede cambiar jugadores");
+    assert!(c.err(&format!("playerop {sid} detail")).contains("no puede administrar"), "pero sí puede ver la ficha");
+    println!("✔ jugadores: la propietaria administra desde su PC y las demás solo ven");
 
     // B juega y guarda; A y C copian.
     b.ok(&format!("write {sid} marca.txt m2"));

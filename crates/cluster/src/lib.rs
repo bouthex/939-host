@@ -93,6 +93,8 @@ pub trait LocalHost: Send + Sync + 'static {
     /// Llegó un mensaje de un amigo (para avisar en la interfaz).
     fn friend_message(&self, _node: &str) {}
     fn run_stats(&self, _server: &str) -> Option<RunStats> { None }
+    /// Operación sobre un jugador pedida por la propietaria desde otra PC (ver `Req::PlayerOp`).
+    fn player_op(&self, _server: &str, _op: &serde_json::Value, _who: &str) -> Result<serde_json::Value, String> { Err("Esta PC no puede administrar jugadores.".into()) }
     fn run_state(&self, server: &str) -> (String, String, u32) { (if self.is_running(server) { "running" } else { "stopped" }.into(), String::new(), 0) }
     /// El servidor que aloja otra PC quedó listo («ready») o falló («error»): un aviso por cambio.
     fn remote_event(&self, _server: &str, _kind: &str, _host_name: &str, _detail: &str) {}
@@ -187,6 +189,9 @@ enum Req {
     StartRemote { server: String },
     /// Un integrante que puede alojar pide apagarlo (guardando) en esta PC.
     StopRemote { server: String },
+    /// Administración de jugadores (vida, hambre, experiencia, inventario, matar, ficha) pedida
+    /// por la propietaria cuando el servidor lo aloja otra PC. La anfitriona comprueba el permiso.
+    PlayerOp { server: String, op: serde_json::Value },
 }
 
 impl Req {
@@ -194,7 +199,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } | Req::PackChunk { server, .. } | Req::StartRemote { server } | Req::StopRemote { server } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } | Req::PackChunk { server, .. } | Req::StartRemote { server } | Req::StopRemote { server } | Req::PlayerOp { server, .. } => server,
         }
     }
 }
@@ -1457,6 +1462,18 @@ impl GroupNode {
         };
         match inner.rpc_timeout(&target, &Req::StartRemote { server: server.into() }, Duration::from_secs(30)).await? {
             Resp::Text { text } => { inner.tick_server(server).await; Ok(text) }
+            Resp::Err { msg } => bail!(msg),
+            _ => bail!("respuesta inesperada"),
+        }
+    }
+
+    /// Operación sobre un jugador en la PC que aloja el servidor (solo la propietaria).
+    pub async fn player_op(&self, server: &str, op: serde_json::Value) -> Result<serde_json::Value> {
+        let l = lease::read(server).filter(|l| l.state == LeaseState::Hosting).ok_or_else(|| anyhow!("Nadie lo está alojando: encendelo para administrar a los jugadores conectados."))?;
+        if l.host == self.inner.me { bail!("Lo aloja esta PC."); }
+        if !self.inner.recently_ok(server, &l.host, self.inner.timing.host_dead) { bail!("La PC que lo aloja ({}) no responde.", nice(&l.host_name)); }
+        match self.inner.rpc_timeout(&l.host, &Req::PlayerOp { server: server.into(), op }, Duration::from_secs(25)).await? {
+            Resp::Text { text } => Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))),
             Resp::Err { msg } => bail!(msg),
             _ => bail!("respuesta inesperada"),
         }
@@ -3171,6 +3188,21 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             let inner2 = inner.clone();
             tokio::spawn(async move { let _ = inner2.blocking(&server, |l, s| l.stop(s)).await; });
             Resp::Text { text: "Deteniendo y guardando.".into() }
+        }
+        Req::PlayerOp { server, op } => {
+            let share = network::load_share(&server);
+            // Ver la ficha: cualquier integrante. Cambiar algo: solo la propietaria.
+            let view_only = matches!(op.get("kind").and_then(|k| k.as_str()), Some("detail") | Some("list"));
+            if view_only { if share.member(remote).is_none() { return Resp::Err { msg: "No sos parte de este grupo.".into() }; } }
+            else if signed::owner_of(&share).as_deref() != Some(remote) { return Resp::Err { msg: "Solo la PC propietaria puede administrar a los jugadores.".into() }; }
+            if !lease::read(&server).map(|l| l.held_by(&inner.me)).unwrap_or(false) { return Resp::Err { msg: "Esta PC ya no aloja el servidor.".into() }; }
+            let who = inner.with_state(&server, |s| s.infos.get(remote).map(|i| i.name.clone())).unwrap_or_else(|| "La propietaria".into());
+            let l = inner.local.clone();
+            match tokio::task::spawn_blocking(move || l.player_op(&server, &op, &format!("{who} (desde su PC)"))).await {
+                Ok(Ok(v)) => Resp::Text { text: v.to_string() },
+                Ok(Err(e)) => Resp::Err { msg: e },
+                Err(_) => Resp::Err { msg: "Se interrumpió.".into() },
+            }
         }
         Req::Nudge { .. } => {
             // Una conexión nueva hacia esa PC, que se cierra enseguida (solo sirve para que su

@@ -683,9 +683,16 @@ pub fn recheck_client_reconnect() {
 /* ───────── Jugadores, mundo y diagnóstico ───────── */
 
 #[tauri::command]
-pub fn players_list(id: String, mgr: State<'_, Manager>) -> AppResult<Vec<host939_core::players::PlayerView>> {
+pub async fn players_list(app: AppHandle, id: String) -> AppResult<serde_json::Value> {
+    // Si lo aloja otra PC del grupo, la lista real (quién está conectado) está allá.
+    if crate::v3::hosted_elsewhere(&app, &id).await {
+        let cl = app.state::<crate::network::Cluster>();
+        if let Ok(n) = cl.node().await {
+            if let Ok(v) = n.player_op(&id, serde_json::json!({ "kind": "list" })).await { if v.is_array() { return Ok(v); } }
+        }
+    }
     let cfg = instance::load(&id)?;
-    Ok(host939_core::players::list(&mgr, &cfg))
+    serde_json::to_value(host939_core::players::list(&app.state::<Manager>(), &cfg)).map_err(|e| AppError::invalid(e.to_string()))
 }
 
 #[tauri::command]

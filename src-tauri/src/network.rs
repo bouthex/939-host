@@ -94,6 +94,9 @@ impl LocalHost for AppLocal {
         };
         (st.into(), detail, players)
     }
+    fn player_op(&self, server: &str, op: &serde_json::Value, who: &str) -> Result<serde_json::Value, String> {
+        crate::v3::player_op_local(&self.0, server, op, who).map_err(|e| e.message)
+    }
     fn run_stats(&self, server: &str) -> Option<host939_cluster::RunStats> {
         let cfg = instance::load(server).ok()?;
         let rt = self.0.state::<Manager>().runtime(server);

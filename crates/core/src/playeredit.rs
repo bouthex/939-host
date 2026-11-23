@@ -304,3 +304,173 @@ pub fn kill(mgr: &Manager, cfg: &ServerConfig, name: &str, who: &str) -> AppResu
     audit(&cfg.id, &format!("jugador-matado {name}"), who);
     Ok(format!("{name} murió."))
 }
+
+/* ───────── Inventario en vivo ───────── */
+//
+// Solo con el jugador conectado y con comandos oficiales de Minecraft (no se edita el archivo
+// mientras el juego lo tiene abierto). Cada operación se comprueba leyendo otra vez los datos
+// del jugador: si no quedó como se pidió, se informa el error real.
+// - Dar: `give` (todas las versiones).
+// - Quitar: `item replace … with air` (1.17+) o `replaceitem … air` (1.13 a 1.16).
+// - Mover: `item replace … from entity` (1.17+), conserva encantamientos, nombre y daño.
+// - Cambiar la cantidad: `item modify` con un modificador en línea (1.20.5+), conserva todo lo
+//   demás. En versiones anteriores solo se puede bajar con `clear` si ese objeto está en un solo
+//   casillero. (Sintaxis comprobada con servidores reales 1.16.5, 1.17.1, 1.20.2, 1.20.4,
+//   1.20.5, 1.21.4, 1.21.11, 26.1 y 26.3.)
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum InvOp {
+    Give { item: String, count: u32 },
+    #[serde(rename_all = "camelCase")]
+    SetCount { group: String, slot: i64, count: u32 },
+    #[serde(rename_all = "camelCase")]
+    Remove { group: String, slot: i64 },
+    #[serde(rename_all = "camelCase")]
+    Move { group: String, from: i64, to: i64 },
+}
+
+/// Nombre del casillero para `/item` (`hotbar.0`, `inventory.4`, `armor.head`, `enderchest.3`…).
+pub fn slot_name(group: &str, slot: i64) -> Option<String> {
+    match (group, slot) {
+        ("ender", 0..=26) => Some(format!("enderchest.{slot}")),
+        ("ender", _) => None,
+        (_, 0..=8) => Some(format!("hotbar.{slot}")),
+        (_, 9..=35) => Some(format!("inventory.{}", slot - 9)),
+        (_, 100) => Some("armor.feet".into()),
+        (_, 101) => Some("armor.legs".into()),
+        (_, 102) => Some("armor.chest".into()),
+        (_, 103) => Some("armor.head".into()),
+        (_, -106) => Some("weapon.offhand".into()),
+        _ => None,
+    }
+}
+
+/// Id de objeto válido (`minecraft:diamond`, `diamond`, `create:cogwheel`).
+pub fn item_id(s: &str) -> Option<String> {
+    let s = s.trim().to_lowercase();
+    let ok = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-./".contains(c));
+    let full = if s.contains(':') { s } else { format!("minecraft:{s}") };
+    let (ns, path) = full.split_once(':')?;
+    (ok(ns) && ok(path) && !ns.contains('/')).then_some(full)
+}
+
+fn item_at(d: &playerdata::PlayerDetail, group: &str, slot: i64) -> Option<playerdata::Item> {
+    if group == "ender" { return d.ender.iter().find(|i| i.slot == slot).cloned(); }
+    let e = &d.equipment;
+    match slot {
+        103 => e.head.clone(), 102 => e.chest.clone(), 101 => e.legs.clone(), 100 => e.feet.clone(), -106 => e.offhand.clone(),
+        _ => d.inventory.iter().find(|i| i.slot == slot).cloned(),
+    }
+}
+
+/// Aplica una operación de inventario con el jugador conectado. Devuelve el texto para mostrar.
+pub fn inventory(mgr: &Manager, cfg: &ServerConfig, name: &str, uuid: &str, op: &InvOp, who: &str) -> AppResult<String> {
+    if !crate::players::valid_name(name) { return Err(AppError::invalid("Jugador inválido.")); }
+    let _turn = Turn::take(&cfg.id, name)?;
+    if !mgr.runtime(&cfg.id).lock().unwrap().players.contains(name) {
+        return Err(AppError::invalid(&format!("{name} no está conectado. El inventario se cambia con el jugador en el juego (con comandos de Minecraft); desconectado solo se puede ver.")));
+    }
+    let mc = &cfg.mc_version;
+    let read = || playerdata::detail(mgr, cfg, name, uuid, true);
+    let before = read()?;
+    let send = |c: &str| mgr.send_command(&cfg.id, c);
+    let settle = || std::thread::sleep(Duration::from_millis(350));
+    let (msg, ok): (String, Box<dyn Fn(&playerdata::PlayerDetail) -> bool>) = match op {
+        InvOp::Give { item, count } => {
+            let id = item_id(item).ok_or_else(|| AppError::invalid("Ese no es un id de objeto válido (por ejemplo minecraft:diamond)."))?;
+            if !(1..=2304).contains(count) { return Err(AppError::invalid("La cantidad va de 1 a 2304 (36 casilleros de 64).")); }
+            let line = mgr.query(&cfg.id, &format!("give {name} {id} {count}"), &["Gave ", "Given ", "Unknown item", "No player was found", "Unknown or incomplete command", "Invalid", "Can't find element"], Duration::from_secs(4))?;
+            if !(line.contains("Gave ") || line.contains("Given ")) { return Err(AppError::invalid(&format!("Minecraft no lo dio: {}", line.split("]: ").last().unwrap_or(&line).trim()))); }
+            audit(&cfg.id, &format!("inventario {name}: dar {count} {id}"), who);
+            return Ok(format!("Le diste {count} × {id} a {name}. Si no tenía lugar, lo que sobró quedó en el piso a sus pies."));
+        }
+        InvOp::Remove { group, slot } => {
+            let sn = slot_name(group, *slot).ok_or_else(|| AppError::invalid("Casillero inválido."))?;
+            let it = item_at(&before, group, *slot).ok_or_else(|| AppError::invalid("Ese casillero ya está vacío."))?;
+            if release_at_least(mc, 17, 0) { send(&format!("item replace entity {name} {sn} with minecraft:air"))?; }
+            else if release_at_least(mc, 13, 0) {
+                if group == "ender" { return Err(AppError::invalid("En esta versión de Minecraft no hay un comando para el cofre de ender (llegó en 1.17).")); }
+                send(&format!("replaceitem entity {name} {sn} minecraft:air"))?;
+            } else { return Err(AppError::invalid("Esta versión de Minecraft no tiene un comando para vaciar un casillero (llegó en 1.13).")); }
+            let (g, s) = (group.clone(), *slot);
+            (format!("Quitaste {} × {} de {name}.", it.count, it.id), Box::new(move |d| item_at(d, &g, s).is_none()))
+        }
+        InvOp::Move { group, from, to } => {
+            if !release_at_least(mc, 17, 0) { return Err(AppError::invalid("Mover objetos entre casilleros necesita Minecraft 1.17 o más nuevo (el comando /item).")); }
+            let (sf, st) = (slot_name(group, *from).ok_or_else(|| AppError::invalid("Casillero inválido."))?, slot_name(group, *to).ok_or_else(|| AppError::invalid("Casillero inválido."))?);
+            let it = item_at(&before, group, *from).ok_or_else(|| AppError::invalid("El casillero de origen está vacío."))?;
+            if item_at(&before, group, *to).is_some() { return Err(AppError::invalid("El casillero de destino está ocupado: elegí uno vacío.")); }
+            send(&format!("item replace entity {name} {st} from entity {name} {sf}"))?;
+            settle();
+            // Solo se vacía el origen si la copia quedó en el destino (nunca se pierde el objeto).
+            let mid = read()?;
+            if item_at(&mid, group, *to).map(|x| x.id != it.id || x.count != it.count).unwrap_or(true) {
+                return Err(AppError::invalid("Minecraft no copió el objeto al casillero nuevo (puede que ese casillero no acepte ese objeto, como una armadura en otro lugar). No se cambió nada."));
+            }
+            send(&format!("item replace entity {name} {sf} with minecraft:air"))?;
+            let (g, f, t, id, n) = (group.clone(), *from, *to, it.id.clone(), it.count);
+            (format!("Moviste {} × {} de casillero.", it.count, it.id), Box::new(move |d| item_at(d, &g, f).is_none() && item_at(d, &g, t).map(|x| x.id == id && x.count == n).unwrap_or(false)))
+        }
+        InvOp::SetCount { group, slot, count } => {
+            let sn = slot_name(group, *slot).ok_or_else(|| AppError::invalid("Casillero inválido."))?;
+            let it = item_at(&before, group, *slot).ok_or_else(|| AppError::invalid("Ese casillero está vacío."))?;
+            if *count == 0 { return inventory_remove_again(mgr, cfg, name, uuid, group, *slot, who); }
+            if !(1..=99).contains(count) { return Err(AppError::invalid("En un casillero entran de 1 a 99 (según el objeto, el máximo suele ser 64, 16 o 1).")); }
+            if *count as i64 == it.count { return Ok("Ya tiene esa cantidad.".into()); }
+            if release_at_least(mc, 20, 5) {
+                // Modificador en línea: desde 1.20.5 con la clave «function»; en 26.3 pasó a
+                // llamarse «type» (comprobado con servidores reales). Se prueba uno y, si
+                // Minecraft pide el otro, se usa ese.
+                let errs = ["Failed to parse", "Expected whitespace", "Unknown or incomplete command", "Incorrect argument", "No entity was found"];
+                let try_key = |k: &str| mgr.query(&cfg.id, &format!("item modify entity {name} {sn} {{{k}:\"minecraft:set_count\",count:{count}}}"), &errs, Duration::from_millis(1500));
+                if let Ok(line) = try_key("function") {
+                    if line.contains("key type") || line.contains("No key function") && line.contains("type") {
+                        if let Ok(l2) = try_key("type") { if l2.contains("Failed") || l2.contains("Expected") || l2.contains("Unknown") { return Err(AppError::invalid(&format!("Minecraft no aceptó el cambio: {}", l2.trim()))); } }
+                    } else if !line.contains("No entity") { return Err(AppError::invalid(&format!("Minecraft no aceptó el cambio: {}", line.trim()))); }
+                }
+            } else if (*count as i64) < it.count && group != "ender" {
+                let same = before.inventory.iter().filter(|i| i.id == it.id).count() + [&before.equipment.head, &before.equipment.chest, &before.equipment.legs, &before.equipment.feet, &before.equipment.offhand].iter().filter(|x| x.as_ref().map(|x| x.id == it.id).unwrap_or(false)).count();
+                if same != 1 { return Err(AppError::invalid("En esta versión de Minecraft (anterior a 1.20.5) solo se puede bajar la cantidad si ese objeto está en un único casillero. Para un casillero exacto hace falta 1.20.5 o más nuevo.")); }
+                send(&format!("clear {name} {} {}", it.id, it.count - *count as i64))?;
+            } else {
+                return Err(AppError::invalid("Subir la cantidad de un casillero necesita Minecraft 1.20.5 o más nuevo. Podés usar «Dar» para agregar más."));
+            }
+            let (g, s, n) = (group.clone(), *slot, *count as i64);
+            (format!("{} ahora tiene {count} × {} en ese casillero.", name, it.id), Box::new(move |d| item_at(d, &g, s).map(|x| x.count == n).unwrap_or(false)))
+        }
+    };
+    settle();
+    let after = read()?;
+    if !ok(&after) {
+        // Pequeña espera extra por si el juego tardó un tick más.
+        std::thread::sleep(Duration::from_millis(600));
+        if !ok(&read()?) { return Err(AppError::invalid("Minecraft recibió el comando pero el inventario no quedó como se pidió (puede que el objeto no admita esa cantidad o que un mod lo impida).")); }
+    }
+    audit(&cfg.id, &format!("inventario {name}: {msg}"), who);
+    Ok(msg)
+}
+
+fn inventory_remove_again(mgr: &Manager, cfg: &ServerConfig, name: &str, uuid: &str, group: &str, slot: i64, who: &str) -> AppResult<String> {
+    // `inventory` ya tomó el turno de este jugador: se libera para la operación de quitar.
+    BUSY.lock().unwrap().remove(&format!("{}/{}", cfg.id, name.to_lowercase()));
+    inventory(mgr, cfg, name, uuid, &InvOp::Remove { group: group.into(), slot }, who)
+}
+
+#[cfg(test)]
+mod inv_tests {
+    use super::*;
+    #[test]
+    fn casilleros_e_ids() {
+        assert_eq!(slot_name("inv", 0).unwrap(), "hotbar.0");
+        assert_eq!(slot_name("inv", 9).unwrap(), "inventory.0");
+        assert_eq!(slot_name("inv", 35).unwrap(), "inventory.26");
+        assert_eq!(slot_name("eq", 103).unwrap(), "armor.head");
+        assert_eq!(slot_name("eq", -106).unwrap(), "weapon.offhand");
+        assert_eq!(slot_name("ender", 26).unwrap(), "enderchest.26");
+        assert!(slot_name("ender", 27).is_none() && slot_name("inv", 36).is_none());
+        assert_eq!(item_id("Diamond").unwrap(), "minecraft:diamond");
+        assert_eq!(item_id("create:cogwheel").unwrap(), "create:cogwheel");
+        for bad in ["", "a b", "x;say hi", "minecraft:", ":x", "a:b c", "a:b\nsay x", "ns/x:y"] { assert!(item_id(bad).is_none(), "{bad:?}"); }
+    }
+}
