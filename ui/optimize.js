@@ -23,7 +23,7 @@ function optListHTML(o, sel, editable) {
       ${editable ? `<input type="checkbox" data-om="${esc(c.slug)}" ${on ? 'checked' : ''} ${c.available && !c.installed ? '' : 'disabled'}>` : ''}
       ${c.iconUrl ? `<img src="${esc(c.iconUrl)}" alt="" loading="lazy">` : `<span class="ph">${icon('cube', 16)}</span>`}
       <span class="grow"><span class="row" style="gap:8px;flex-wrap:wrap"><b>${esc(c.title)}</b>${c.versionNumber ? `<span class="xs t3 mono">${esc(c.versionNumber)}</span>` : ''}
-        ${c.experimental ? '<span class="tag hold">Experimental</span>' : c.tier === 'max' ? '<span class="tag">Máximo</span>' : '<span class="tag go">Recomendado</span>'}
+        ${c.source === 'modrinth' ? '<span class="tag" title="Encontrado ahora en la categoría «optimización» de Modrinth para esta versión. 939 Host no lo revisó: elegilo solo si lo conocés.">Modrinth</span>' : c.experimental ? '<span class="tag hold">Experimental</span>' : c.tier === 'max' ? '<span class="tag">Máximo</span>' : '<span class="tag go">Recomendado</span>'}
         ${c.installed ? '<span class="tag">Instalado</span>' : ''}</span>
         <span class="sm t2">${esc(c.what)}</span>
         <span class="xs t3">${c.available ? `${sideText(c)}${c.dependencies.length ? ` · necesita ${esc(c.dependencies.join(', '))} (se instala solo)` : ''}${c.avoidWith.length ? ` · no combinar con ${esc(c.avoidWith.map((a) => niceSlug(o, a)).join(', '))}` : ''}` : esc(c.unavailableReason || 'No disponible')}</span></span>
@@ -36,10 +36,12 @@ async function optDialog({ mc, loader, id, preset = 'recommended', current }) {
   let o;
   try { o = await optLoad(mc, loader, id); } catch (e) { fail(e); return null; }
   if (!o.candidates.some((c) => c.available)) {
-    await dialog({ title: 'Mods de rendimiento', cancel: null, buttons: [{ label: 'Entendido', value: true, kind: 'pri' }], body: `<p>Ninguno de los mods de rendimiento que 939 Host considera confiables tiene versión para ${loaderName(loader)} ${esc(mc)} todavía. No se instala nada en su lugar.</p>` });
+    const old = /^1\.(\d+)$/.test(mc) && +mc.split('.')[1] < 17;
+    await dialog({ title: 'Mods de rendimiento', cancel: null, buttons: [{ label: 'Entendido', value: true, kind: 'pri' }], body: `<p>Consultamos Modrinth ahora: no hay mods de rendimiento que funcionen en el servidor publicados para ${loaderName(loader)} ${esc(mc)} exacto (ni en la lista de 939 Host ni en la categoría «optimización»). No se instala nada en su lugar.</p>${old ? `<p class="sm t2">Los mods de esa época casi siempre se publicaron para la última versión de la serie (por ejemplo ${esc(mc)}.4 en vez de ${esc(mc)}), que es compatible con los mismos mundos. Si te sirve, podés cambiar la versión del servidor desde Ajustes.</p>` : ''}` });
     return null;
   }
-  let mode = preset;
+  // Sin nada del catálogo para esta versión: se abre en «Personalizado» con lo que hay en Modrinth.
+  let mode = o.recommended.length ? preset : 'custom';
   const sel = new Set(current || o[preset] || o.recommended);
   const chosen = await dialog({ title: `Mods de rendimiento · ${loaderName(loader)} ${esc(mc)}`, wide: true, confirm: id ? 'Instalar' : 'Usar esta selección',
     body: `<div class="seg" role="tablist">${[['recommended', 'Recomendado'], ['max', 'Máximo rendimiento'], ['custom', 'Personalizado']].map(([k, t]) => `<button data-op="${k}" class="${k === mode ? 'on' : ''}">${t}</button>`).join('')}</div>

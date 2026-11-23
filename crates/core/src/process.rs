@@ -309,6 +309,13 @@ impl Manager {
         cmd.current_dir(&run_dir).args(jvm_args(cfg));
         match &launch {
             Launch::Jar(j) => { cmd.arg("-jar").arg(j); }
+            // Java 8 no entiende los archivos de argumentos («@archivo» llegó en Java 9): lo toma
+            // como el nombre de la clase principal y no arranca («no se ha encontrado o cargado la
+            // clase principal @…»). Con Java 8 (Minecraft 1.16 y anteriores) se pasan sueltos.
+            Launch::ArgsFile(f) if cfg.java_major < 9 => {
+                let text = std::fs::read_to_string(run_dir.join(f)).map_err(|e| AppError::new("missing", format!("No se pudo leer {f}: {e}. Reinstalá el servidor desde Ajustes → Avanzado.")))?;
+                cmd.args(expand_args_file(&text));
+            }
             Launch::ArgsFile(f) => { cmd.arg(format!("@{f}")); }
         }
         cmd.arg("nogui");
@@ -733,6 +740,29 @@ pub fn supports_tick(mc: &str) -> bool {
     mc.split('.').next().and_then(|n| n.parse::<u32>().ok()).map(|n| n >= 2).unwrap_or(false)
 }
 
+/// Separa un archivo de argumentos de Java (`@archivo`) como lo hace el propio Java 9+: espacios o
+/// saltos de línea separan, las comillas (simples o dobles) agrupan, `#` al inicio de línea es
+/// un comentario.
+pub fn expand_args_file(text: &str) -> Vec<String> {
+    let mut out = vec![];
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') { continue; }
+        let (mut cur, mut quote, mut has) = (String::new(), None::<char>, false);
+        for ch in t.chars() {
+            match (quote, ch) {
+                (Some(q), c) if c == q => quote = None,
+                (Some(_), c) => cur.push(c),
+                (None, '"') | (None, '\'') => { quote = Some(ch); has = true; }
+                (None, c) if c.is_whitespace() => { if has || !cur.is_empty() { out.push(std::mem::take(&mut cur)); has = false; } }
+                (None, c) => cur.push(c),
+            }
+        }
+        if has || !cur.is_empty() { out.push(cur); }
+    }
+    out
+}
+
 /// Cómo se arranca el servidor según el loader.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Launch {
@@ -1039,6 +1069,9 @@ mod launch_tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, "-cp x").unwrap();
         assert!(matches!(launch_target(&forge), Some(Launch::ArgsFile(_))));
+        // Lo que deja 939 Host para Fabric (y lo que pasa a mano con Java 8).
+        let a = expand_args_file("-Dfabric.gameJarPath=server.jar\n-cp\n\"libraries/a b.jar;libraries/c.jar\"\n# comentario\nnet.fabricmc.loader.impl.launch.knot.KnotServer\n");
+        assert_eq!(a, vec!["-Dfabric.gameJarPath=server.jar", "-cp", "libraries/a b.jar;libraries/c.jar", "net.fabricmc.loader.impl.launch.knot.KnotServer"]);
 
         let old = cfg(Loader::Forge, Some("14.23.5.2860"));
         let run = paths::server_run_dir(&old.id);

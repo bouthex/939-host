@@ -190,6 +190,9 @@ pub trait Source: Sync {
     fn project_versions(&self, project: &str, mc: &str, loader: &str) -> impl Future<Output = AppResult<Vec<Version>>> + Send;
     fn projects(&self, ids: &[String]) -> impl Future<Output = AppResult<Vec<Project>>> + Send;
     fn versions_by_sha1(&self, hashes: &[String]) -> impl Future<Output = AppResult<HashMap<String, Version>>> + Send;
+    /// Mods de la categoría «optimización» que corren en el servidor para esa versión exacta y
+    /// loader, los más descargados primero (ver `optimize`). Sin red: ninguno.
+    fn search_optimization(&self, _mc: &str, _loader: &str) -> impl Future<Output = AppResult<Vec<SearchHit>>> + Send { async { Ok(vec![]) } }
 }
 
 /// Cliente real de Modrinth.
@@ -275,6 +278,9 @@ impl Modrinth {
 }
 
 impl Source for Modrinth {
+    async fn search_optimization(&self, mc: &str, loader: &str) -> AppResult<Vec<SearchHit>> {
+        Ok(self.search_filtered("", mc, loader, &["optimization".to_string()], "", "downloads", 0).await?.hits)
+    }
     async fn version(&self, id: &str) -> AppResult<Version> {
         net::get_json(&format!("{API}/version/{}", enc(id)), "Modrinth").await
     }

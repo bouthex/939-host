@@ -40,7 +40,7 @@ function paintRepair() {
 function diagnosisHTML() {
   const d = rp.diag;
   if (!d.problems.length) return `<div class="pad stack" style="padding:28px">
-    <div class="row" style="align-items:flex-start"><span class="ok-badge">${icon('check', 22, 2)}</span><div><h2>No encontramos un problema conocido</h2><p class="t2" style="margin:4px 0 0">El último registro no muestra errores que 939 Host sepa resolver solo.</p></div></div>
+    <div class="row" style="align-items:flex-start"><span class="ok-badge">${icon('check', 22, 2)}</span><div><h2>No encontramos un problema conocido</h2><p class="t2" style="margin:4px 0 0">El último arranque no terminó con un error. Si el servidor igual no funciona, revisá la consola.</p></div></div>
     <div class="btns"><button class="btn" data-a="rp-console">Ver consola</button><button class="btn" data-a="rp-diag">Generar informe para pedir ayuda</button><button class="btn pri" data-a="rp-again">${icon('refresh', 16)}Volver a analizar</button></div></div>`;
   return `<div style="padding:24px 28px;display:flex;gap:16px;border-bottom:1px solid var(--line);align-items:flex-start">${icon('wrench', 22)}<div><h2>${esc(d.summary)}</h2><p class="sm t2" style="margin:4px 0 0">${d.fixable ? 'Elegí qué solucionar. Solo se cambia lo necesario.' : 'Estos problemas necesitan que intervengas vos.'}</p></div></div>
     <div style="padding:4px 28px">${d.problems.map((p, i) => `<div class="rep-problem">
@@ -48,7 +48,7 @@ function diagnosisHTML() {
       <div class="grow stack" style="gap:6px"><div class="row wrap" style="gap:8px"><b>${esc(p.title)}</b>${p.fix?.needsAuthorization ? '<span class="chip s">Necesita tu autorización</span>' : ''}</div>
         <span class="sm t2">${esc(p.explanation)}</span>
         ${p.fix ? `<div class="sm"><b>Solución:</b> ${esc(p.fix.summary)}</div><ul class="sm t2" style="margin:0;padding-left:18px">${p.fix.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul>` : '<span class="sm t3">No hay una solución automática segura para esto.</span>'}
-        ${p.technical.length ? `<details><summary class="xs t3" style="cursor:pointer">Detalle técnico</summary><div class="tech" style="margin-top:6px">${esc(p.technical.join('\n'))}</div></details>` : ''}</div></div>`).join('')}</div>
+        ${p.technical.length ? `<details ${p.kind === 'unknown' ? 'open' : ''}><summary class="xs t3" style="cursor:pointer">Detalle técnico</summary><div class="tech" style="margin-top:6px">${esc(p.technical.join('\n'))}</div></details>` : ''}</div></div>`).join('')}</div>
     ${d.fixable ? `<div style="padding:18px 28px;background:var(--surface);border-top:1px solid var(--line);border-radius:0 0 var(--r-card) var(--r-card);display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <div class="grow stack" style="gap:6px"><div class="row sm" style="gap:8px">${icon('shield', 15)}<span>Antes de cambiar nada se crea el punto de restauración «Antes de reparar». Todo se puede deshacer.</span></div>
         <label class="check sm"><input type="checkbox" id="rp-verify" ${rp.verify ? 'checked' : ''}><span>Después, arrancar el servidor para comprobar que funciona</span></label></div>

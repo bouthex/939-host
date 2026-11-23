@@ -371,6 +371,18 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
             }
         }
     }
+    // Java no pudo ni empezar: no encontró la clase principal.
+    if let Some(line) = log.lines().find(|l| l.contains("Could not find or load main class") || l.contains("no se ha encontrado o cargado la clase principal") || l.contains("Main class name has not been specified")) {
+        let argfile = line.contains(" @") || line.contains("principal @");
+        add(&mut problems, Problem { id: "launch".into(), kind: "launch".into(),
+            title: if argfile { format!("Java {} no entendía la forma de arrancar el servidor", cfg.java_major) } else { "Java no encontró el programa del servidor".into() },
+            explanation: if argfile {
+                "Las versiones anteriores de 939 Host arrancaban Fabric con un archivo de argumentos («@archivo»), algo que Java 8 no entiende (llegó en Java 9). Por eso los servidores Fabric de Minecraft 1.16 o anterior no arrancaban. Esta versión ya los arranca de la forma que entiende Java 8: volvé a iniciarlo. No hay que cambiar nada del servidor.".into()
+            } else {
+                "Faltan archivos del servidor o del loader (por ejemplo, una descarga incompleta). La solución es reinstalar los archivos del servidor desde Ajustes → Avanzado → «Reinstalar»: no toca el mundo.".into()
+            },
+            fix: None, technical: vec![line.trim().to_string()] });
+    }
     let active = mgr.runtime(&cfg.id).lock().unwrap().is_active();
     // Solo si el puerto sigue ocupado ahora: un registro viejo con "FAILED TO BIND" no alcanza.
     // Comprobación igual a la de Java (modo exclusivo, IPv4 e IPv6): ver `ports`.
@@ -613,6 +625,24 @@ pub async fn analyze<S: Source>(src: &S, mgr: &Manager, cfg: &ServerConfig, max_
         }
     }
 
+    // El último arranque falló y ninguna regla lo explica: no se dice «no hay problemas». Se
+    // muestran las líneas de error reales del registro para que se vea qué pasó.
+    let crashed = log.contains("se cerró inesperadamente") || log.contains("Crash report") || log.contains("---- Minecraft Crash Report");
+    if problems.is_empty() && crashed {
+        let errs: Vec<String> = log.lines().filter(|l| {
+            let t = l.trim();
+            !t.starts_with("── 939 Host") && (t.contains("ERROR") || t.contains("FATAL") || t.contains("Exception") || t.starts_with("Caused by") || t.contains("Error:") || t.starts_with("[stderr]") || t.contains("Description:"))
+        }).take(14).map(|l| l.trim().chars().take(400).collect()).collect();
+        add(&mut problems, Problem { id: "unknown".into(), kind: "unknown".into(),
+            title: "El servidor no arrancó y no reconocemos la causa".into(),
+            explanation: if errs.is_empty() {
+                "El servidor se cerró sin dejar un error claro en el registro. Abrí la consola para ver lo último que escribió; si agregaste mods hace poco, probá quitarlos de a uno.".into()
+            } else {
+                "939 Host no tiene una solución automática segura para este error. Abajo están las líneas reales del registro: suelen nombrar el mod o el archivo que falló.".into()
+            },
+            fix: None, technical: errs });
+    }
+
     let fixable = problems.iter().any(|p| p.fix.is_some());
     let summary = match problems.len() {
         0 => "No encontramos un problema conocido.".into(),
@@ -819,6 +849,26 @@ mod tests {
         assert!(ov.contains(&("stonevaults".into(), "modmenu".into())) && ov.contains(&("mr_dungeons_andtaverns".into(), "modmenu".into())));
         let again = analyze(&Offline, &mgr, &cfg, 8192, false).await;
         assert!(again.problems.is_empty(), "después de reparar no vuelve a pedir nada: {:?}", again.problems.iter().map(|p| &p.title).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn fabric_viejo_con_java_8_explica_la_causa_y_un_error_desconocido_no_dice_que_esta_todo_bien() {
+        let mut cfg = cfg_fabric();
+        cfg.id = "rep-launch".into(); cfg.mc_version = "1.14".into(); cfg.java_major = 8;
+        let logs = paths::server_run_dir(&cfg.id).join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        // El registro real del servidor Fabric 1.14 que no arrancaba.
+        std::fs::write(logs.join("latest.log"), "── 939 Host: iniciando prueba 1.14 (Fabric 1.14) con Java 8 ──\n[stderr] Error: no se ha encontrado o cargado la clase principal @939host-fabric-args.txt\n── 939 Host: El servidor se cerró inesperadamente (código 1). Revisá la consola. ──\n").unwrap();
+        let mgr = Manager::new(std::sync::Arc::new(crate::events::NoEvents));
+        let d = analyze(&Offline, &mgr, &cfg, 8192, false).await;
+        let p = d.problems.iter().find(|p| p.kind == "launch").expect("reconoce el arranque fallido");
+        assert!(p.title.contains("Java 8") && p.explanation.contains("Java 9"), "{}", p.title);
+        // Un cierre con un error que ninguna regla conoce: se muestran las líneas reales.
+        std::fs::write(logs.join("latest.log"), "── 939 Host: iniciando x ──\n[12:00:00] [main/ERROR]: Algo raro pasó en com.ejemplo.Mod\njava.lang.IllegalStateException: raro\n── 939 Host: El servidor se cerró inesperadamente (código 1). Revisá la consola. ──\n").unwrap();
+        let d = analyze(&Offline, &mgr, &cfg, 8192, false).await;
+        let p = d.problems.iter().find(|p| p.kind == "unknown").expect("no dice «no encontramos un problema» si no arrancó");
+        assert!(p.technical.iter().any(|l| l.contains("IllegalStateException")) && p.fix.is_none());
+        assert!(d.problems.len() == 1);
     }
 
     #[tokio::test]

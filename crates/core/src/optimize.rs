@@ -72,6 +72,9 @@ pub struct Candidate {
     pub dependencies: Vec<String>,
     pub avoid_with: Vec<String>,
     pub installed: bool,
+    /// "catalog": elegido y revisado por 939 Host. "modrinth": encontrado ahora en la categoría
+    /// «optimización» de Modrinth para esta versión exacta (nunca entra solo en un preset).
+    pub source: String,
 }
 
 /// Qué candidatos sirven para este Minecraft y loader, consultando a Modrinth.
@@ -88,7 +91,7 @@ pub async fn candidates<S: Source>(src: &S, mc: &str, loader: Loader, installed:
             icon_url: p.and_then(|p| p.icon_url.clone()), summary: p.map(|p| p.description.clone()).unwrap_or_default(), what: k.what.into(),
             tier: k.tier.into(), experimental: k.experimental, available: false, unavailable_reason: None, version_number: None, version_id: None,
             client: p.map(|p| p.client_side.clone()).unwrap_or_else(|| "unknown".into()), dependencies: vec![],
-            avoid_with: k.avoid_with.iter().map(|s| s.to_string()).collect(), installed: false,
+            avoid_with: k.avoid_with.iter().map(|s| s.to_string()).collect(), installed: false, source: "catalog".into(),
         };
         let Some(p) = p else { c.unavailable_reason = Some("No se encontró en Modrinth.".into()); out.push(c); continue };
         c.installed = installed.contains(&p.id);
@@ -103,6 +106,21 @@ pub async fn candidates<S: Source>(src: &S, mc: &str, loader: Loader, installed:
             None => c.unavailable_reason = Some(format!("No tiene versión para {} {mc}.", loader.name())),
         }
         out.push(c);
+    }
+    // Además del catálogo: lo que Modrinth tiene publicado en «optimización» para esta versión
+    // exacta y que corre en el servidor (así una versión vieja, como 1.14, no queda en «ninguno»
+    // si existe algo). Se comprueba que tenga un archivo para la versión y el loader.
+    let hits = src.search_optimization(mc, lid).await.unwrap_or_default();
+    for h in hits.into_iter().filter(|h| !CATALOG.iter().any(|k| k.slug == h.slug)
+        && (h.server_side == "required" || h.server_side == "optional")).take(10) {
+        let Some(v) = src.project_versions(&h.project_id, mc, lid).await.ok().and_then(|v| modrinth::best_version(v, mc, lid)) else { continue };
+        out.push(Candidate {
+            slug: h.slug.clone(), project_id: Some(h.project_id.clone()), title: h.title.clone(), icon_url: h.icon_url.clone(), summary: h.description.clone(),
+            what: h.description.clone(), tier: "custom".into(), experimental: false, available: true, unavailable_reason: None,
+            version_number: Some(v.version_number.clone()), version_id: Some(v.id.clone()), client: h.client_side.clone(),
+            dependencies: v.dependencies.iter().filter(|d| d.dependency_type == DependencyType::Required).filter_map(|d| d.project_id.clone()).collect(),
+            avoid_with: vec![], installed: installed.contains(&h.project_id), source: "modrinth".into(),
+        });
     }
     // Los nombres de las dependencias, para mostrarlas.
     let dep_ids: Vec<String> = out.iter().flat_map(|c| c.dependencies.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
@@ -119,7 +137,7 @@ pub async fn candidates<S: Source>(src: &S, mc: &str, loader: Loader, installed:
 pub fn preset(cands: &[Candidate], which: &str) -> Vec<String> {
     let tiers: &[&str] = match which { "max" => &["recommended", "max"], _ => &["recommended"] };
     let mut pick: Vec<String> = vec![];
-    for c in cands.iter().filter(|c| c.available && !c.experimental && tiers.contains(&c.tier.as_str())) {
+    for c in cands.iter().filter(|c| c.available && !c.experimental && c.source == "catalog" && tiers.contains(&c.tier.as_str())) {
         if c.avoid_with.iter().any(|a| pick.contains(a)) { continue; }
         pick.push(c.slug.clone());
     }
@@ -197,7 +215,7 @@ mod t {
     fn c(slug: &str, tier: &str, avail: bool, avoid: &[&str]) -> Candidate {
         Candidate { slug: slug.into(), project_id: Some(slug.into()), title: slug.into(), icon_url: None, summary: String::new(), what: String::new(), tier: tier.into(),
             experimental: tier == "custom", available: avail, unavailable_reason: None, version_number: None, version_id: None, client: "optional".into(),
-            dependencies: vec![], avoid_with: avoid.iter().map(|s| s.to_string()).collect(), installed: false }
+            dependencies: vec![], avoid_with: avoid.iter().map(|s| s.to_string()).collect(), installed: false, source: "catalog".into() }
     }
     #[test]
     fn presets_respect_tiers_availability_and_conflicts() {
