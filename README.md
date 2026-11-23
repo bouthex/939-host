@@ -182,13 +182,13 @@ funciona.
 ## Estado del proyecto
 
 La versión publicada es la **0.9.0**. La rama
-[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.2.0** (próxima versión), probada en
-Windows reales (servidores, dos PCs en lugares distintos y un cliente real de Minecraft), pero
-**todavía no está publicada**. Las capturas de esta página son de esa versión, con datos de ejemplo.
+[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.3.0** (próxima versión). Hasta la 1.2.0 se probó en Windows reales (servidores, dos
+PCs en lugares distintos y un cliente real de Minecraft); lo nuevo de la 1.3.0 (grupo compartido,
+chat de grupos, inventario en vivo) espera la prueba entre dos PCs. **Todavía no está publicada**. Las capturas de esta página son de esa versión, con datos de ejemplo.
 
 En la 0.9.0 ya están: crear y administrar servidores, mods de Modrinth, puntos de restauración y
 compartir entre PCs. Preparar para jugar, la conexión por IP, las fichas de jugadores e
-inventarios con mods, las actualizaciones automáticas, los resource packs y lo demás de esta página llegan con la 1.1.0 y la 1.2.0.
+inventarios con mods, las actualizaciones automáticas, los resource packs y lo demás de esta página llegan con la 1.1.0, la 1.2.0 y la 1.3.0.
 
 **Necesita configuración aparte:** CurseForge funciona solo con una clave de su API oficial
 ([cómo conseguirla](docs/MANUAL.md#curseforge)). Lo que todavía no hace está en

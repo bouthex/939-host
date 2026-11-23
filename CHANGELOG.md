@@ -1,5 +1,17 @@
 # Registro de cambios
 
+### 1.3.0 (rama rediseno-v3, sin release)
+- Servidor compartido: «Iniciar» desde cualquier integrante lo enciende en la PC que lo aloja (o, con el permiso libre, en la mejor PC conectada con la última versión); pedir ser anfitriona es otra acción. «Detener» desde otra PC (propietaria y coanfitrionas). Dos pedidos a la vez: gana uno y el otro ve quién lo está encendiendo.
+- Traspaso manual y al salir: arreglado «no se pudo copiar el mundo: el punto … no se puede verificar (época o PC no autorizadas)». Causa: la PC que recibía todavía tenía el permiso viejo; ahora lo actualiza desde la PC de origen antes de verificar.
+- Estado en vivo para todo el grupo: la anfitriona avisa cada cambio y las demás PCs lo muestran (lista de servidores y pantalla del servidor) y suenan al quedar en línea. Una comprobación de conexión fallida ya no deja «Preparando» para siempre; una instalación interrumpida ofrece reintentar.
+- Estadísticas reales de la anfitriona para todos: jugadores, tiempo por tick y TPS, memoria y CPU de Java, tiempo encendido y latencia.
+- Dirección `nombre.939host` para todo el grupo. Causa de que no funcionara en otra PC: quedaba solo en la PC que la eligió. También lleva el chat de voz (Simple Voice Chat).
+- Fabric en Minecraft 1.16 o anterior (Java 8) no arrancaba: Java 8 no entiende «@archivo». Reproducido y arreglado con Java 8 real y Fabric 1.14. La reparación reconoce ese error y, si no reconoce otro, muestra las líneas reales del registro en lugar de «no hay problemas».
+- Mods de rendimiento: además del catálogo, los de la categoría «optimización» de Modrinth que corren en el servidor para la versión exacta.
+- Jugadores: inventario en vivo (dar, quitar, mover, cambiar cantidad) con comprobación; la propietaria administra desde su PC aunque lo aloje otra (la anfitriona comprueba el permiso).
+- Recomendación de anfitriona con la red medida entre las PCs (latencia, variación, pérdida, directa o relay), equipo y subida.
+- Amigos: grupos de chat (crear, cambiar nombre, salir) e indicador «está escribiendo».
+
 ### 1.2.0 (rama rediseno-v3, sin release)
 - «Preparar para jugar» conserva los datos de Minecraft: el perfil nuevo recibe una copia de las preferencias del último perfil usado (idioma, teclas, accesibilidad, gráficos, sonido) y de la lista de servidores; nada original se modifica. Causa del problema anterior: el perfil usaba una carpeta propia vacía, por eso arrancaba con opciones por defecto y sin los servidores (los mundos y la lista seguían en el perfil de siempre).
 - La lista de servidores conserva íconos y la elección de resource packs de los servidores que ya estaban (antes se perdían al agregar el de 939 Host). Copias previas de `launcher_profiles.json` (la original y la anterior) y de `servers.dat`.

@@ -2475,8 +2475,10 @@ impl Inner {
             bail!("La PC de {} no puede alojar este servidor.", self.name());
         }
         if self.local.is_running(server) { return Ok(format!("Ya está encendido en la PC de {}.", self.name())); }
-        if !self.with_state(server, |s| if s.busy.is_some() || s.starting_for.is_some() { false } else { s.starting_for = Some(who.to_string()); true }) {
-            return Ok(format!("La PC de {} ya lo está encendiendo.", self.name()));
+        // Dos pedidos a la vez: gana el primero; el otro recibe quién lo está encendiendo y desde dónde.
+        let taken = self.with_state(server, |s| if let Some(b) = &s.busy { Some(b.clone()) } else if let Some(w) = &s.starting_for { Some(format!("lo pidió {w}")) } else { s.starting_for = Some(who.to_string()); None });
+        if let Some(why) = taken {
+            return Ok(format!("La PC de {} ya lo está encendiendo ({why}).", self.name()));
         }
         let r = async {
             match lease::read(server) {
