@@ -188,6 +188,16 @@ pub fn process_memory_mb(probe: &Probe, pid: u32) -> Option<u64> {
     sys.process(pid).map(|p| p.memory() / 1_048_576)
 }
 
+/// Memoria (MB) y CPU del proceso en % del total de la PC (la CPU es el promedio desde la
+/// consulta anterior: la primera vez da 0).
+pub fn process_usage(probe: &Probe, pid: u32) -> Option<(u64, f32)> {
+    let mut sys = probe.0.lock().unwrap();
+    let pid = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_memory().with_cpu());
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f32;
+    sys.process(pid).map(|p| (p.memory() / 1_048_576, (p.cpu_usage() / cores).clamp(0.0, 100.0)))
+}
+
 pub fn process_alive(probe: &Probe, pid: u32) -> bool {
     let mut sys = probe.0.lock().unwrap();
     let pid = Pid::from_u32(pid);

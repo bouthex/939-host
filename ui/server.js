@@ -190,6 +190,7 @@ A['reach-check'] = async (el) => {
 A['issue-ok'] = async () => { try { await invoke('server_clear_join_issue', { id: state.params.id }); refreshServer(); } catch (e) { fail(e); } };
 
 /* ───────── Resumen ───────── */
+let remoteStatsTimer = null;
 tabDraw.summary = async (el) => {
   if (!state.aliases) await loadAliases();
   const v = state.server, c = v.config;
@@ -197,13 +198,19 @@ tabDraw.summary = async (el) => {
   const gg = state.share?.enabled ? state.share.group : null;
   const remoteHost = gg && !gg.iAmHost && gg.lease?.state === 'hosting' && !isActive(v) ? (gg.members.find((m) => m.isHost)?.name || gg.lease.hostName) : null;
   const ji = v.joinIssue;
+  // Lo aloja otra PC: las cifras son las reales de esa PC (llegan por el grupo cada ~5 s).
+  const rs = remoteHost ? gg.hostState?.stats : null;
+  clearTimeout(remoteStatsTimer);
+  if (remoteHost) remoteStatsTimer = setTimeout(() => { if (state.route === 'server' && state.tab === 'summary' && state.params.id === c.id) refreshServer(); }, 5000);
+  const mspt = rs ? rs.mspt : v.mspt, p95 = rs ? rs.msptP95 : v.msptP95, mem = rs ? rs.memoryMb : v.memoryUsedMb;
+  const nPlayers = rs ? rs.playerNames.length : running ? v.players.length : null;
   el.innerHTML = `<div class="stack" style="gap:16px">
     ${ji ? `<div class="issue" role="status">${icon('alert', 18)}<div class="stack" style="gap:4px"><b>${esc(ji.title)}</b><span class="sm t2">${esc(ji.detail)}</span><span class="mono" title="Línea de la consola del servidor">${esc(ji.logLine)}</span></div>
       <div class="btns">${c.loader !== 'vanilla' ? `<button class="btn s" data-a="tab" data-v="mods">${icon('box', 14)}Mods del servidor</button>` : ''}<button class="btn s quiet" data-a="issue-ok">Entendido</button></div></div>` : ''}
     <div class="kpis">
-      <div class="card kpi"><span class="l">Jugadores</span><span class="v">${running ? v.players.length : '—'}<small>de ${c.maxPlayers}</small></span></div>
-      <div class="card kpi"><span class="l">Tiempo por tick</span><span class="v">${v.mspt != null ? v.mspt.toFixed(1).replace('.', ',') : '—'}<small>ms${v.msptP95 != null ? ` · p95 ${v.msptP95.toFixed(1).replace('.', ',')}` : ''}</small></span><span class="xs t3">${v.mspt == null ? 'Disponible con el servidor encendido' : v.mspt < 40 ? 'Fluido (menos de 50 ms)' : v.mspt < 50 ? 'Al límite' : 'Con demoras'}</span></div>
-      <div class="card kpi"><span class="l">Memoria</span><span class="v">${v.memoryUsedMb != null ? fmtMB(v.memoryUsedMb) : '—'}<small>en uso · ${fmtMB(c.memoryMb)} asignados al mundo</small></span>${v.memoryUsedMb != null ? `<div class="bar"><i style="width:${Math.min(100, Math.round(v.memoryUsedMb / c.memoryMb * 100))}%"></i></div>` : ''}</div>
+      <div class="card kpi"><span class="l">Jugadores</span><span class="v">${nPlayers ?? '—'}<small>de ${rs?.maxPlayers || c.maxPlayers}</small></span>${rs?.playerNames?.length ? `<span class="xs t3 ellipsis">${esc(rs.playerNames.join(', '))}</span>` : ''}</div>
+      <div class="card kpi"><span class="l">Tiempo por tick</span><span class="v">${mspt != null ? mspt.toFixed(1).replace('.', ',') : '—'}<small>ms${p95 != null ? ` · p95 ${p95.toFixed(1).replace('.', ',')}` : ''}${mspt != null ? ` · ${Math.min(20, 1000 / Math.max(mspt, 0.01)).toFixed(1).replace('.', ',')} TPS` : ''}</small></span><span class="xs t3">${mspt == null ? (rs ? 'Esta versión de Minecraft no lo informa' : 'Disponible con el servidor encendido') : mspt < 40 ? 'Fluido (menos de 50 ms)' : mspt < 50 ? 'Al límite' : 'Con demoras'}</span></div>
+      <div class="card kpi"><span class="l">Memoria${rs?.cpuPct != null ? ' · CPU' : ''}</span><span class="v">${mem != null ? fmtMB(mem) : '—'}<small>en uso · ${fmtMB(rs?.memoryMaxMb || c.memoryMb)} asignados${rs?.cpuPct != null ? ` · CPU ${Math.round(rs.cpuPct)} %` : ''}</small></span>${mem != null ? `<div class="bar"><i style="width:${Math.min(100, Math.round(mem / (rs?.memoryMaxMb || c.memoryMb) * 100))}%"></i></div>` : ''}${rs ? `<span class="xs t3">En la PC de ${esc(remoteHost)}${rs.uptimeSecs != null ? ` · encendido hace ${fmtDuration(rs.uptimeSecs)}` : ''}${gg.hostState?.rttMs != null ? ` · ${gg.hostState.rttMs} ms hasta esa PC` : ''}</span>` : ''}</div>
       <div class="card kpi"><span class="l">Mundo</span><span class="v">${fmtMB(v.worldSizeMb)}</span><span class="xs t3">${DIFF[c.difficulty] || c.difficulty} · ${MODE[c.gamemode] || c.gamemode}</span></div>
     </div>
     <div class="grid2">

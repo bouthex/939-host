@@ -415,12 +415,16 @@ impl Manager {
         // Métricas: `tick query` cada 20 s mientras está encendido y la ventana está abierta (solo
         // las usa la interfaz; con 939 Host en la bandeja no se le pide trabajo extra a Minecraft).
         {
+            // En un servidor compartido también con la ventana cerrada: las demás PCs del grupo
+            // ven el tiempo por tick real de esta.
             let rt = rt_arc.clone();
+            let sid = cfg.id.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(20));
+                let shared = crate::network::load_share(&sid).enabled;
                 let mut r = rt.lock().unwrap();
                 match r.status() {
-                    RunStatus::Running if r.metrics_supported && METRICS_WANTED.load(std::sync::atomic::Ordering::Relaxed) => {
+                    RunStatus::Running if r.metrics_supported && (shared || METRICS_WANTED.load(std::sync::atomic::Ordering::Relaxed)) => {
                         if let Some(stdin) = r.stdin.as_mut() {
                             if writeln!(stdin, "tick query").and_then(|_| stdin.flush()).is_ok() {
                                 r.suppress_until = Some(Instant::now() + Duration::from_secs(3));

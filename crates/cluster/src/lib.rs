@@ -92,6 +92,7 @@ pub trait LocalHost: Send + Sync + 'static {
     /// saving | restarting | error, con un detalle en palabras y la cantidad de jugadores.
     /// Llegó un mensaje de un amigo (para avisar en la interfaz).
     fn friend_message(&self, _node: &str) {}
+    fn run_stats(&self, _server: &str) -> Option<RunStats> { None }
     fn run_state(&self, server: &str) -> (String, String, u32) { (if self.is_running(server) { "running" } else { "stopped" }.into(), String::new(), 0) }
     /// El servidor que aloja otra PC quedó listo («ready») o falló («error»): un aviso por cambio.
     fn remote_event(&self, _server: &str, _kind: &str, _host_name: &str, _detail: &str) {}
@@ -243,12 +244,34 @@ pub struct Info {
     /// usan si la propietaria no eligió una).
     #[serde(default)]
     pub alias: Option<String>,
+    /// Estadísticas reales del servidor encendido en esta PC (solo la anfitriona las informa).
+    #[serde(default)]
+    pub stats: Option<RunStats>,
+}
+
+/// Estadísticas del servidor encendido, medidas en la PC que lo aloja.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStats {
+    /// Milisegundos por tick (promedio). `None`: esta versión de Minecraft no lo informa.
+    pub mspt: Option<f64>,
+    pub mspt_p95: Option<f64>,
+    /// Memoria en uso del proceso de Java y la asignada.
+    pub memory_mb: Option<u64>,
+    pub memory_max_mb: u32,
+    /// CPU del proceso, en % del total de la PC.
+    pub cpu_pct: Option<f32>,
+    pub uptime_secs: Option<u64>,
+    pub max_players: u32,
+    pub player_names: Vec<String>,
 }
 
 /// Estado del servidor que ven todas las PCs del grupo (el de la PC que lo aloja).
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct HostState { pub state: String, pub detail: String, pub players: u32, pub host_name: String }
+pub struct HostState { pub state: String, pub detail: String, pub players: u32, pub host_name: String,
+    /// Estadísticas reales de la anfitriona y latencia de esta PC hasta ella.
+    pub stats: Option<RunStats>, pub rtt_ms: Option<u64> }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
@@ -1638,7 +1661,9 @@ impl GroupNode {
             let (state, detail, players) = if l.host == inner.me { inner.state_of(server) } else if host_online {
                 infos.get(&l.host).map(|i| (i.state.clone(), i.state_detail.clone(), i.players)).unwrap_or_default()
             } else { ("unreachable".into(), String::new(), 0) };
-            HostState { state: if state.is_empty() { "unknown".into() } else { state }, detail, players, host_name: l.host_name.clone() }
+            let stats = if l.host == inner.me { inner.local.run_stats(server) } else if host_online { infos.get(&l.host).and_then(|i| i.stats.clone()) } else { None };
+            let rtt_ms = if l.host == inner.me { None } else { members.iter().find(|m| m.node_id == l.host).and_then(|m| m.rtt_ms) };
+            HostState { state: if state.is_empty() { "unknown".into() } else { state }, detail, players, host_name: l.host_name.clone(), stats, rtt_ms }
         });
         GroupStatus {
             host_state,
@@ -2168,6 +2193,7 @@ impl Inner {
             voice_port: if self.local.is_running(server) && lease::read(server).map(|l| l.held_by(&self.me)).unwrap_or(false) { host939_core::voice::port(server, self.local.mc_port(server)) } else { None },
             entrance: self.entrance_info(server),
             alias: host939_core::alias::load().get(server).cloned(),
+            stats: if self.local.is_running(server) && lease::read(server).map(|l| l.held_by(&self.me)).unwrap_or(false) { self.local.run_stats(server) } else { None },
         };
         let (state, state_detail, players) = self.state_of(server);
         let base = Info { state, state_detail, players, ..base };

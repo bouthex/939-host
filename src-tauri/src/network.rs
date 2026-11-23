@@ -94,6 +94,20 @@ impl LocalHost for AppLocal {
         };
         (st.into(), detail, players)
     }
+    fn run_stats(&self, server: &str) -> Option<host939_cluster::RunStats> {
+        let cfg = instance::load(server).ok()?;
+        let rt = self.0.state::<Manager>().runtime(server);
+        let (pid, mspt, p95, started, names) = {
+            let r = rt.lock().unwrap();
+            if !r.is_active() { return None; }
+            (r.pid, r.mspt, r.mspt_p95, r.started_at, r.players.iter().cloned().collect::<Vec<_>>())
+        };
+        let usage = pid.and_then(|p| host939_core::hardware::process_usage(&self.0.state::<Probe>(), p));
+        Some(host939_cluster::RunStats {
+            mspt, mspt_p95: p95, memory_mb: usage.map(|u| u.0), memory_max_mb: cfg.memory_mb, cpu_pct: usage.map(|u| u.1),
+            uptime_secs: started.map(|t| (chrono::Local::now() - t).num_seconds().max(0) as u64), max_players: cfg.max_players, player_names: names,
+        })
+    }
     fn op(&self, server: &str, title: &str, stage: &str, fraction: Option<f64>) {
         let mut m = self.1.lock().unwrap();
         let op = m.entry((server.to_string(), title.to_string())).or_insert_with(|| self.0.state::<crate::ops::Ops>().begin(&self.0, server, title, stage, false));
