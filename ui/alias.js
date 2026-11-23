@@ -7,7 +7,7 @@ function aliasRow(id) {
   const st = state.aliases;
   if (!st) return '';
   const it = st.items.find((x) => x.id === id);
-  const hint = '<span class="xs t3">Interna: funciona en las PCs con 939 Host abierto. No es una dirección pública.</span>';
+  const hint = '<span class="xs t3">Interna: funciona en las PCs con 939 Host abierto, aunque lo aloje otra PC del grupo. Lleva también el chat de voz (Simple Voice Chat). No es una dirección pública.</span>';
   if (!it) return `<div class="kv"><span class="k">Dirección propia</span><button class="btn s ghost" data-a="alias-edit" data-id="${esc(id)}">Crear una, como ${esc(st.suggestion[id] || 'servidor')}.939host${icon('chev', 14)}</button></div>`;
   const ready = it.inHosts && it.listening;
   const status = it.error ? `<span class="chk bad" title="${esc(it.error)}">No se pudo abrir</span>`
@@ -26,7 +26,7 @@ A['alias-edit'] = async (el) => {
   const r = await dialog({ title: 'Dirección propia', confirm: 'Guardar',
     body: `<p>Una dirección fácil de recordar para entrar desde Minecraft, sin puerto.</p>
       <label class="field">Dirección<span class="affix"><input class="input mono" id="al-in" value="${esc(label)}" maxlength="40" spellcheck="false"><span class="mono t3">.939host</span></span><span class="hint" id="al-hint">Letras sin acentos, números y guiones.</span></label>
-      <div class="note">${icon('info')}<div class="grow sm"><b>Es una dirección interna.</b> Funciona en esta PC y en las de tu grupo que la creen en su 939 Host. Quien no tenga 939 Host no puede usarla, y no reemplaza a un dominio público. Para activarla, Windows pide permiso de administrador una vez para «Windows PowerShell», que es el que agrega las líneas de 939 Host al archivo hosts (no toca nada más).</div></div>`,
+      <div class="note">${icon('info')}<div class="grow sm"><b>Es una dirección interna.</b> Funciona en esta PC y, si el servidor es de un grupo y sos la propietaria, llega sola a las demás PCs del grupo (cada una la activa una vez con el permiso de Windows). Quien no tenga 939 Host no puede usarla, y no reemplaza a un dominio público. Para activarla, Windows pide permiso de administrador una vez para «Windows PowerShell», que es el que agrega las líneas de 939 Host al archivo hosts (no toca nada más).</div></div>`,
     buttons: [...(cur ? [{ label: 'Quitar dirección', value: 'remove' }] : []), { label: 'Guardar', value: true, kind: 'pri' }],
     onMount: (d) => {
       const i = d.querySelector('#al-in');

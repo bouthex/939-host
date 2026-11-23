@@ -285,7 +285,8 @@ fn main() {
             app.manage(aliases::Aliases::default());
             {
                 let h = app.handle().clone();
-                tauri::async_runtime::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(3)).await; aliases::sync(&h).await; });
+                // Cada 30 s: las direcciones que llegan del grupo (o cambian) quedan escuchando sin reiniciar.
+                tauri::async_runtime::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(3)).await; loop { aliases::sync(&h).await; tokio::time::sleep(std::time::Duration::from_secs(30)).await; } });
             }
             app.manage(network::Cluster::default());
             app.manage(ops::Ops::default());

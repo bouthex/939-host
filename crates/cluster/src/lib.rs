@@ -239,6 +239,10 @@ pub struct Info {
     /// Entrada pública de esta PC para el servidor (jugadores sin 939 Host), si la tiene abierta.
     #[serde(default)]
     pub entrance: Option<EntranceInfo>,
+    /// Dirección `nombre.939host` que eligió esta PC para el servidor (las demás PCs del grupo la
+    /// usan si la propietaria no eligió una).
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 /// Estado del servidor que ven todas las PCs del grupo (el de la PC que lo aloja).
@@ -1325,6 +1329,20 @@ impl GroupNode {
         }))
     }
 
+    /// Dirección `nombre.939host` del grupo para el servidor: la de la propietaria (firmada) o,
+    /// si no eligió, la que eligió otra PC del grupo (la de la PC con id menor, para que todas
+    /// elijan la misma). Antes cada PC tenía que crearla a mano y en las demás no existía.
+    pub fn group_alias(&self, server: &str) -> Option<String> {
+        let share = network::load_share(server);
+        if !share.enabled { return None; }
+        if let Some(a) = share.card.as_ref().and_then(|c| c.get("alias")).and_then(|v| v.as_str()) { return Some(a.to_string()); }
+        self.inner.with_state(server, |s| {
+            let mut v: Vec<(&String, &String)> = s.infos.iter().filter(|(n, _)| share.member(n).is_some()).filter_map(|(n, i)| i.alias.as_ref().map(|a| (n, a))).collect();
+            v.sort();
+            v.first().map(|(_, a)| a.to_string())
+        })
+    }
+
     pub async fn close_alias(&self, server: &str) {
         if let Some(t) = self.inner.routes.lock().await.remove(&format!("alias:{server}")) { t.abort(); }
     }
@@ -1719,7 +1737,7 @@ fn card_for(cfg: &host939_core::model::ServerConfig, rev: u64) -> serde_json::Va
     let icon = std::fs::read(host939_core::paths::server_run_dir(&cfg.id).join("server-icon.png")).ok()
         .filter(|b| cfg.logo.is_some() && b.len() < 64 * 1024 && host939_core::logo::png_size(b).map(|s| s == (64, 64)).unwrap_or(false))
         .map(|b| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(b)));
-    serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "loaderVersion": cfg.loader_version, "rev": rev, "logo": icon, "publicAddress": host939_core::alias::public::get(&cfg.id) })
+    serde_json::json!({ "name": cfg.name, "mcVersion": cfg.mc_version, "loader": format!("{:?}", cfg.loader).to_lowercase(), "loaderVersion": cfg.loader_version, "rev": rev, "logo": icon, "publicAddress": host939_core::alias::public::get(&cfg.id), "alias": host939_core::alias::load().get(&cfg.id) })
 }
 
 fn bump_rev(s: &mut ShareConfig) {
@@ -2149,6 +2167,7 @@ impl Inner {
             state: String::new(), state_detail: String::new(), players: 0,
             voice_port: if self.local.is_running(server) && lease::read(server).map(|l| l.held_by(&self.me)).unwrap_or(false) { host939_core::voice::port(server, self.local.mc_port(server)) } else { None },
             entrance: self.entrance_info(server),
+            alias: host939_core::alias::load().get(server).cloned(),
         };
         let (state, state_detail, players) = self.state_of(server);
         let base = Info { state, state_detail, players, ..base };

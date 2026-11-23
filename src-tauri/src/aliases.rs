@@ -12,7 +12,9 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager as _};
 
 #[derive(Default)]
-pub struct Aliases { local: Mutex<HashMap<String, (String, tokio::task::JoinHandle<()>)>>, shared: Mutex<std::collections::HashSet<String>>, errors: Mutex<HashMap<String, String>> }
+pub struct Aliases { local: Mutex<HashMap<String, (String, tokio::task::JoinHandle<()>)>>, shared: Mutex<std::collections::HashSet<String>>, errors: Mutex<HashMap<String, String>>,
+    /// Direcciones que llegan del grupo (ver `GroupNode::group_alias`), por servidor.
+    group: Mutex<HashMap<String, String>> }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,15 +24,30 @@ pub struct AliasInfo { pub id: String, pub label: String, pub address: String, p
 #[serde(rename_all = "camelCase")]
 pub struct AliasStatus { pub items: Vec<AliasInfo>, pub hosts_pending: bool, pub hosts_readable: bool, pub suggestion: HashMap<String, String> }
 
-fn wanted() -> Vec<(String, String)> {
+/// Direcciones que esta PC tiene que atender: las elegidas acá y, para servidores de un grupo,
+/// la que eligió la propietaria (viaja firmada con los datos públicos del servidor). Antes solo
+/// existían en la PC que la eligió: en las demás PCs del grupo `nombre.939host` no llevaba a nada.
+fn wanted(app: &AppHandle) -> Vec<(String, String)> {
     let ids: std::collections::HashSet<String> = instance::list_configs().into_iter().map(|c| c.id).collect();
-    alias::load().into_iter().filter(|(id, _)| ids.contains(id)).collect()
+    let mut out: Vec<(String, String)> = alias::load().into_iter().filter(|(id, _)| ids.contains(id)).collect();
+    let group = app.state::<Aliases>().group.lock().unwrap().clone();
+    for id in network::shared_servers() {
+        if out.iter().any(|(i, _)| *i == id) { continue; }
+        let Some(label) = group.get(&id).and_then(|l| alias::validate(l).ok()) else { continue };
+        if out.iter().any(|(_, l)| *l == label) { continue; }
+        out.push((id, label));
+    }
+    out
 }
 
 /// Abre o cierra las escuchas según las direcciones elegidas.
 pub async fn sync(app: &AppHandle) {
-    let want = wanted();
     let st = app.state::<Aliases>();
+    if let Some(n) = app.state::<Cluster>().try_node() {
+        let g: HashMap<String, String> = network::shared_servers().into_iter().filter_map(|id| n.group_alias(&id).map(|a| (id, a))).collect();
+        *st.group.lock().unwrap() = g;
+    }
+    let want = wanted(app);
     let shared: std::collections::HashSet<String> = network::shared_servers().into_iter().collect();
     // Cerrar las que ya no van.
     {
@@ -68,17 +85,17 @@ pub async fn sync(app: &AppHandle) {
     }
 }
 
-fn entries() -> Vec<Entry> { wanted().into_iter().map(|(id, label)| Entry { ip: alias::ip_for(&id), label }).collect() }
+fn entries(app: &AppHandle) -> Vec<Entry> { wanted(app).into_iter().map(|(id, label)| Entry { ip: alias::ip_for(&id), label }).collect() }
 
 #[tauri::command]
 pub async fn alias_status(app: AppHandle) -> AppResult<AliasStatus> {
     sync(&app).await;
     let hosts = std::fs::read(alias::hosts_path()).ok().map(|b| String::from_utf8_lossy(&b).to_string());
     let cur = hosts.as_deref().map(alias::current).unwrap_or_default();
-    let want = entries();
+    let want = entries(&app);
     let st = app.state::<Aliases>();
     let errs = st.errors.lock().unwrap().clone();
-    let items = wanted().into_iter().map(|(id, label)| {
+    let items = wanted(&app).into_iter().map(|(id, label)| {
         let ip = alias::ip_for(&id);
         AliasInfo { in_hosts: cur.iter().any(|e| e.label == label && e.ip == ip), listening: !errs.contains_key(&id), error: errs.get(&id).cloned(), address: format!("{label}{}", alias::SUFFIX), ip: ip.to_string(), id, label }
     }).collect();
@@ -92,6 +109,8 @@ pub async fn alias_status(app: AppHandle) -> AppResult<AliasStatus> {
 pub async fn alias_set(app: AppHandle, id: String, label: Option<String>) -> AppResult<Option<String>> {
     instance::load(&id)?;
     let r = alias::set(&id, label.as_deref().filter(|l| !l.trim().is_empty()))?;
+    // En un grupo, la dirección viaja a las demás PCs (solo la propietaria firma ese dato).
+    if let Ok(n) = app.state::<Cluster>().node().await { let _ = n.refresh_card(&id); }
     sync(&app).await;
     Ok(r)
 }
@@ -104,8 +123,9 @@ pub async fn alias_set(app: AppHandle, id: String, label: Option<String>) -> App
 /// del usuario, y un programa elevado desde ahí cargaría DLL de esa carpeta (cualquier programa
 /// del usuario podría dejar una ahí y conseguir permisos de administrador).
 #[tauri::command]
-pub async fn alias_apply_hosts() -> AppResult<()> {
-    let list = entries();
+pub async fn alias_apply_hosts(app: AppHandle) -> AppResult<()> { write_hosts_elevated(entries(&app)).await }
+
+async fn write_hosts_elevated(list: Vec<Entry>) -> AppResult<()> {
     let script = alias::hosts_script(&list)?;
     let encoded = alias::powershell_encoded(&script);
     let ps = alias::powershell_path();
@@ -153,7 +173,7 @@ pub async fn system_cleanup(app: AppHandle) -> AppResult<Vec<String>> {
     alias::clear_all()?;
     sync(&app).await;
     let has_block = std::fs::read(alias::hosts_path()).map(|b| String::from_utf8_lossy(&b).contains("# >>> 939 Host")).unwrap_or(false);
-    if has_block { alias_apply_hosts().await?; done.push("Direcciones .939host quitadas del archivo hosts".into()); } else { done.push("El archivo hosts no tenía direcciones de 939 Host".into()); }
+    if has_block { write_hosts_elevated(vec![]).await?; done.push("Direcciones .939host quitadas del archivo hosts".into()); } else { done.push("El archivo hosts no tenía direcciones de 939 Host".into()); }
     Ok(done)
 }
 
