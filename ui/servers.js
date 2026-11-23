@@ -37,7 +37,7 @@ function serverRow(s) {
       <div class="c" style="min-width:132px">${away ? awayState(away) : `${stateHTML(s)}${st.detail ? `<span class="xs t3 ellipsis">${esc(st.detail)}</span>` : ''}`}</div>
       <div class="c"><span class="xs t3">Jugadores</span><span class="mono sm">${away ? (['running', 'ready'].includes(away.state) ? `${away.players}/${c.maxPlayers}` : '—') : s.status === 'running' ? `${s.players.length}/${c.maxPlayers}` : '—'}</span></div>
       <div class="c opt"><span class="xs t3">Memoria</span><span class="mono sm">${s.memoryUsedMb != null ? fmtMB(s.memoryUsedMb) : fmtMB(c.memoryMb)}</span></div>
-      <div class="c" style="min-width:96px;align-items:flex-end">${away ? pcAvatar(away.hostSymbol, 30) : quickAction(s)}</div>
+      <div class="c" style="min-width:96px;align-items:flex-end">${away ? awayAction(s, away) : quickAction(s)}</div>
     </div>${icon('chev', 16)}</div>`;
 }
 /* Estado real del servidor en la PC que lo aloja (el mismo que ven todas las PCs del grupo). */
@@ -46,6 +46,14 @@ function awayState(a) {
   const label = REMOTE_STATE[st] || 'En otra PC';
   const shape = st === 'unreachable' || st === 'stopped' ? SHAPES.off : ['starting', 'preparing', 'saving', 'restarting', 'transferring', 'recovering'].includes(st) ? SHAPES.ring : st === 'error' ? SHAPES.tri : SHAPES.dot;
   return `<span class="st">${shape}${esc(label)}</span><span class="xs t3 ellipsis" title="${esc(a.detail || '')}">En la PC de ${esc(a.hostName || 'otra PC')}</span>`;
+}
+/* Lo aloja otra PC del grupo: Iniciar y Detener actúan allá (cualquier integrante). */
+function awayAction(s, a) {
+  const id = esc(s.config.id);
+  if (!a.hostOnline) return pcAvatar(a.hostSymbol, 30);
+  if (a.state === 'stopped' || a.state === 'error') return `<button class="btn s" data-a="start" data-tone="go" data-id="${id}" title="Se enciende en la PC de ${esc(a.hostName || 'quien lo aloja')}">${icon('play', 14)}Iniciar</button>`;
+  if (['ready', 'running', 'starting', 'preparing'].includes(a.state)) return `<button class="btn s" data-a="remote-stop" data-tone="halt" data-id="${id}">${icon('stop', 14)}Detener</button>`;
+  return '<span class="xs t3">Esperá…</span>';
 }
 function quickAction(s) {
   const id = esc(s.config.id);

@@ -75,7 +75,7 @@ function drawHeader() {
     // en esta PC es otra acción («Solicitar ser anfitrión»).
     const hs = g.hostState?.state;
     const canStartThere = g.hostOnline && (hs === 'stopped' || hs === 'error');
-    const canStopThere = coHost && g.hostOnline && ['ready', 'running', 'preparing', 'saving'].includes(hs);
+    const canStopThere = g.hostOnline && ['ready', 'running', 'preparing', 'starting'].includes(hs);
     ctl = `<span class="host-chip row" style="gap:8px">${pcAvatar(host?.symbol, 26, '', host?.avatar)}<span class="sm"><span class="t3">Lo aloja</span> <b>${esc(host?.name || g.lease.hostName || 'otra PC')}</b>${g.hostOnline ? '' : ' <span class="t3">· no responde</span>'}</span></span>`
       + (canStartThere ? btn('start', 'play', 'Iniciar', { pri: true, disabled: !!pendingOps[c.id], title: `Se enciende en la PC de ${host?.name || 'quien lo aloja'}` }) : '')
       + (canStopThere ? `<button class="btn" data-a="remote-stop" data-id="${id}" data-tone="halt" title="Lo apaga la PC que lo aloja, guardando el mundo">${icon('stop', 16)}Detener</button>` : '')

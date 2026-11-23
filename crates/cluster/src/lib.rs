@@ -3372,7 +3372,8 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             match inner.clone().start_here_for(&server, &who).await { Ok(m) => Resp::Text { text: m }, Err(e) => Resp::Err { msg: e.to_string() } }
         }
         Req::StopRemote { server } => {
-            if !network::load_share(&server).member(remote).map(|m| m.can_host()).unwrap_or(false) { return Resp::Err { msg: "Solo la propietaria y las coanfitrionas pueden detener el servidor.".into() }; }
+            // Cualquier integrante puede encenderlo y detenerlo (detener guarda el mundo).
+            if network::load_share(&server).member(remote).is_none() { return Resp::Err { msg: "No sos parte de este grupo.".into() }; }
             if !lease::read(&server).map(|l| l.held_by(&inner.me)).unwrap_or(false) { return Resp::Err { msg: "Esta PC ya no aloja el servidor.".into() }; }
             if !inner.local.is_running(&server) { return Resp::Text { text: "Ya estaba apagado.".into() }; }
             let who = inner.with_state(&server, |s| s.infos.get(remote).map(|i| i.name.clone())).unwrap_or_else(|| "Otra PC".into());
