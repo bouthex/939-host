@@ -57,11 +57,37 @@ pub struct Store {
     /// Solicitudes que mandó esta PC (solo esas PCs pueden responder «aceptada»).
     #[serde(default)]
     pub sent: Vec<String>,
+    /// Grupos de chat de los que forma parte esta PC.
+    #[serde(default)]
+    pub groups: Vec<ChatGroup>,
 }
+
+/// Grupo de chat entre amigos (no tiene nada que ver con los grupos de servidores ni da acceso a
+/// ninguno). Lo crea una PC con amigos suyos; cualquier integrante puede cambiarle el nombre.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGroup {
+    pub id: String,
+    pub name: String,
+    /// (PC, nombre visible). Incluye a esta PC.
+    pub members: Vec<(String, String)>,
+    /// Sube con cada cambio de nombre o de integrantes: gana el cambio más nuevo.
+    pub rev: u64,
+    pub created: String,
+    /// Direcciones conocidas de cada integrante (dos integrantes pueden no ser amigas entre sí y
+    /// no conocerse). La conexión igual se autentica con la identidad de cada PC.
+    #[serde(default)]
+    pub addrs: Vec<(String, EndpointAddr)>,
+}
+const MAX_GROUP: usize = 16;
+const MAX_GROUPS: usize = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Message { pub from_me: bool, pub text: String, pub at: String, #[serde(default)] pub delivered: bool }
+pub struct Message { pub from_me: bool, pub text: String, pub at: String, #[serde(default)] pub delivered: bool,
+    /// Grupos: quién lo mandó, su nombre, id del mensaje (para no duplicarlo) y a quiénes falta entregárselo.
+    #[serde(default)] pub from: Option<String>, #[serde(default)] pub from_name: Option<String>,
+    #[serde(default)] pub mid: Option<String>, #[serde(default)] pub pending: Vec<String> }
 
 // La lista de amigos (incluye códigos de invitación) y los chats se guardan cifrados con DPAPI
 // (`host939_core::sealed`). Los archivos `.json` en texto plano de versiones anteriores se migran
@@ -105,6 +131,12 @@ enum FReq {
     Bye,
     Msg { text: String },
     Removed,
+    /// Grupo nuevo o cambiado (nombre o integrantes).
+    GroupSync { id: String, name: String, members: Vec<(String, String)>, rev: u64, #[serde(default)] addrs: Vec<(String, EndpointAddr)> },
+    GroupMsg { id: String, text: String, mid: String, name: String },
+    GroupLeave { id: String },
+    /// «Está escribiendo». `to`: grupo, o `None` para el chat de a dos. Vence solo a los 6 s.
+    Typing { to: Option<String>, on: bool },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -117,7 +149,36 @@ pub struct Live { pub last_seen: Option<Instant>, pub available: bool, pub playi
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FriendView { pub node: String, pub name: String, pub avatar: Option<String>, pub online: bool, pub available: bool, pub playing: Option<String>, pub unread: usize, pub shared_groups: Vec<String> }
+pub struct FriendView { pub node: String, pub name: String, pub avatar: Option<String>, pub online: bool, pub available: bool, pub playing: Option<String>, pub unread: usize, pub shared_groups: Vec<String>,
+    /// Está escribiendo en el chat con esta PC.
+    pub typing: bool }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberView { pub node: String, pub name: String, pub online: bool, pub me: bool }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupView { pub id: String, pub name: String, pub members: Vec<GroupMemberView>, pub unread: usize, pub typing: Vec<String> }
+
+/// Quién está escribiendo: (chat, PC) → hasta cuándo. No se guarda; vence solo, así un aviso
+/// de «dejó de escribir» que se pierde nunca deja el indicador pegado.
+static TYPING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(String, String), Instant>>> = std::sync::LazyLock::new(Default::default);
+const TYPING_TTL: Duration = Duration::from_secs(6);
+fn typing_set(chat: &str, node: &str, on: bool) {
+    let mut t = TYPING.lock().unwrap();
+    t.retain(|_, until| *until > Instant::now());
+    if on { t.insert((chat.into(), node.into()), Instant::now() + TYPING_TTL); } else { t.remove(&(chat.to_string(), node.to_string())); }
+}
+fn typing_clear(chat: &str, node: &str) { typing_set(chat, node, false); }
+pub fn typing_in(chat: &str) -> Vec<String> {
+    let now = Instant::now();
+    TYPING.lock().unwrap().iter().filter(|((c, _), u)| c == chat && **u > now).map(|((_, n), _)| n.clone()).collect()
+}
+fn hint<'a>(g: &'a ChatGroup, node: &str) -> Option<&'a EndpointAddr> { g.addrs.iter().find(|(n, _)| n == node).map(|(_, a)| a) }
+fn new_id() -> String { let mut b = [0u8; 32]; getrandom::getrandom(&mut b).expect("generador aleatorio del sistema"); hex::encode(b) }
+fn group_of(s: &Store, id: &str) -> Option<ChatGroup> { s.groups.iter().find(|g| g.id == id).cloned() }
+fn is_member(g: &ChatGroup, node: &str) -> bool { g.members.iter().any(|(n, _)| n == node) }
 
 impl Inner {
     fn my_hello(&self) -> (String, bool, Option<String>, Option<String>) {
@@ -215,7 +276,7 @@ impl crate::GroupNode {
         let text = clean_text(text).ok_or_else(|| anyhow!("El mensaje está vacío."))?;
         let mut c = chat(node);
         let delivered = matches!(self.inner.friend_rpc(node, &FReq::Msg { text: text.clone() }, None).await, Ok(FResp::Ok));
-        c.push(Message { from_me: true, text, at: chrono::Local::now().to_rfc3339(), delivered });
+        c.push(Message { from_me: true, text, at: chrono::Local::now().to_rfc3339(), delivered, from: None, from_name: None, mid: None, pending: vec![] });
         if c.len() > MAX_CHAT { let k = c.len() - MAX_CHAT; c.drain(0..k); }
         save_chat(node, &c);
         Ok(delivered)
@@ -237,12 +298,140 @@ impl crate::GroupNode {
             let shared_groups = host939_core::network::shared_servers().into_iter()
                 .filter(|sid| { let sh = host939_core::network::load_share(sid); sh.member(&f.node).is_some() && sh.member(&self.inner.me).is_some() })
                 .map(|sid| crate::server_name(&sid)).collect();
-            FriendView { node: f.node.clone(), name: f.name.clone(), avatar: f.avatar.clone().filter(|h| host939_core::avatar::has_peer(h)), online, available: online && l.available, playing: if online { l.playing } else { None }, unread: *unread.get(&f.node).unwrap_or(&0), shared_groups }
+            FriendView { node: f.node.clone(), name: f.name.clone(), avatar: f.avatar.clone().filter(|h| host939_core::avatar::has_peer(h)), online, available: online && l.available, playing: if online { l.playing } else { None }, unread: *unread.get(&f.node).unwrap_or(&0), shared_groups, typing: online && typing_in(&f.node).iter().any(|n| *n == f.node) }
         }).collect()
+    }
+
+    /* ── Grupos de chat ── */
+
+    /// Crea un grupo con amigos de esta PC. Devuelve su id.
+    pub async fn group_create(&self, name: &str, members: &[String]) -> Result<String> {
+        let mut s = load();
+        let name = clean_group_name(name).ok_or_else(|| anyhow!("Poné un nombre para el grupo."))?;
+        if s.groups.len() >= MAX_GROUPS { bail!("Llegaste al máximo de grupos."); }
+        let mut list: Vec<(String, String)> = vec![(self.inner.me.clone(), self.inner.name())];
+        for m in members {
+            let f = s.friends.iter().find(|f| f.node == *m).ok_or_else(|| anyhow!("Solo podés agregar a tus amigos."))?;
+            if !list.iter().any(|(n, _)| n == m) { list.push((f.node.clone(), f.name.clone())); }
+        }
+        if list.len() < 2 { bail!("Elegí al menos un amigo."); }
+        if list.len() > MAX_GROUP { bail!("Un grupo puede tener hasta {MAX_GROUP} personas."); }
+        let addrs = self.group_addrs(&s, &list, &[]);
+        let g = ChatGroup { id: new_id(), name, members: list, rev: 1, created: chrono::Local::now().to_rfc3339(), addrs };
+        s.groups.push(g.clone());
+        save(&s)?;
+        self.group_broadcast(&g, &FReq::GroupSync { id: g.id.clone(), name: g.name.clone(), members: g.members.clone(), rev: g.rev, addrs: g.addrs.clone() }).await;
+        Ok(g.id)
+    }
+
+    /// Cambia el nombre (cualquier integrante). Lo ven todos.
+    pub async fn group_rename(&self, id: &str, name: &str) -> Result<()> {
+        let mut s = load();
+        let name = clean_group_name(name).ok_or_else(|| anyhow!("Poné un nombre para el grupo."))?;
+        let g = s.groups.iter_mut().find(|g| g.id == id).ok_or_else(|| anyhow!("Ese grupo ya no existe."))?;
+        g.name = name; g.rev += 1;
+        let mut g = g.clone();
+        g.addrs = self.group_addrs(&load(), &g.members, &g.addrs);
+        if let Some(x) = s.groups.iter_mut().find(|x| x.id == id) { x.addrs = g.addrs.clone(); }
+        save(&s)?;
+        self.group_broadcast(&g, &FReq::GroupSync { id: g.id.clone(), name: g.name.clone(), members: g.members.clone(), rev: g.rev, addrs: g.addrs.clone() }).await;
+        Ok(())
+    }
+
+    /// Salir del grupo: se avisa a los demás y se borra de esta PC (el historial queda guardado).
+    pub async fn group_leave(&self, id: &str) -> Result<()> {
+        let mut s = load();
+        let g = group_of(&s, id).ok_or_else(|| anyhow!("Ese grupo ya no existe."))?;
+        s.groups.retain(|x| x.id != id);
+        save(&s)?;
+        self.group_broadcast(&g, &FReq::GroupLeave { id: id.into() }).await;
+        Ok(())
+    }
+
+    pub async fn group_send(&self, id: &str, text: &str) -> Result<usize> {
+        let g = group_of(&load(), id).ok_or_else(|| anyhow!("Ese grupo ya no existe."))?;
+        let text = clean_text(text).ok_or_else(|| anyhow!("El mensaje está vacío."))?;
+        let mid = new_id();
+        let req = FReq::GroupMsg { id: id.into(), text: text.clone(), mid: mid.clone(), name: self.inner.name() };
+        let others: Vec<String> = g.members.iter().map(|(n, _)| n.clone()).filter(|n| *n != self.inner.me).collect();
+        let futs = others.iter().map(|n| { let inner = self.inner.clone(); let req = &req; let n = n.clone(); let h = hint(&g, &n).cloned(); async move { (n.clone(), matches!(tokio::time::timeout(Duration::from_secs(6), inner.friend_rpc(&n, req, h.as_ref())).await, Ok(Ok(FResp::Ok)))) } });
+        let pending: Vec<String> = futures_util::future::join_all(futs).await.into_iter().filter(|(_, ok)| !ok).map(|(n, _)| n).collect();
+        let mut c = chat(id);
+        c.push(Message { from_me: true, text, at: chrono::Local::now().to_rfc3339(), delivered: pending.is_empty(), from: Some(self.inner.me.clone()), from_name: None, mid: Some(mid), pending: pending.clone() });
+        if c.len() > MAX_CHAT { let k = c.len() - MAX_CHAT; c.drain(0..k); }
+        save_chat(id, &c);
+        Ok(pending.len())
+    }
+
+    pub fn group_chat(&self, id: &str) -> Vec<Message> {
+        self.inner.unread.lock().unwrap().remove(id);
+        chat(id)
+    }
+
+    pub fn groups(&self) -> Vec<GroupView> {
+        let s = load();
+        let live = self.inner.friends_live.lock().unwrap().clone();
+        let unread = self.inner.unread.lock().unwrap().clone();
+        s.groups.iter().map(|g| {
+            let online = |n: &str| n == self.inner.me || live.get(n).and_then(|l| l.last_seen).map(|t| t.elapsed() < OFFLINE_AFTER).unwrap_or(false);
+            let name_of = |n: &str| s.friends.iter().find(|f| f.node == n).map(|f| f.name.clone()).or_else(|| g.members.iter().find(|(x, _)| x == n).map(|(_, nm)| nm.clone())).unwrap_or_default();
+            GroupView { id: g.id.clone(), name: g.name.clone(), unread: *unread.get(&g.id).unwrap_or(&0),
+                members: g.members.iter().map(|(n, _)| GroupMemberView { node: n.clone(), name: if *n == self.inner.me { self.inner.name() } else { name_of(n) }, online: online(n), me: *n == self.inner.me }).collect(),
+                typing: typing_in(&g.id).iter().filter(|n| **n != self.inner.me && is_member(g, n)).map(|n| name_of(n)).collect() }
+        }).collect()
+    }
+
+    /// «Está escribiendo» hacia un amigo (`to` = su PC) o un grupo (`to` = id del grupo).
+    pub async fn typing(&self, to: &str, on: bool) {
+        let s = load();
+        if let Some(g) = group_of(&s, to) {
+            self.group_broadcast(&g, &FReq::Typing { to: Some(to.into()), on }).await;
+        } else if s.friends.iter().any(|f| f.node == to) {
+            let _ = tokio::time::timeout(Duration::from_secs(3), self.inner.friend_rpc(to, &FReq::Typing { to: None, on }, None)).await;
+        }
+    }
+
+    async fn group_broadcast(&self, g: &ChatGroup, req: &FReq) {
+        let futs = g.members.iter().filter(|(n, _)| *n != self.inner.me).map(|(n, _)| {
+            let inner = self.inner.clone(); let n = n.clone(); let h = hint(g, &n).cloned();
+            async move { let _ = tokio::time::timeout(Duration::from_secs(4), inner.friend_rpc(&n, req, h.as_ref())).await; }
+        });
+        futures_util::future::join_all(futs).await;
+    }
+
+    /// Direcciones para el grupo: la de esta PC y las de sus amigos (sin IPs si hay relays),
+    /// conservando las que ya se conocían de las demás.
+    fn group_addrs(&self, s: &Store, members: &[(String, String)], prev: &[(String, EndpointAddr)]) -> Vec<(String, EndpointAddr)> {
+        members.iter().filter_map(|(n, _)| {
+            if *n == self.inner.me { return Some((n.clone(), host939_p2p::shareable(&self.inner.ep.addr(), self.inner.relays))); }
+            s.friends.iter().find(|f| f.node == *n).and_then(|f| f.addr.clone()).or_else(|| prev.iter().find(|(x, _)| x == n).map(|(_, a)| a.clone())).map(|a| (n.clone(), a))
+        }).collect()
+    }
+
+    /// Reintenta los mensajes de grupo que no llegaron a alguien.
+    async fn group_retry(&self) {
+        let s = load();
+        for g in &s.groups {
+            let mut c = chat(&g.id);
+            let mut changed = false;
+            for m in c.iter_mut().filter(|m| m.from_me && !m.pending.is_empty()) {
+                let Some(mid) = m.mid.clone() else { continue };
+                let req = FReq::GroupMsg { id: g.id.clone(), text: m.text.clone(), mid, name: self.inner.name() };
+                let mut still = vec![];
+                for n in std::mem::take(&mut m.pending) {
+                    if !is_member(g, &n) { continue; }
+                    if matches!(tokio::time::timeout(Duration::from_secs(4), self.inner.friend_rpc(&n, &req, hint(g, &n))).await, Ok(Ok(FResp::Ok))) { changed = true; } else { still.push(n); }
+                }
+                m.pending = still;
+                if m.pending.is_empty() { m.delivered = true; }
+            }
+            if changed { save_chat(&g.id, &c); }
+        }
     }
 
     /// Una vuelta de presencia: saluda a cada amigo y entrega los mensajes pendientes.
     pub async fn presence_once(&self) {
+        self.group_retry().await;
         let s = load();
         let (name, available, avatar, playing) = self.inner.my_hello();
         for f in s.friends.iter().take(MAX_FRIENDS) {
@@ -351,6 +540,73 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: FReq) -> FResp {
             inner.local.changed("");
             FResp::Ok
         }
+        FReq::GroupSync { id, name, members, rev, addrs } => {
+            let mut s = load();
+            let Some(name) = clean_group_name(&name) else { return FResp::Err { msg: "Nombre inválido.".into() } };
+            if !valid_node(&id) || members.len() > MAX_GROUP || !members.iter().all(|(n, _)| valid_node(n)) { return FResp::Err { msg: "Grupo inválido.".into() }; }
+            if !members.iter().any(|(n, _)| n == remote) || !members.iter().any(|(n, _)| *n == inner.me) { return FResp::Err { msg: "Grupo inválido.".into() }; }
+            let members: Vec<(String, String)> = members.into_iter().map(|(n, nm)| (n, host939_core::pcname::clean_name(&nm).unwrap_or_else(|| "Alguien".into()))).collect();
+            // Solo direcciones de integrantes, que correspondan a su identidad (y sin IPs si hay relays).
+            let addrs: Vec<(String, EndpointAddr)> = addrs.into_iter().filter(|(n, a)| *n != inner.me && a.id.to_string() == *n && members.iter().any(|(m, _)| m == n)).take(MAX_GROUP).map(|(n, a)| (n, host939_p2p::hearsay(&a, inner.relays))).collect();
+            match s.groups.iter_mut().find(|g| g.id == id) {
+                // Cambio de un grupo existente: solo de un integrante y si es más nuevo.
+                Some(g) => {
+                    if !is_member(g, remote) { return FResp::Err { msg: "No sos parte de ese grupo.".into() }; }
+                    if rev <= g.rev { return FResp::Ok; }
+                    g.name = name; g.members = members; g.rev = rev; g.addrs = addrs;
+                }
+                // Grupo nuevo: solo si lo crea un amigo (nadie te mete en un grupo sin serlo).
+                None => {
+                    if !is_friend { return FResp::Err { msg: "No son amigos.".into() }; }
+                    if s.groups.len() >= MAX_GROUPS { return FResp::Err { msg: "La otra persona tiene demasiados grupos.".into() }; }
+                    s.groups.push(ChatGroup { id: id.clone(), name, members, rev, created: chrono::Local::now().to_rfc3339(), addrs });
+                }
+            }
+            let _ = save(&s);
+            inner.local.changed("");
+            inner.local.friend_message(&id);
+            FResp::Ok
+        }
+        FReq::GroupMsg { id, text, mid, name } => {
+            let s = load();
+            let Some(g) = group_of(&s, &id) else { return FResp::Err { msg: "No estás en ese grupo.".into() } };
+            if !is_member(&g, remote) { return FResp::Err { msg: "No sos parte de ese grupo.".into() }; }
+            let Some(text) = clean_text(&text) else { return FResp::Err { msg: "Mensaje vacío.".into() } };
+            let allowed = {
+                let mut live = inner.friends_live.lock().unwrap();
+                let l = live.entry(remote.to_string()).or_default();
+                l.msg_hits.retain(|t| t.elapsed() < Duration::from_secs(60));
+                if l.msg_hits.len() >= MSG_PER_MIN { false } else { l.msg_hits.push(Instant::now()); true }
+            };
+            if !allowed { return FResp::Err { msg: "Demasiados mensajes seguidos. Esperá un momento.".into() }; }
+            let mut c = chat(&id);
+            // El mismo mensaje reintentado no se guarda dos veces.
+            if c.iter().any(|m| m.mid.as_deref() == Some(mid.as_str())) { return FResp::Ok; }
+            c.push(Message { from_me: false, text, at: chrono::Local::now().to_rfc3339(), delivered: true, from: Some(remote.into()), from_name: host939_core::pcname::clean_name(&name), mid: Some(mid), pending: vec![] });
+            if c.len() > MAX_CHAT { let k = c.len() - MAX_CHAT; c.drain(0..k); }
+            save_chat(&id, &c);
+            typing_clear(&id, remote);
+            *inner.unread.lock().unwrap().entry(id.clone()).or_default() += 1;
+            inner.local.friend_message(&id);
+            FResp::Ok
+        }
+        FReq::GroupLeave { id } => {
+            let mut s = load();
+            if let Some(g) = s.groups.iter_mut().find(|g| g.id == id) {
+                if is_member(g, remote) { g.members.retain(|(n, _)| n != remote); let _ = save(&s); inner.local.friend_message(&id); }
+            }
+            FResp::Ok
+        }
+        FReq::Typing { to, on } => {
+            let chat_key = match &to {
+                Some(gid) => match group_of(&load(), gid) { Some(g) if is_member(&g, remote) => gid.clone(), _ => return FResp::Ok },
+                None if is_friend => remote.to_string(),
+                None => return FResp::Ok,
+            };
+            typing_set(&chat_key, remote, on);
+            inner.local.friend_typing(&chat_key);
+            FResp::Ok
+        }
         _ if !is_friend => FResp::Err { msg: "No son amigos.".into() },
         FReq::Hello { name, available, avatar, playing } => {
             inner.friend_seen(remote, &name, available, avatar, playing).await;
@@ -373,7 +629,8 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: FReq) -> FResp {
             };
             if !allowed { return FResp::Err { msg: "Demasiados mensajes seguidos. Esperá un momento.".into() }; }
             let mut c = chat(remote);
-            c.push(Message { from_me: false, text, at: chrono::Local::now().to_rfc3339(), delivered: true });
+            c.push(Message { from_me: false, text, at: chrono::Local::now().to_rfc3339(), delivered: true, from: None, from_name: None, mid: None, pending: vec![] });
+            typing_clear(remote, remote);
             if c.len() > MAX_CHAT { let k = c.len() - MAX_CHAT; c.drain(0..k); }
             save_chat(remote, &c);
             *inner.unread.lock().unwrap().entry(remote.to_string()).or_default() += 1;
@@ -388,6 +645,11 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: FReq) -> FResp {
             FResp::Ok
         }
     }
+}
+
+fn clean_group_name(n: &str) -> Option<String> {
+    let s: String = n.chars().filter(|c| !c.is_control()).collect::<String>().trim().chars().take(40).collect();
+    (!s.is_empty()).then_some(s)
 }
 
 /// Vista de las solicitudes y la lista (para pruebas y la interfaz).

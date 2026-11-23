@@ -92,6 +92,8 @@ pub trait LocalHost: Send + Sync + 'static {
     /// saving | restarting | error, con un detalle en palabras y la cantidad de jugadores.
     /// Llegó un mensaje de un amigo (para avisar en la interfaz).
     fn friend_message(&self, _node: &str) {}
+    /// Cambió quién está escribiendo en un chat (amigo o grupo).
+    fn friend_typing(&self, _chat: &str) {}
     fn run_stats(&self, _server: &str) -> Option<RunStats> { None }
     /// Operación sobre un jugador pedida por la propietaria desde otra PC (ver `Req::PlayerOp`).
     fn player_op(&self, _server: &str, _op: &serde_json::Value, _who: &str) -> Result<serde_json::Value, String> { Err("Esta PC no puede administrar jugadores.".into()) }

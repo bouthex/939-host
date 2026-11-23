@@ -365,6 +365,13 @@ async fn main() {
                 "fsend" => node.friend_send(&p(1), &parts[2..].join(" ")).await.map(|d| serde_json::json!(d)).map_err(|e| e.to_string()),
                 "fchat" => Ok(serde_json::to_value(node.friend_chat(&p(1))).unwrap()),
                 "fblock" => node.friend_remove(&p(1), true).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "gcreate" => node.group_create(&p(1), &parts[2..].iter().map(|x| x.to_string()).collect::<Vec<_>>()).await.map(|i| serde_json::json!(i)).map_err(|e| e.to_string()),
+                "gsend" => node.group_send(&p(1), &parts[2..].join(" ")).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
+                "gchat" => Ok(serde_json::to_value(node.group_chat(&p(1))).unwrap()),
+                "glist" => Ok(serde_json::to_value(node.groups()).unwrap()),
+                "grename" => node.group_rename(&p(1), &parts[2..].join(" ")).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "gleave" => node.group_leave(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "gtype" => { node.typing(&p(1), p(2) == "1").await; Ok(serde_json::json!(true)) }
                 "fpresence" => { node.presence_once().await; Ok(serde_json::json!(true)) }
                 "grantop" => node.grant_mc_op(&p(1), &p(2), &p(3)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "revokeop" => node.revoke_mc_op(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),

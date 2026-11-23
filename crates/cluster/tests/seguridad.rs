@@ -823,6 +823,61 @@ fn amigos_presencia_y_mensajes() {
     println!("✔ al cerrar 939 Host, sus amigos la ven desconectada");
 }
 
+/// Grupos de chat e indicador de «escribiendo»: entre tres PCs reales (procesos separados).
+#[test]
+fn grupos_de_chat_y_escribiendo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let (ia, ib, ic) = (id(&mut a), id(&mut b), id(&mut c));
+    for (x, ix) in [(&mut b, &ib), (&mut c, &ic)] {
+        let code = a.ok("finvite").as_str().unwrap().to_string();
+        x.ok(&format!("fadd {code}"));
+        a.ok(&format!("fanswer {ix} si"));
+    }
+    // B no puede crear un grupo con C: no son amigas.
+    assert!(b.err(&format!("gcreate X {ic}")).contains("amigos"));
+    let gid = a.ok(&format!("gcreate Los-del-survival {ib} {ic}")).as_str().unwrap().to_string();
+    wait("B y C reciben el grupo", Duration::from_secs(10), || [&mut b, &mut c].iter_mut().all(|n| n.ok("glist").as_array().unwrap().iter().any(|g| g["id"] == gid.as_str())));
+    println!("✔ grupo creado con dos amigas (que no son amigas entre sí)");
+
+    // B escribe al grupo: llega a A y a C (C no es amiga de B, pero comparten el grupo).
+    assert_eq!(b.ok(&format!("gsend {gid} hola grupo")), serde_json::json!(0), "entregado a todos");
+    for n in [&mut a, &mut c] {
+        let m = n.ok(&format!("gchat {gid}"));
+        assert_eq!(m[0]["text"], "hola grupo");
+        assert_eq!(m[0]["fromName"], "B");
+    }
+    println!("✔ mensaje de grupo entregado a todas");
+
+    // C cambia el nombre: lo ven todas.
+    c.ok(&format!("grename {gid} Survival 2"));
+    wait("nombre nuevo en A y B", Duration::from_secs(10), || [&mut a, &mut b].iter_mut().all(|n| n.ok("glist")[0]["name"] == "Survival 2"));
+    println!("✔ cualquier integrante cambia el nombre y lo ven todas");
+
+    // Escribiendo: C lo ve mientras B escribe; se borra al mandar y vence solo si el aviso se pierde.
+    b.ok(&format!("gtype {gid} 1"));
+    assert!(c.ok("glist")[0]["typing"].as_array().unwrap().iter().any(|n| n == "B"));
+    b.ok(&format!("gsend {gid} listo"));
+    assert!(c.ok("glist")[0]["typing"].as_array().unwrap().is_empty(), "al llegar el mensaje se borra");
+    b.ok(&format!("gtype {gid} 1"));
+    std::thread::sleep(Duration::from_secs(7));
+    assert!(c.ok("glist")[0]["typing"].as_array().unwrap().is_empty(), "vence solo aunque no llegue «dejó de escribir»");
+    // Chat de a dos también.
+    a.ok(&format!("gtype {ib} 1"));
+    assert!(b.ok("flist").as_array().unwrap().iter().any(|f| f["node"] == ia.as_str() && f["typing"] == true));
+    a.ok(&format!("gtype {ib} 0"));
+    assert!(b.ok("flist").as_array().unwrap().iter().all(|f| f["typing"] == false));
+    println!("✔ «escribiendo» aparece, se borra al enviar o al dejar de escribir y vence solo");
+
+    // B sale: las demás la dejan de ver y ya no le llega nada.
+    b.ok(&format!("gleave {gid}"));
+    wait("A ve que B salió", Duration::from_secs(10), || a.ok("glist")[0]["members"].as_array().unwrap().len() == 2);
+    assert!(b.err(&format!("gsend {gid} sigo?")).contains("no existe"));
+    println!("✔ salir del grupo");
+}
+
 /// Red team de los canales nuevos (amigos): una PC desconocida no puede pedir amistad sin código,
 /// mandar mensajes ni hacer que la víctima reserve memoria con un mensaje enorme.
 #[test]
