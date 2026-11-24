@@ -111,9 +111,16 @@ pub async fn candidates<S: Source>(src: &S, mc: &str, loader: Loader, installed:
     // exacta y que corre en el servidor (así una versión vieja, como 1.14, no queda en «ninguno»
     // si existe algo). Se comprueba que tenga un archivo para la versión y el loader.
     let hits = src.search_optimization(mc, lid).await.unwrap_or_default();
+    // La categoría «optimization» de Modrinth la usan también mods de contenido (recetas,
+    // decoración…): solo se aceptan los que no tienen categorías de contenido, con un mínimo de
+    // descargas, y cuyo archivo se comprueba (ver `mods::jar_server_safe`).
+    const CONTENT: &[&str] = &["adventure", "decoration", "economy", "equipment", "food", "game-mechanics", "magic", "minigame", "mobs", "social", "storage", "technology", "transportation", "worldgen", "cursed"];
     for h in hits.into_iter().filter(|h| !CATALOG.iter().any(|k| k.slug == h.slug)
-        && (h.server_side == "required" || h.server_side == "optional")).take(14) {
+        && (h.server_side == "required" || h.server_side == "optional")
+        && h.categories.iter().any(|c| c == "optimization") && !h.categories.iter().any(|c| CONTENT.contains(&c.as_str()))
+        && h.downloads >= 5_000).take(14) {
         let Some(v) = mods::best_compatible(src, &h.project_id, mc, lid).await else { continue };
+        if !mods::jar_server_safe(&v, mc, lid).await { continue; }
         out.push(Candidate {
             slug: h.slug.clone(), project_id: Some(h.project_id.clone()), title: h.title.clone(), icon_url: h.icon_url.clone(), summary: h.description.clone(),
             what: h.description.clone(), tier: "custom".into(), experimental: false, available: true, unavailable_reason: None,

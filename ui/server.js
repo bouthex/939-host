@@ -749,6 +749,7 @@ function entranceRows(x) {
       ${e.info.addr ? `<span class="mono sm">${esc(e.info.addr)}</span>` : ''}
       <span class="sm t2">${esc(e.info.detail || '')}</span>
       ${e.isMe && e.info.addrV6 ? `<span class="xs t3">También por IPv6: <span class="mono">${esc(e.info.addrV6)}</span> (depende del firewall de tu router)</span>` : ''}
+      ${e.isMe && e.info.voice ? `<span class="xs t3">${esc(e.info.voice)}</span>` : ''}
       ${e.isMe && e.info.local && e.info.state === 'sin-acceso' ? `<span class="xs t3">Para abrirlo a mano: reenviá el puerto TCP ${esc(e.info.local.split(':').pop())} hacia <span class="mono">${esc(e.info.local.split(':')[0])}</span> en tu router.</span>` : ''}
     </div>${e.info.addr ? `<button class="btn s icon ghost" data-a="copy" data-text="${esc(e.info.addr)}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button>` : ''}</div>`).join('');
 }

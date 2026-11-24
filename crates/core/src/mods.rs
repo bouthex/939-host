@@ -111,6 +111,23 @@ pub async fn jar_accepts(v: &Version, mc: &str, loader: &str) -> bool {
     ok
 }
 
+/// Para mods encontrados en la búsqueda (no del catálogo revisado): el propio mod tiene que
+/// aceptar `mc`, correr en el servidor y no necesitar nada más que Minecraft, el loader, Java o
+/// Fabric API completa. Comprobado en la CI con Fabric 1.14 real: mods etiquetados para todas las
+/// versiones pedían módulos sueltos de Fabric API que esa versión no tiene, y el servidor no
+/// arrancaba.
+pub async fn jar_server_safe(v: &Version, mc: &str, loader: &str) -> bool {
+    if !matches!(loader, "fabric" | "quilt") { return true; }
+    let Some(f) = v.primary_file() else { return false };
+    if f.size > 40 * 1024 * 1024 { return false; }
+    let dest = crate::paths::cache().join("mods-comprobados").join(&f.hashes.sha1).join(&f.filename);
+    if !dest.exists() && crate::net::download(&f.url, &dest, crate::net::Hash::Sha1(&f.hashes.sha1), |_, _| {}).await.is_err() { return false; }
+    let jar = crate::repair::read_jar(&dest);
+    if jar.corrupt || jar.kind != "fabric" || jar.environment == "client" { return false; }
+    if !jar.depends.get("minecraft").map(|c| c.iter().any(|c| crate::repair::fabric_matches(c, mc))).unwrap_or(true) { return false; }
+    jar.depends.keys().all(|k| matches!(k.as_str(), "minecraft" | "fabricloader" | "java" | "fabric" | "fabric-api" | "quilt_loader"))
+}
+
 /// La mejor versión de un proyecto para `mc`: la publicada para esa versión exacta o, si no hay,
 /// una de la misma serie que el propio mod declare compatible.
 pub async fn best_compatible<S: Source>(src: &S, project: &str, mc: &str, loader: &str) -> Option<Version> {

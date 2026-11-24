@@ -39,6 +39,10 @@ pub struct EntranceInfo {
     pub method: String,
     #[serde(default)]
     pub checked_at: Option<String>,
+    /// Chat de voz (Simple Voice Chat) para quien entra por esta dirección sin 939 Host: estado
+    /// del puerto UDP de voz (abierto en el router, o qué abrir a mano).
+    #[serde(default)]
+    pub voice: Option<String>,
 }
 
 pub(crate) struct Open {
@@ -237,6 +241,35 @@ impl GroupNode {
         } else {
             self.manual(&info, lan, port);
         }
+        // Chat de voz por esta misma entrada: Simple Voice Chat usa la IP con la que se entró y el
+        // puerto UDP de voz del servidor. Si lo aloja otra PC del grupo, esta PC escucha ese puerto
+        // UDP y lo lleva a la anfitriona por la red del grupo; si lo aloja esta PC, el propio mod
+        // ya escucha. En ambos casos se abre ese puerto UDP en el router (UPnP) con el mismo número.
+        {
+            let (node, sid) = (self.clone(), server.to_string());
+            open.tasks.push(tokio::spawn(async move { node.voice_watch(&sid, lan).await; }));
+            let (node, sid, info4) = (self.clone(), server.to_string(), info.clone());
+            let mapping = test.is_none() && host939_core::settings::load().public_entrance_mapping;
+            open.tasks.push(tokio::spawn(async move {
+                let mut mapped: Option<(u16, Instant)> = None;
+                loop {
+                    let vp = node.current_voice_port(&sid);
+                    match vp {
+                        None => { info4.lock().unwrap().voice = None; }
+                        Some(vp) if mapped.map(|(p, t)| p != vp || t.elapsed() > Duration::from_secs(20 * 60)).unwrap_or(true) => {
+                            let msg = if !mapping { format!("Para el chat de voz, abrí en el router el puerto UDP {vp} hacia {lan}.") }
+                                else { match node.map_udp(lan, vp).await {
+                                    Ok(()) => { mapped = Some((vp, Instant::now())); format!("Chat de voz: puerto UDP {vp} abierto en el router.") }
+                                    Err(e) => format!("No se pudo abrir el puerto UDP {vp} del chat de voz en el router ({e}). Abrilo a mano hacia {lan}."),
+                                } };
+                            info4.lock().unwrap().voice = Some(msg);
+                        }
+                        _ => {}
+                    }
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            }));
+        }
         // Comprobación desde afuera al abrir y cada 10 minutos.
         let (node, sid, info3) = (self.clone(), server.to_string(), info.clone());
         open.tasks.push(tokio::spawn(async move {
@@ -247,6 +280,24 @@ impl GroupNode {
             }
         }));
         open
+    }
+
+    /// Puerto UDP de voz del servidor ahora: el que informa la anfitriona del grupo o, si lo aloja
+    /// esta PC, el de su Simple Voice Chat.
+    pub(crate) fn current_voice_port(&self, server: &str) -> Option<u16> {
+        let lease = lease::read(server).filter(|l| l.state == crate::LeaseState::Hosting);
+        match lease {
+            Some(l) if network::load_share(server).enabled && l.host != self.inner.me => self.inner.with_state(server, |s| s.infos.get(&l.host).and_then(|i| i.voice_port)),
+            _ if self.inner.local.is_running(server) => host939_core::voice::port(server, self.inner.local.mc_port(server)),
+            _ => None,
+        }
+    }
+
+    /// Abre (o renueva) el puerto UDP de voz en el router con el mismo número externo.
+    async fn map_udp(&self, lan: Ipv4Addr, port: u16) -> Result<()> {
+        let gw = tokio::time::timeout(Duration::from_secs(5), igd_next::aio::tokio::search_gateway(igd_next::SearchOptions { timeout: Some(Duration::from_secs(4)), ..Default::default() })).await??;
+        gw.add_port(igd_next::PortMappingProtocol::UDP, port, SocketAddr::from((lan, port)), 3600, "939 Host voz").await
+            .map_err(|e| anyhow!("el router no lo permitió: {e}"))
     }
 
     async fn map_upnp(&self, lan: Ipv4Addr, port: u16) -> Result<(igd_next::aio::Gateway<igd_next::aio::tokio::Tokio>, Ipv4Addr, u16)> {
