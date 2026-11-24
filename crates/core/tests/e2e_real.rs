@@ -1285,7 +1285,27 @@ async fn e2e_optimizacion_fabric_vieja() {
     let rt = mgr.runtime(&cfg.id);
     let ok = wait_for(Duration::from_secs(400), || { let s = rt.lock().unwrap().status(); s == RunStatus::Running || s == RunStatus::Crashed });
     let st = rt.lock().unwrap().status();
-    assert!(ok && st == RunStatus::Running, "Fabric {mc} con mods de rendimiento no arrancó:\n{}", mgr.console(&cfg.id).iter().rev().take(40).rev().cloned().collect::<Vec<_>>().join("\n"));
+    if !(ok && st == RunStatus::Running) {
+        let log = mgr.console(&cfg.id).iter().rev().take(40).rev().cloned().collect::<Vec<_>>().join("\n");
+        // Diagnóstico: se prueba cada mod solo para saber cuál rompe el arranque.
+        let _ = mgr.kill(&cfg.id);
+        let dir = mods::mods_dir(&cfg.id);
+        let all: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().map(|x| x == "jar").unwrap_or(false)).collect();
+        let off = dir.join("apartados"); std::fs::create_dir_all(&off).unwrap();
+        for j in &all { std::fs::rename(j, off.join(j.file_name().unwrap())).unwrap(); }
+        for j in &all {
+            let n = j.file_name().unwrap();
+            std::fs::rename(off.join(n), dir.join(n)).unwrap();
+            let _ = mgr.wait_inactive(&cfg.id, Duration::from_secs(30));
+            mgr.start(&probe, &cfg).unwrap();
+            let _ = wait_for(Duration::from_secs(200), || { let s = rt.lock().unwrap().status(); s == RunStatus::Running || s == RunStatus::Crashed || s == RunStatus::Stopped });
+            println!("  solo {:?}: {:?}", n, rt.lock().unwrap().status());
+            let _ = mgr.kill(&cfg.id);
+            let _ = mgr.wait_inactive(&cfg.id, Duration::from_secs(30));
+            std::fs::rename(dir.join(n), off.join(n)).unwrap();
+        }
+        panic!("Fabric {mc} con mods de rendimiento no arrancó:\n{log}");
+    }
     println!("✔ Fabric {mc}: arrancó con {} mods de rendimiento (Java {})", man.mods.len(), cfg.java_major);
     mgr.stop(&cfg.id).unwrap();
     assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));

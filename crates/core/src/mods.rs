@@ -127,6 +127,28 @@ pub async fn jar_server_safe(v: &Version, mc: &str, loader: &str) -> bool {
     if !jar.depends.get("minecraft").map(|c| c.iter().any(|c| crate::repair::fabric_matches(c, mc))).unwrap_or(true) { return false; }
     jar.depends.keys().all(|k| matches!(k.as_str(), "minecraft" | "fabricloader" | "java" | "fabric" | "fabric-api" | "quilt_loader"))
         && jar_java_ok(&dest, java_for_mc(mc))
+        && !(java_for_mc(mc) <= 8 && uses_mixinextras(v).await)
+}
+
+/// Mods que usan MixinExtras: con Minecraft anterior a 1.17 (Java 8) el servidor no arranca
+/// («ImmutablePair cannot be cast to org.apache.commons.lang3.tuple.Pair», visto en la CI con
+/// Fabric 1.14 real). Se detecta buscando la referencia en las clases del propio mod.
+pub async fn uses_mixinextras(v: &Version) -> bool {
+    use std::io::Read;
+    let Some(f) = v.primary_file() else { return false };
+    let dest = crate::paths::cache().join("mods-comprobados").join(&f.hashes.sha1).join(&f.filename);
+    if !dest.exists() && crate::net::download(&f.url, &dest, crate::net::Hash::Sha1(&f.hashes.sha1), |_, _| {}).await.is_err() { return false; }
+    let Ok(file) = std::fs::File::open(&dest) else { return false };
+    let Ok(mut z) = zip::ZipArchive::new(file) else { return false };
+    let needle = b"llamalad7/mixinextras";
+    for i in 0..z.len() {
+        let Ok(mut e) = z.by_index(i) else { continue };
+        let Ok(name) = e.name().map(|n| n.to_string()) else { continue };
+        if !(name.ends_with(".class") || name.ends_with(".json")) || name.starts_with("META-INF/jars/") { continue; }
+        let mut b = vec![];
+        if e.read_to_end(&mut b).is_ok() && b.windows(needle.len()).any(|w| w == needle) { return true; }
+    }
+    false
 }
 
 /// Java con el que corre el servidor de esa versión de Minecraft (lo que pide Mojang).

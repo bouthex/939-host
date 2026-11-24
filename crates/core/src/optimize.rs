@@ -97,6 +97,9 @@ pub async fn candidates<S: Source>(src: &S, mc: &str, loader: Loader, installed:
         c.installed = installed.contains(&p.id);
         if p.server_side == "unsupported" { c.unavailable_reason = Some("Solo funciona en el Minecraft de cada jugador, no en el servidor.".into()); out.push(c); continue; }
         match mods::best_compatible(src, &p.id, mc, lid).await {
+            Some(v) if mods::java_for_mc(mc) <= 8 && mods::uses_mixinextras(&v).await => {
+                c.unavailable_reason = Some(format!("Su versión para {mc} usa MixinExtras, que no funciona en servidores de Minecraft anteriores a 1.17."));
+            }
             Some(v) => {
                 c.available = true;
                 c.version_number = Some(v.version_number.clone());
