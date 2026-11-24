@@ -44,7 +44,15 @@ Script `/tmp/vivo.sh "<versiones>" <sufijo>` (se pierde al reiniciar la máquina
 `/home/claude/cliente-cache`. En esta máquina los clientes viejos (1.16.5, 1.18.2) se cierran por el
 OpenGL por software: es una limitación del entorno de prueba, no de 939 Host.
 
-## Pendiente (en orden)
+## Estado al 24/11 (después de retomar)
+- CI 45327794606 (commit 6c4b562) en verde: Fabric 1.14 con mods de rendimiento reales de Modrinth
+  arrancó (5 mods); el jugador en vivo con el cliente real pasó en 26.2 y 1.20.4. Faltaba terminar
+  «App instalada en Windows (interfaz real)», que ya pasaba antes.
+- Entrega: instalador y portable reconstruidos desde el registro (`scripts/extraer-entrega.py`), con el
+  SHA-256 verificado. Informe en `docs/INFORME-1.3.0.md`. Guía actualizada con la actualización desde la 1.2.0.
+- Nuevo: voz por la entrada pública (UDP + UPnP). La comprobación de la entrada reintenta a los 30 s.
+
+## Pendiente (en orden, histórico)
 1. **GitHub Actions** del último commit: revisar `Pruebas en Windows`, sobre todo:
    - «Mods de rendimiento en Fabric 1.14» (`e2e_optimizacion_fabric_vieja`): si falla, ajustar `optimize::candidates` y `mods::best_compatible` según lo que liste el registro;
    - «Jugador conectado con el cliente real (26.2 y 1.20.4)»;
