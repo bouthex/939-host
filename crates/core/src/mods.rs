@@ -126,6 +126,44 @@ pub async fn jar_server_safe(v: &Version, mc: &str, loader: &str) -> bool {
     if jar.corrupt || jar.kind != "fabric" || jar.environment == "client" { return false; }
     if !jar.depends.get("minecraft").map(|c| c.iter().any(|c| crate::repair::fabric_matches(c, mc))).unwrap_or(true) { return false; }
     jar.depends.keys().all(|k| matches!(k.as_str(), "minecraft" | "fabricloader" | "java" | "fabric" | "fabric-api" | "quilt_loader"))
+        && jar_java_ok(&dest, java_for_mc(mc))
+}
+
+/// Java con el que corre el servidor de esa versión de Minecraft (lo que pide Mojang).
+pub fn java_for_mc(mc: &str) -> u32 {
+    use crate::playeredit::release_at_least as at;
+    if mc.split('.').next().and_then(|m| m.parse::<u32>().ok()).map(|m| m >= 26).unwrap_or(false) { 25 }
+    else if at(mc, 20, 5) { 21 } else if at(mc, 18, 0) { 17 } else if at(mc, 17, 0) { 16 } else { 8 }
+}
+
+/// ¿El mod está compilado para un Java que el servidor tiene? Se mira la versión de las clases y
+/// el nivel que piden sus configuraciones de Mixin (en la CI, un mod para Java 17 «aceptaba»
+/// Minecraft 1.14 y rompía el arranque con Java 8).
+fn jar_java_ok(path: &std::path::Path, java: u32) -> bool {
+    use std::io::Read;
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    let Ok(mut z) = zip::ZipArchive::new(f) else { return false };
+    let max_class = 44 + java;
+    let mut seen = 0;
+    for i in 0..z.len() {
+        let Ok(mut e) = z.by_index(i) else { continue };
+        let Ok(name) = e.name().map(|n| n.to_string()) else { continue };
+        if name.ends_with(".class") && !name.starts_with("META-INF/") && seen < 40 {
+            let mut h = [0u8; 8];
+            if e.read_exact(&mut h).is_ok() && h[..4] == [0xCA, 0xFE, 0xBA, 0xBE] {
+                seen += 1;
+                if u16::from_be_bytes([h[6], h[7]]) as u32 > max_class { return false; }
+            }
+        } else if name.ends_with(".mixins.json") || name.ends_with("mixins.json") {
+            let mut t = String::new();
+            if e.read_to_string(&mut t).is_ok() {
+                if let Some(n) = t.split("JAVA_").nth(1).and_then(|r| r.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().ok()) {
+                    if n > java { return false; }
+                }
+            }
+        }
+    }
+    true
 }
 
 /// La mejor versión de un proyecto para `mc`: la publicada para esa versión exacta o, si no hay,
@@ -778,4 +816,13 @@ pub async fn link_file<S: Source>(src: &S, cfg: &ServerConfig, file_name: &str) 
     manifest.mods.push(m.clone());
     save_manifest(&cfg.id, &manifest)?;
     Ok(m)
+}
+
+#[cfg(test)]
+mod java_por_version {
+    #[test]
+    fn java_segun_minecraft() {
+        use super::java_for_mc as j;
+        assert_eq!((j("1.14"), j("1.16.5"), j("1.17.1"), j("1.18.2"), j("1.20.4"), j("1.20.5"), j("1.21.11"), j("26.2")), (8, 8, 16, 17, 17, 21, 21, 25));
+    }
 }

@@ -9,10 +9,19 @@ falló, una captura y el archivo de diagnóstico (Ajustes → Diagnóstico).
 
 **PC 1** = la propietaria del servidor de prueba. **PC 2** = coanfitriona.
 
-## Antes de empezar
+## Antes de empezar: actualizar desde la 1.2.0
 
-1. Las dos PCs instalan la 1.3.0 de prueba (la 1.1.0 no puede actualizarse sola: tiene la clave
-   vieja; instalen la 1.3.0 a mano una vez).
+1. Cierren 939 Host en las dos PCs (bandeja → *Salir*). Si había un servidor encendido, se guarda.
+2. Comprueben el SHA-256 del instalador (PowerShell: `Get-FileHash .\939Host-1.3.0-instalador.exe`)
+   contra el que viene en `SHA256SUMS.txt`.
+3. Ejecuten `939Host-1.3.0-instalador.exe` e instalen encima de la 1.2.0: se conservan servidores,
+   mundos, amigos, grupos y ajustes (los datos están en `%LOCALAPPDATA%\939Host`, el instalador no
+   los toca). Windows SmartScreen avisa porque no está firmado con certificado: *Más información →
+   Ejecutar de todas formas*.
+   - Portable: descomprimir el `.zip` en una carpeta y abrir `939Host.exe` (usa los mismos datos).
+4. Abran 939 Host y confirmen en *Ajustes → Acerca de* que dice 1.3.0.
+   (La actualización automática desde la 1.2.0 funcionará con la primera versión oficial firmada;
+   esta es una versión de prueba y se instala a mano.)
 2. PC 1 crea un servidor de prueba (Vanilla o Fabric reciente), lo comparte y lo invita a PC 2
    como **Coanfitrión**. PC 2 se une y espera a que diga que tiene copia.
 
@@ -47,7 +56,10 @@ falló, una captura y el archivo de diagnóstico (Ajustes → Diagnóstico).
 11. PC 2 (sin hacer nada más que *Activar* cuando aparece): entra desde Minecraft a
     `prueba.939host`. Tiene que entrar **aunque el servidor esté en PC 1 o en PC 2**.
 12. Con Simple Voice Chat instalado en el servidor y en los dos Minecraft: entrando por
-    `prueba.939host`, se escuchan entre los dos. Repetir después de pasar el servidor.
+    `prueba.939host` (o por la dirección `127.0.0.1:…` que muestra 939 Host), se escuchan entre los
+    dos. Repetir después de pasar el servidor. Si tienen un tercero sin 939 Host que entre por la
+    entrada pública, también tiene que tener voz (el panel de la entrada dice si el puerto UDP de
+    voz quedó abierto en el router).
 
 ## Jugadores
 
@@ -72,6 +84,8 @@ falló, una captura y el archivo de diagnóstico (Ajustes → Diagnóstico).
 
 ## Corte inesperado
 
-20. Con el servidor en PC 2, desconecten el cable/Wi-Fi de PC 2 un minuto. → PC 1 deja de verla
-    como anfitriona válida y ofrece *Recuperar aquí* (con dos PCs no hay mayoría para hacerlo
-    solo). Al volver PC 2, no quedan dos servidores encendidos.
+20. Con el servidor en PC 2, **cierren 939 Host de golpe** en PC 2 (Administrador de tareas →
+    Finalizar tarea). → A los ~70 s PC 1 lo levanta sola con el último estado (tiene internet).
+    Al abrir otra vez 939 Host en PC 2, esa PC ve que ya lo aloja PC 1 y no lo enciende.
+21. Con el servidor en PC 2, desconecten el cable/Wi-Fi **de PC 1** dos minutos. → PC 1, sin
+    internet, NO lo levanta por su cuenta (PC 2 sigue siendo la anfitriona).

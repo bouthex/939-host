@@ -118,7 +118,7 @@ pub async fn candidates<S: Source>(src: &S, mc: &str, loader: Loader, installed:
     for h in hits.into_iter().filter(|h| !CATALOG.iter().any(|k| k.slug == h.slug)
         && (h.server_side == "required" || h.server_side == "optional")
         && h.categories.iter().any(|c| c == "optimization") && !h.categories.iter().any(|c| CONTENT.contains(&c.as_str()))
-        && h.downloads >= 5_000).take(14) {
+        && !h.categories.iter().any(|c| c == "library") && h.downloads >= 20_000).take(14) {
         let Some(v) = mods::best_compatible(src, &h.project_id, mc, lid).await else { continue };
         if !mods::jar_server_safe(&v, mc, lid).await { continue; }
         out.push(Candidate {

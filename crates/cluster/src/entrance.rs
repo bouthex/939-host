@@ -276,7 +276,10 @@ impl GroupNode {
             tokio::time::sleep(Duration::from_secs(2)).await;
             loop {
                 node.check_entrance(&sid, &info3).await;
-                tokio::time::sleep(Duration::from_secs(600)).await;
+                // Si todavía no se pudo comprobar (por ejemplo, la otra PC aún no estaba lista), se
+                // vuelve a probar a los 30 s en lugar de esperar 10 minutos.
+                let ok = info3.lock().unwrap().state == "comprobada";
+                tokio::time::sleep(Duration::from_secs(if ok { 600 } else { 30 })).await;
             }
         }));
         open
