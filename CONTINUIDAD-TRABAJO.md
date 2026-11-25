@@ -84,3 +84,25 @@ OpenGL por software: es una limitación del entorno de prueba, no de 939 Host.
 - Edición del inventario con el jugador desconectado: no implementada; solo se puede ver.
 - Clave de recuperación: queda una copia en `claves-939host-nuevas`; no se borra sin la confirmación del usuario.
 - Publicación oficial: requiere la autorización del usuario. La 1.1.0 instalada no se actualiza sola (clave vieja): hay que instalar la 1.3.0 a mano una vez.
+
+## Etapa 24/11 (resultados de la primera prueba entre dos PCs)
+
+| Problema informado | Causa / solución | Verificación |
+|---|---|---|
+| 0 jugadores en 26.3 | 26.3 antepone `System chat: ` a «joined/left the game»: `RE_JOIN`/`RE_LEAVE`/`RE_LOST` lo aceptan | cliente real 26.3 local (`e2e_jugador_en_vivo`) + CI agrega Fabric 26.3 |
+| Propiedad perdida en las dos PCs | Traspaso en dos fases: `OwnerOffer` → `OwnerAnswer` (la otra acepta) → `finish_ownership` firma y valida → `OwnerConfirm`; si algo falla, sigue la dueña anterior | multi_node `transferencia_de_propiedad_confirmada` |
+| Pedido para alojar aceptado solo | Quitado el `auto_answer`; siempre espera respuesta | multi_node (3 pruebas esperan el pedido y responden) |
+| «Sincronizando» eterno | `pull` siempre llama a `op_end` (también con error) y corta cada bloque a 60 s | código |
+| Nombre de la coanfitriona no aparecía | La propietaria actualiza el nombre real en el grupo firmado; nombres vacíos se ignoran | multi_node completo pasó |
+| `prueba.939host` seguía ocupada | Se libera al borrar el servidor; `alias::set` ignora registros de servidores que ya no existen | código |
+| Teclas no se conservaban | `last_used_profile` prefiere el perfil propio (o `.minecraft`), no otro perfil de 939 Host con opciones por defecto | prueba unitaria nueva |
+| Spawn protegido | Por defecto 0 al crear | código |
+| Inventario | Arrastrar y soltar con `op: move` real y verificado; sin repintar mientras se arrastra | cliente real 26.3 (mover) |
+| Chat | Selección, botón copiar, códigos detectados que se copian (nunca se ejecutan) | código |
+| Grupo de chat | `group_add_members` + *Sumar amigos* | código |
+| Cambiar versión | Selector de loader (Vanilla/Fabric/Forge/NeoForge), mismo Minecraft con otro loader, mods revisados para el loader nuevo, vuelta atrás restaura el loader | compila; `e2e_cambio_de_version` sigue igual |
+| IPs que no servían | IP real de la red local con copia y «Copiar todas las direcciones» (solo las válidas) | código |
+| Caché | *Ajustes → Liberar espacio de la caché* (no toca servidores, mundos, copias, fotos ni descargas recientes) | prueba unitaria |
+
+No hecho en esta etapa: servidores Quilt (el modelo de servidor no lo tiene) y vincular un servidor
+externo que no creó 939 Host («Otro puerto»). Guía de prueba: `docs/PRUEBA-1.3.0-DOS-PCS.md` pasos 22–32.

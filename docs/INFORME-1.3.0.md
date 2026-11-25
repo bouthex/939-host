@@ -54,3 +54,14 @@ cliente real.
   otra forma de que Windows resuelva un nombre propio.
 - **Publicación oficial firmada**: requiere tu autorización. Desde la 1.2.0, esta versión de prueba se
   instala a mano, encima, conservando los datos.
+
+## Después de la primera prueba entre dos PCs (24/11)
+
+Corregido de raíz: detección de jugadores en 26.3 (prefijo `System chat:`), traspaso de propiedad en
+dos fases sin quedar sin dueña, pedidos para alojar que nunca se aceptan solos, aviso de
+sincronización que siempre se cierra, nombres reales en el grupo, `.939host` que se libera al borrar,
+teclas del perfil tomadas del perfil propio, protección del spawn en 0, inventario arrastrable,
+chat copiable con detección de códigos, sumar amigos a un grupo de chat, cambio de loader, IP local
+real con copia y limpieza de caché. Verificado con cliente real 26.3 (detección, hambre, vida,
+inventario y mover), multi_node completo y pruebas unitarias; lo de dos PCs se prueba con la guía
+(pasos 22–32).
