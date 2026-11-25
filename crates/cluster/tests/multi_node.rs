@@ -1146,3 +1146,63 @@ fn transferencia_de_propiedad_confirmada() {
 }
 
 fn id(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }
+
+/// Traspaso de propiedad con mensajes perdidos: (1) la confirmación de la destinataria no llega;
+/// (2) la lista firmada no le llega a la destinataria. En los dos casos termina con una sola
+/// propietaria y la saliente no firma ninguna otra lista mientras tanto (no hay dos versiones).
+#[test]
+fn traspaso_de_propiedad_con_mensajes_perdidos() {
+    let [p1, p2] = ports::<2>();
+    let owner = |n: &mut Node, sid: &str| n.status(sid)["members"].as_array().unwrap().iter().filter(|m| m["role"] == "propietario").map(|m| m["nodeId"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    // (1) Confirmación perdida.
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+        let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_TEST_DROP_OWNER_CONFIRM", "1")]);
+        let (ia, ib) = (id(&mut a), id(&mut b));
+        let sid = a.ok(&format!("create Conf {p1}")).as_str().unwrap().to_string();
+        a.ok(&format!("share {sid}"));
+        let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+        b.ok(&format!("join {t}"));
+        wait("B en el grupo", Duration::from_secs(20), || owner(&mut b, &sid) == vec![ia.clone()]);
+        a.ok(&format!("transfer {sid} {ib}"));
+        wait("B ve la oferta", Duration::from_secs(15), || b.status(&sid)["ownerOfferIn"].is_string());
+        b.ok(&format!("ownanswer {sid} si"));
+        assert_eq!(owner(&mut b, &sid), vec![ib.clone()], "B adoptó la lista firmada");
+        // B queda congelada (como si se cortara su conexión): A no recibió la confirmación ni
+        // puede ver su informe. Mientras tanto A no firma ninguna otra lista ni retira la oferta.
+        signal(b.pid(), "STOP");
+        if owner(&mut a, &sid) == vec![ia.clone()] {
+            let e = a.err(&format!("recoverycode {sid}"));
+            assert!(e.contains("traspaso"), "A no firma nada mientras el traspaso está en curso: {e}");
+            assert!(a.err(&format!("owncancel {sid}")).contains("no se puede retirar"));
+            println!("✔ con el traspaso firmado y sin confirmar, A no firma otra lista ni lo retira");
+        } else {
+            assert!(a.err(&format!("recoverycode {sid}")).contains("Solo la PC propietaria"));
+        }
+        signal(b.pid(), "CONT");
+        wait("A termina el traspaso al ver el informe de B", Duration::from_secs(30), || owner(&mut a, &sid) == vec![ib.clone()]);
+        assert_eq!(owner(&mut b, &sid), vec![ib.clone()]);
+        println!("✔ confirmación perdida: A lo ve en el informe de B y termina; nunca firmó otra lista");
+    }
+    // (2) Lista firmada perdida (la respuesta llega cuando B ya dejó de esperar).
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_TEST_LOSE_OWNER_REPLY", "1")]);
+        let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+        let (ia, ib) = (id(&mut a), id(&mut b));
+        let sid = a.ok(&format!("create Perd {p2}")).as_str().unwrap().to_string();
+        a.ok(&format!("share {sid}"));
+        let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+        b.ok(&format!("join {t}"));
+        wait("B en el grupo", Duration::from_secs(20), || owner(&mut b, &sid) == vec![ia.clone()]);
+        a.ok(&format!("transfer {sid} {ib}"));
+        wait("B ve la oferta", Duration::from_secs(15), || b.status(&sid)["ownerOfferIn"].is_string());
+        let r = b.cmd(&format!("ownanswer {sid} si"));
+        println!("    respuesta de B: {r}");
+        // En cada PC hay siempre exactamente una propietaria (A o B, nunca dos ni ninguna).
+        for n in [&mut a, &mut b] { assert_eq!(owner(n, &sid).len(), 1); }
+        wait("A reenvía el traspaso firmado y termina", Duration::from_secs(40), || owner(&mut a, &sid) == vec![ib.clone()] && owner(&mut b, &sid) == vec![ib.clone()]);
+        println!("✔ lista firmada perdida: A la reenvía, B la adopta y A termina; siempre una sola propietaria");
+    }
+}
