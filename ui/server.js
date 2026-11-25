@@ -223,17 +223,19 @@ tabDraw.summary = async (el) => {
             : v.reach === 'fail' ? `<span class="chk bad" title="${esc(v.reachError || '')}">No atiende conexiones</span>`
             : '<span class="chk wait">Comprobando que reciba jugadores…</span>'}</div>
           <div class="kv"><span class="k">Para entrar hace falta</span><span class="stack" style="gap:6px;align-items:flex-end"><span class="ta-r">Minecraft <b>${esc(c.mcVersion)}</b>${c.loader === 'vanilla' ? ' sin mods' : ` con ${loaderName(c.loader)}${v.modsCount ? ` y los mismos ${v.modsCount} mods` : ' (el servidor no tiene mods)'}`}</span>${profileButton(c, v)}</span></div>
-          ${aliasRow(c.id)}
-          ${publicRow(c.id)}
-          <details class="tech"><summary class="sm t3">Datos técnicos de conexión</summary>
-          <div class="kv"><span class="k">Desde esta PC</span><span class="row" style="gap:6px"><span class="mono">localhost:${c.port}</span><button class="btn s icon ghost" data-a="copy" data-text="localhost:${c.port}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button></span></div>
+          <div class="addr-sec">Integrantes de 939 Host</div>
           ${gg ? (() => {
             const others = gg.members.filter((m) => !m.isMe);
             const on = others.filter((m) => m.online);
             const paths = [...new Set(on.map((m) => m.path).filter(Boolean))].join(' · ');
-            return `<div class="kv"><span class="k">Grupo</span><span class="row" style="gap:8px">${state.share.routePort ? `<span class="mono">127.0.0.1:${state.share.routePort}</span>` : ''}<span class="chk ${on.length ? 'ok' : others.length ? 'bad' : ''}">${others.length ? `${on.length} de ${others.length} PCs conectadas${paths ? ` · ${esc(paths)}` : ''}` : 'Nadie más en el grupo'}</span></span></div>`;
+            return `<div class="kv"><span class="k">Dirección del grupo</span><span class="stack" style="gap:2px;align-items:flex-end"><span class="row" style="gap:6px">${state.share.routePort ? `<span class="mono">127.0.0.1:${state.share.routePort}</span><button class="btn s icon ghost" data-a="copy" data-text="127.0.0.1:${state.share.routePort}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button>` : ''}</span><span class="chk ${on.length ? 'ok' : others.length ? 'bad' : ''}">${others.length ? `${on.length} de ${others.length} PCs conectadas${paths ? ` · ${esc(paths)}` : ''}` : 'Nadie más en el grupo'}</span></span></div>`;
           })() : `<div class="kv"><span class="k">Desde otras casas</span><button class="btn s ghost" data-a="tab" data-v="group">Invitar con un código${icon('chev', 14)}</button></div>`}
-          ${lanRow(c)}</div>${copyAllBtn(c)}</div>
+          ${aliasRow(c.id)}
+          <div class="addr-sec">Jugadores sin 939 Host</div>
+          ${publicRow(c.id)}
+          ${lanRow(c)}
+          <div class="addr-sec">En esta PC</div>
+          <div class="kv"><span class="k">Minecraft en esta PC</span><span class="row" style="gap:6px"><span class="mono">localhost:${c.port}</span><button class="btn s icon ghost" data-a="copy" data-text="localhost:${c.port}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button></span></div></div>${copyAllBtn(c)}</div>
         <div class="card pad stack"><h2>Identidad del servidor</h2>
           <p class="sm t2" style="margin:0">Identifica a este servidor en todas las PCs del grupo. No depende de la IP: sigue siendo el mismo aunque cambie la PC anfitriona.</p>
           <div class="addr"><span>${esc(c.identity.accessCode)}</span><button class="btn s" data-a="copy" data-text="${esc(c.identity.accessCode)}">${icon('copy', 14)}Copiar</button></div></div>
@@ -759,11 +761,11 @@ const ENT_STATE = { preparando: 'Preparando', abierta: 'Abierta, sin comprobar',
 function lanRow(c) {
   const x = EXT[c.id]?.v;
   const cp = (t) => `<button class="btn s icon ghost" data-a="copy" data-text="${esc(t)}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button>`;
-  if (!x) return `<div class="kv"><span class="k">Desde tu red</span><span class="sm t3">Buscando la IP de esta PC…</span></div>`;
-  if (!x.lanIp) return `<div class="kv"><span class="k">Desde tu red</span><span class="sm t2">No se pudo saber la IP de esta PC (¿sin conexión de red?)</span></div>`;
+  if (!x) return `<div class="kv"><span class="k">En tu red local</span><span class="sm t3">Buscando la IP de esta PC…</span></div>`;
+  if (!x.lanIp) return `<div class="kv"><span class="k">En tu red local</span><span class="sm t2">No se pudo saber la IP de esta PC (¿sin conexión de red?)</span></div>`;
   const a = `${x.lanIp}:${x.gamePort}`;
-  if (!x.lanAccess) return `<div class="kv"><span class="k">Desde tu red</span><span class="sm t2">Apagado: activá «Permitir conexiones de mi red local» en Ajustes para usar <span class="mono">${esc(a)}</span></span></div>`;
-  return `<div class="kv"><span class="k">Desde tu red</span><span class="row" style="gap:6px"><span class="mono">${esc(a)}</span>${cp(a)}</span></div>`;
+  if (!x.lanAccess) return `<div class="kv"><span class="k">En tu red local</span><span class="sm t2">Apagado: activá «Permitir conexiones de mi red local» en Ajustes para usar <span class="mono">${esc(a)}</span></span></div>`;
+  return `<div class="kv"><span class="k">En tu red local</span><span class="row" style="gap:6px"><span class="mono">${esc(a)}</span>${cp(a)}</span></div>`;
 }
 /* Todas las direcciones que funcionan, listas para pegar en un chat. Solo entran las
    comprobadas o las que no dependen de Internet. */
@@ -783,7 +785,7 @@ function publicRow(id) {
   loadExt(id);
   const x = EXT[id]?.v;
   if (!x && EXT[id] && !EXT[id].loading) return '';
-  if (!x) return `<div class="kv"><span class="k">Sin 939 Host</span><span class="sm t3">Cargando…</span></div>`;
+  if (!x) return `<div class="kv"><span class="k">Desde Internet</span><span class="sm t3">Cargando…</span></div>`;
   let val;
   if (x.allowed === false) val = '<span class="sm t2">Bloqueado: solo se entra con 939 Host</span>';
   else if (x.allowed !== true) val = `<span class="sm t2">${x.lanAccess ? 'Solo desde tu red local' : 'Solo con 939 Host'}</span>`;
@@ -792,7 +794,7 @@ function publicRow(id) {
     val = addr ? `<span class="mono">${esc(addr)}</span><button class="btn s icon ghost" data-a="copy" data-text="${esc(addr)}" data-msg="Dirección copiada" aria-label="Copiar dirección">${icon('copy', 14)}</button>${x.publicName ? '' : `<span class="xs t3">${x.bestVerified ? 'comprobada' : 'sin comprobar'}</span>`}`
       : '<span class="sm t2">Permitido, pero sin entrada desde Internet todavía</span>';
   }
-  return `<div class="kv"><span class="k">Sin 939 Host</span><span class="row wrap" style="gap:6px;justify-content:flex-end">${val}<button class="btn s ghost" data-a="ext-open" data-id="${esc(id)}">Configurar</button></span></div>`;
+  return `<div class="kv"><span class="k">Desde Internet</span><span class="row wrap" style="gap:6px;justify-content:flex-end">${val}<button class="btn s ghost" data-a="ext-open" data-id="${esc(id)}">Configurar</button></span></div>`;
 }
 function entranceRows(x) {
   if (!x.entrances.length) return `<div class="li"><div class="grow sm t2">Ninguna PC del grupo es entrada todavía. ${x.consent ? 'Esta PC acepta serlo: se abre cuando el permiso esté activado.' : 'Activá «Recibir jugadores de Internet en esta PC» abajo o en la PC que prefieras.'}</div></div>`;

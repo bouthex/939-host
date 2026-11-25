@@ -893,3 +893,7 @@ details.tech[open] > summary::before { content: '▾ '; }
 .li.member { align-items: flex-start; }
 .li.member .member-name { overflow-wrap: anywhere; min-width: 3ch; }
 .li.member .member-acts { gap: 6px; margin-top: 8px; margin-left: -10px; }
+
+/* Direcciones del resumen, agrupadas por quién las usa. */
+.addr-sec { font-size: 11.5px; font-weight: 600; letter-spacing: .02em; color: var(--text3); text-transform: uppercase; margin: 14px 0 2px; }
+.addr-sec:first-of-type { margin-top: 6px; }
