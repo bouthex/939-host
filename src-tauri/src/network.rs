@@ -449,6 +449,20 @@ pub async fn group_transfer(app: AppHandle, id: String, node_id: String, cluster
     Ok(())
 }
 
+/// La destinataria acepta o rechaza la propiedad ofrecida.
+#[tauri::command]
+pub async fn group_owner_answer(app: AppHandle, id: String, accept: bool, cluster: State<'_, Cluster>) -> AppResult<String> {
+    let r = cluster.node().await?.answer_ownership(&id, accept).await.map_err(|e| AppError::invalid(e.to_string()))?;
+    let _ = app.emit("servers-changed", ());
+    Ok(r)
+}
+
+/// La propietaria retira la oferta de propiedad.
+#[tauri::command]
+pub async fn group_owner_cancel(id: String, cluster: State<'_, Cluster>) -> AppResult<()> {
+    cluster.node().await?.cancel_ownership_offer(&id).await.map_err(|e| AppError::invalid(e.to_string()))
+}
+
 /// Sale del grupo. Devuelve si la propietaria lo confirmó en el momento.
 #[tauri::command]
 pub async fn group_leave(app: AppHandle, id: String, cluster: State<'_, Cluster>) -> AppResult<bool> {

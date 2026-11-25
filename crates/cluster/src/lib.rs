@@ -194,6 +194,14 @@ enum Req {
     /// Administración de jugadores (vida, hambre, experiencia, inventario, matar, ficha) pedida
     /// por la propietaria cuando el servidor lo aloja otra PC. La anfitriona comprueba el permiso.
     PlayerOp { server: String, op: serde_json::Value },
+    /// La propietaria ofrece la propiedad a esta PC (se repite mientras siga pendiente).
+    OwnerOffer { server: String, name: String },
+    /// La PC que recibió la oferta responde (aceptar o rechazar).
+    OwnerAnswer { server: String, accept: bool },
+    /// La propietaria retira la oferta.
+    OwnerOfferCancel { server: String },
+    /// La destinataria verificó y adoptó la lista firmada: la propietaria la guarda.
+    OwnerConfirm { server: String, share: ShareConfig },
 }
 
 impl Req {
@@ -201,7 +209,7 @@ impl Req {
         match self {
             Req::Info { server } | Req::Config { server } | Req::Lease { server, .. } | Req::Handover { server, .. }
             | Req::Vote { server, .. } | Req::SyncNow { server } | Req::Bye { server }
-            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } | Req::PackChunk { server, .. } | Req::StartRemote { server } | Req::StopRemote { server } | Req::PlayerOp { server, .. } => server,
+            | Req::HostRequest { server, .. } | Req::HostRequestCancel { server } | Req::HostAnswer { server, .. } | Req::Prefetch { server, .. } | Req::Leave { server } | Req::LeaseChain { server, .. } | Req::Succession { server, .. } | Req::Avatar { server, .. } | Req::Nudge { server } | Req::ProbeEntrance { server, .. } | Req::ClientPlan { server } | Req::ClientMod { server, .. } | Req::PackChunk { server, .. } | Req::StartRemote { server } | Req::StopRemote { server } | Req::PlayerOp { server, .. } | Req::OwnerOffer { server, .. } | Req::OwnerAnswer { server, .. } | Req::OwnerOfferCancel { server } | Req::OwnerConfirm { server, .. } => server,
         }
     }
 }
@@ -342,6 +350,8 @@ pub struct HostState { pub state: String, pub detail: String, pub players: u32, 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
 enum Resp {
+    /// Lista del grupo firmada (transferencia de propiedad en dos pasos).
+    Share(ShareConfig),
     Info(Info),
     Config { config: Option<serde_json::Value>, share: ShareConfig },
     Ok,
@@ -414,6 +424,10 @@ struct SrvState {
     mods_noticed: HashSet<String>,
     /// Hay una solicitud para alojar y acá el servidor está apagado: se acepta sola.
     auto_answer: bool,
+    /// Propiedad ofrecida a esta PC: (PC propietaria, su nombre, cuándo llegó la última vez).
+    owner_offer_in: Option<(String, String, Instant)>,
+    /// Resultado de la última transferencia de propiedad (para mostrarlo un rato).
+    owner_result: Option<(bool, String, Instant)>,
     /// OP sin autorizar vistos en `ops.json` y desde cuándo: se quitan recién después de un margen
     /// (así una lista firmada que todavía viene en camino no hace quitar un OP legítimo).
     op_unauthorized: HashMap<String, Instant>,
@@ -502,6 +516,12 @@ pub struct GroupStatus {
     pub outgoing_request: Option<OutgoingView>,
     /// Última respuesta a una solicitud de esta PC (se muestra un minuto).
     pub last_answer: Option<AnswerView>,
+    /// Transferencia de propiedad: oferta recibida (nombre de la propietaria) …
+    pub owner_offer_in: Option<String>,
+    /// … oferta enviada por esta PC (nombre de la destinataria), pendiente de respuesta …
+    pub owner_offer_out: Option<String>,
+    /// … y el resultado de la última (se muestra un rato).
+    pub owner_result: Option<AnswerView>,
 }
 
 /// Solicitud para alojar el servidor, tal como la ve el anfitrión actual.
@@ -826,23 +846,62 @@ impl GroupNode {
         Ok(true)
     }
 
-    /// Pasa la propiedad a otra PC del grupo. La firma la propietaria actual; desde ese momento
-    /// todas las PCs confían en la nueva, y esta queda como coanfitriona (o jugadora sin copia).
+    /// Ofrece la propiedad a otra PC del grupo. NO cambia nada todavía: la destinataria tiene que
+    /// aceptar, y recién ahí la propietaria firma la lista nueva (ver `finish_ownership`). Antes se
+    /// firmaba de inmediato y, si la otra PC la rechazaba (por ejemplo porque el grupo tenía código
+    /// de recuperación), la propietaria anterior dejaba de serlo y la nueva nunca lo era.
     pub async fn transfer_ownership(&self, server: &str, to: &str) -> Result<()> {
         if !self.inner.is_owner(server) { bail!("Solo la PC propietaria puede transferir la propiedad."); }
-        let mut s = network::load_share(server);
-        if to == self.inner.me || s.member(to).is_none() { bail!("Elegí otra PC del grupo."); }
-        let mine_role = if has_copy(server) { "coanfitrion" } else { "jugador" };
-        for m in s.members.iter_mut() {
-            if m.node_id == to { m.role = "propietario".into(); } else if m.node_id == self.inner.me { m.role = mine_role.into(); }
-        }
-        self.inner.commit(server, &mut s)?;
+        let s = network::load_share(server);
+        let Some(m) = s.member(to).filter(|_| to != self.inner.me) else { bail!("Elegí otra PC del grupo.") };
+        owner_offer::write(server, &owner_offer::Offer { to: to.into(), to_name: m.name.clone(), at: chrono::Local::now().to_rfc3339() })?;
+        audit(server, "owner-offer", to);
+        self.inner.with_state(server, |st| st.owner_result = None);
+        let r = self.inner.rpc_timeout(to, &Req::OwnerOffer { server: server.into(), name: self.inner.name() }, Duration::from_secs(6)).await;
         self.inner.local.changed(server);
-        // Que la nueva propietaria y el resto lo tomen ya.
-        for m in s.members.iter().filter(|m| m.node_id != self.inner.me) {
-            let _ = self.inner.rpc_timeout(&m.node_id, &Req::SyncNow { server: server.into() }, Duration::from_secs(3)).await;
+        match r {
+            Ok(Resp::Ok) => Ok(()),
+            Ok(Resp::Err { msg }) => { owner_offer::clear(server); bail!(msg) }
+            // Sin conexión ahora: la oferta queda pendiente y se vuelve a enviar sola.
+            _ => Ok(()),
         }
+    }
+
+    /// Retira la oferta de propiedad pendiente (la propietaria).
+    pub async fn cancel_ownership_offer(&self, server: &str) -> Result<()> {
+        let Some(o) = owner_offer::read(server) else { return Ok(()) };
+        owner_offer::clear(server);
+        let _ = self.inner.rpc_timeout(&o.to, &Req::OwnerOfferCancel { server: server.into() }, Duration::from_secs(4)).await;
+        self.inner.local.changed(server);
         Ok(())
+    }
+
+    /// La destinataria responde a la oferta. Si acepta, la propietaria firma la transferencia y
+    /// esta PC la verifica antes de mostrarse como propietaria.
+    pub async fn answer_ownership(&self, server: &str, accept: bool) -> Result<String> {
+        let Some((owner, name, _)) = self.inner.with_state(server, |s| s.owner_offer_in.clone()) else { bail!("Esa oferta ya no está pendiente.") };
+        let r = self.inner.rpc_timeout(&owner, &Req::OwnerAnswer { server: server.into(), accept }, Duration::from_secs(20)).await;
+        self.inner.with_state(server, |s| s.owner_offer_in = None);
+        match r {
+            Ok(Resp::Ok) if !accept => { self.inner.local.changed(server); Ok(format!("Rechazaste la propiedad que te ofrecía {name}.")) }
+            Ok(Resp::Share(sh)) if accept => {
+                // Se verifica con las mismas reglas que todas las PCs; recién ahí es propietaria.
+                if !self.inner.adopt_share(server, &sh) && signed::owner_of(&network::load_share(server)).as_deref() != Some(self.inner.me.as_str()) {
+                    bail!("La transferencia llegó pero esta PC no pudo verificarla: {name} sigue siendo la propietaria. Esperá a que el grupo termine de sincronizar y probá de nuevo.");
+                }
+                // Se le confirma a la propietaria saliente; si no llega ahora, igual la toma en la
+                // próxima sincronización (la lista está firmada por ella y tiene una revisión mayor).
+                let _ = self.inner.rpc_timeout(&owner, &Req::OwnerConfirm { server: server.into(), share: sh.clone() }, Duration::from_secs(8)).await;
+                self.inner.local.changed(server);
+                for m in sh.members.iter().filter(|m| m.node_id != self.inner.me) {
+                    let _ = self.inner.rpc_timeout(&m.node_id, &Req::SyncNow { server: server.into() }, Duration::from_secs(3)).await;
+                }
+                Ok("Ahora sos la propietaria de este servidor.".into())
+            }
+            Ok(Resp::Err { msg }) => bail!(msg),
+            Ok(_) => bail!("Respuesta inesperada."),
+            Err(_) => bail!("{name} no responde: la propiedad no cambió. Probá cuando esté conectada."),
+        }
     }
 
     /* ── Recuperación de la propiedad ── */
@@ -1772,6 +1831,9 @@ impl GroupNode {
             server: server.into(), me: inner.me.clone(), lease: l, i_am_host, host_online, my_latest, has_copy: has_copy(server), fenced, busy,
             can_start, auto_failover: share.auto_failover, handover_on_quit: share.handover_on_quit, majority: majority(share.members.len()), members,
             can_request, incoming_request, outgoing_request, last_answer, ranking: inner.host_ranking(server),
+            owner_offer_in: inner.with_state(server, |s| s.owner_offer_in.as_ref().filter(|o| o.2.elapsed() < Duration::from_secs(90)).map(|o| o.1.clone())),
+            owner_offer_out: owner_offer::read(server).filter(|_| inner.is_owner(server)).map(|o| share.member(&o.to).map(|m| m.name.clone()).unwrap_or(o.to_name)),
+            owner_result: inner.with_state(server, |s| s.owner_result.clone()).filter(|r| r.2.elapsed() < Duration::from_secs(120)).map(|r| AnswerView { accepted: r.0, message: r.1 }),
         }
     }
 
@@ -2006,7 +2068,10 @@ impl Inner {
         }
     }
 
-    fn commit(&self, server: &str, s: &mut ShareConfig) -> Result<()> {
+    fn commit(&self, server: &str, s: &mut ShareConfig) -> Result<()> { self.commit_with(server, s, true) }
+
+    /// `save`: false prepara y firma la lista sin guardarla (transferencia en dos pasos).
+    fn commit_with(&self, server: &str, s: &mut ShareConfig, save: bool) -> Result<()> {
         if signed::owner_of(s).as_deref() != Some(self.me.as_str()) && s.members.iter().any(|m| m.role == "propietario") {
             // Solo una transferencia (la firma la propietaria saliente) puede nombrar a otra.
             if signed::pin(&network::load_share(server)).as_deref() != Some(self.me.as_str()) { bail!("Solo la PC propietaria puede cambiar el grupo."); }
@@ -2021,6 +2086,7 @@ impl Inner {
         bump_rev(s);
         signed::sign(&self.key, server, s);
         s.owner_pin = signed::owner_of(s);
+        if !save { return Ok(()); }
         network::save_share(server, s).map_err(|e| anyhow!(e.message))
     }
 
@@ -2040,6 +2106,30 @@ impl Inner {
     }
 
     /// Verifica una lista recibida y la adopta (si corresponde). Devuelve si cambió.
+    /// Firma la transferencia de propiedad a `to` (que ya aceptó). Antes de guardar, se comprueba
+    /// con las mismas reglas que aplican las demás PCs: si no la aceptarían, no se cambia nada.
+    fn finish_ownership(&self, server: &str, to: &str) -> Result<ShareConfig> {
+        let old = network::load_share(server);
+        let mut s = old.clone();
+        if s.member(to).is_none() { bail!("esa PC ya no es del grupo"); }
+        let mine_role = if has_copy(server) { "coanfitrion" } else { "jugador" };
+        for m in s.members.iter_mut() {
+            if m.node_id == to { m.role = "propietario".into(); } else if m.node_id == self.me { m.role = mine_role.into(); }
+        }
+        // Una transferencia no hereda el código de recuperación ni la sucesora (son de la anterior).
+        s.recovery = None;
+        s.recovery_pending = None;
+        s.successor = None;
+        s.succession = None;
+        // Se firma sin guardar: la propietaria guarda recién cuando la destinataria confirma que la
+        // verificó (`Req::OwnerConfirm`). Si algo falla en el medio, nada cambió en ninguna PC.
+        self.commit_with(server, &mut s, false)?;
+        if let Err(why) = signed::accept_with(server, &old, &s, &signed::Ctx { seen_for: &|_| None, wait_secs: u64::MAX, witnesses: 0 }) {
+            bail!("las demás PCs no la aceptarían ({why})");
+        }
+        Ok(s)
+    }
+
     fn adopt_share(&self, server: &str, remote: &ShareConfig) -> bool {
         let mut mine = network::load_share(server);
         let r = signed::rev(remote);
@@ -2604,27 +2694,32 @@ impl Inner {
         let total = missing.len();
         let started = Instant::now();
         let title = format!("Sincronizando «{}»", server_name(server));
-        let mut got = 0usize;
-        for chunk in missing.chunks(128) {
-            if total > 256 { self.local.op(server, &title, &format!("{} de {} bloques del mundo", got, total), Some(got as f64 / total as f64)); }
-            got += chunk.len();
-            let (mut send, mut recv) = c.open_bi().await?;
-            wire::write_msg(&mut send, &SyncReq::Blobs { server: server.into(), hashes: chunk.to_vec() }).await?;
-            send.finish()?;
-            for h in chunk {
-                let data = wire::read_frame(&mut recv, snapshots::BLOCK).await?;
-                if data.is_empty() { bail!("a la otra PC le falta un bloque"); }
-                snapshots::put_blob(server, h, &data).map_err(|e| anyhow!(e.message))?;
+        // El aviso «Sincronizando» se cierra SIEMPRE (con el error si lo hubo): antes, un corte a
+        // mitad de la copia lo dejaba visible para siempre (prueba real entre dos PCs).
+        let copied: Result<snapshots::SnapshotInfo> = async {
+            let mut got = 0usize;
+            for chunk in missing.chunks(128) {
+                if total > 256 { self.local.op(server, &title, &format!("{} de {} bloques del mundo", got, total), Some(got as f64 / total as f64)); }
+                got += chunk.len();
+                let (mut send, mut recv) = c.open_bi().await?;
+                wire::write_msg(&mut send, &SyncReq::Blobs { server: server.into(), hashes: chunk.to_vec() }).await?;
+                send.finish()?;
+                for h in chunk {
+                    let data = tokio::time::timeout(Duration::from_secs(60), wire::read_frame(&mut recv, snapshots::BLOCK)).await.map_err(|_| anyhow!("la otra PC dejó de enviar el mundo"))??;
+                    if data.is_empty() { bail!("a la otra PC le falta un bloque"); }
+                    snapshots::put_blob(server, h, &data).map_err(|e| anyhow!(e.message))?;
+                }
             }
-        }
-        let info = snapshots::import_manifest(server, &man, from).map_err(|e| anyhow!(e.message))?;
+            snapshots::import_manifest(server, &man, from).map_err(|e| anyhow!(e.message))
+        }.await;
+        if total > 256 { self.local.op_end(server, &title, copied.as_ref().err().map(|e| e.to_string()).as_deref()); }
+        let info = copied?;
         // Velocidad real de esa PC hacia esta (solo con una copia de tamaño útil para medir).
         let secs = started.elapsed().as_secs_f64();
         if total >= 32 && secs > 0.5 {
             let kbps = ((total * snapshots::BLOCK) as f64 * 8.0 / 1000.0 / secs) as u32;
             self.with_state(server, |s| { s.kbps_from.insert(from.to_string(), kbps); });
         }
-        if total > 256 { self.local.op_end(server, &title, None); }
         if total > 0 {
             self.local.note(server, &format!("Sincronizado «{}»: {} bloques nuevos en {:.1} s.", info.label, total, started.elapsed().as_secs_f32()));
         }
@@ -2692,6 +2787,12 @@ impl Inner {
     async fn tick_server(self: &Arc<Self>, server: &str) {
         let share = network::load_share(server);
         if !share.enabled { return; }
+        // Oferta de propiedad pendiente: se repite hasta que la destinataria responda (así no se
+        // pierde si estaba desconectada o reinició 939 Host).
+        if let Some(o) = owner_offer::read(server).filter(|_| signed::owner_of(&share).as_deref() == Some(self.me.as_str())) {
+            let (me, srv) = (self.clone(), server.to_string());
+            tokio::spawn(async move { let _ = me.rpc_timeout(&o.to, &Req::OwnerOffer { server: srv, name: me.name() }, Duration::from_secs(4)).await; });
+        }
         // Una jugadora solo habla con quien aloja y con la propietaria: no necesita saber nada de
         // las demás PCs (ni su dirección ni cuándo están conectadas).
         let i_play = share.member(&self.me).map(|m| !m.can_host()).unwrap_or(true);
@@ -2852,13 +2953,9 @@ impl Inner {
                 self.retry_final(server).await;
                 self.apply_mc_ops(server, &share);
                 self.host_checks(server, &share).await;
-                // La anfitriona tiene el servidor apagado y otra coanfitriona pidió alojarlo: no hay
-                // nada encendido que proteger, así que se le pasa sin esperar una respuesta manual.
-                if !self.local.is_running(server) {
-                    // Lo hace el ciclo del nodo (`GroupNode::start`): el traspaso vuelve a llamar a
-                    // `tick_server` y una llamada directa desde acá sería recursiva.
-                    self.with_state(server, |s| if s.incoming.is_some() && s.busy.is_none() { s.auto_answer = true; });
-                }
+                // Una solicitud para alojar SIEMPRE la decide la anfitriona (aceptar o rechazar):
+                // antes, con el servidor apagado se pasaba sola y la ventana aparecía y se aceptaba
+                // sin dar tiempo a tocar nada (prueba real entre dos PCs).
             }
             Some(l) if copy => {
                 self.sync_from_best(server).await;
@@ -3382,6 +3479,48 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             tokio::spawn(async move { let _ = inner2.blocking(&server, |l, s| l.stop(s)).await; });
             Resp::Text { text: "Deteniendo y guardando.".into() }
         }
+        Req::OwnerOffer { server, name } => {
+            let share = network::load_share(&server);
+            if signed::owner_of(&share).as_deref() != Some(remote) { return Resp::Err { msg: "Esa PC no es la propietaria (todavía no te llegó el último cambio del grupo).".into() }; }
+            let first = inner.with_state(&server, |s| { let f = s.owner_offer_in.as_ref().map(|o| o.2.elapsed() > Duration::from_secs(90)).unwrap_or(true); s.owner_offer_in = Some((remote.to_string(), pcname_or(&name), Instant::now())); f });
+            if first { inner.local.note(&server, &format!("{} te ofrece la propiedad de este servidor: aceptala o rechazala en la pestaña Grupo.", pcname_or(&name))); }
+            inner.local.changed(&server);
+            Resp::Ok
+        }
+        Req::OwnerConfirm { server, share } => {
+            // La destinataria verificó la lista firmada y la adoptó: la propietaria saliente guarda
+            // exactamente esa misma lista (firmada por ella) y deja de serlo en ese momento.
+            let Some(o) = owner_offer::read(&server).filter(|o| o.to == remote) else { return Resp::Err { msg: "La oferta ya no está pendiente.".into() } };
+            if signed::owner_of(&share).as_deref() != Some(remote) || !signed::verify(&server, &share, &inner.me) { return Resp::Err { msg: "La confirmación no coincide.".into() }; }
+            if !inner.adopt_share(&server, &share) { return Resp::Err { msg: "No se pudo guardar la transferencia.".into() }; }
+            owner_offer::clear(&server);
+            audit(&server, "owner-transferred", remote);
+            inner.with_state(&server, |s| s.owner_result = Some((true, format!("{} es la nueva propietaria.", o.to_name), Instant::now())));
+            inner.local.note(&server, &format!("{} aceptó: ahora es la propietaria. Vos seguís en el grupo.", o.to_name));
+            inner.local.changed(&server);
+            Resp::Ok
+        }
+        Req::OwnerOfferCancel { server } => {
+            if inner.with_state(&server, |s| if s.owner_offer_in.as_ref().map(|o| o.0 == remote).unwrap_or(false) { s.owner_offer_in = None; true } else { false }) {
+                inner.local.changed(&server);
+            }
+            Resp::Ok
+        }
+        Req::OwnerAnswer { server, accept } => {
+            let Some(o) = owner_offer::read(&server).filter(|o| o.to == remote) else { return Resp::Err { msg: "La oferta ya no está pendiente.".into() } };
+            if !inner.is_owner(&server) { owner_offer::clear(&server); return Resp::Err { msg: "Esta PC ya no es la propietaria.".into() }; }
+            if !accept {
+                owner_offer::clear(&server);
+                inner.with_state(&server, |s| s.owner_result = Some((false, format!("{} rechazó la propiedad.", o.to_name), Instant::now())));
+                inner.local.note(&server, &format!("{} rechazó la propiedad. Seguís siendo la propietaria.", o.to_name));
+                inner.local.changed(&server);
+                return Resp::Ok;
+            }
+            match inner.finish_ownership(&server, remote) {
+                Ok(sh) => Resp::Share(sh),
+                Err(e) => Resp::Err { msg: format!("No se pudo completar la transferencia: {e}. Seguís siendo la propietaria.") },
+            }
+        }
         Req::PlayerOp { server, op } => {
             let share = network::load_share(&server);
             // Ver la ficha: cualquier integrante. Cambiar algo: solo la propietaria.
@@ -3453,15 +3592,9 @@ async fn handle(inner: &Arc<Inner>, remote: &str, req: Req) -> Resp {
             });
             match r {
                 Ok(fresh_req) => {
-                    if inner.local.is_running(&server) {
-                        if fresh_req {
-                            inner.local.note(&server, &format!("{name} quiere alojar este servidor."));
-                            inner.local.host_request(&server, &name);
-                        }
-                    } else {
-                        // Apagado acá: el traspaso sale solo en la próxima vuelta (ver `tick_server`).
-                        let (inner2, srv) = (inner.clone(), server.clone());
-                        tokio::spawn(async move { inner2.tick_server(&srv).await; });
+                    if fresh_req {
+                        inner.local.note(&server, &format!("{name} quiere alojar este servidor."));
+                        inner.local.host_request(&server, &name);
                     }
                     inner.local.changed(&server);
                     Resp::Ok
@@ -3843,4 +3976,16 @@ mod red_medida {
         assert!(link_score(&buena) > 95.0 && link_score(&relay) < link_score(&buena) && link_score(&lejana) < 30.0);
         assert_eq!(link_score(&LinkQuality { rtt_ms: None, ..buena }), 0.0, "sin respuesta no suma");
     }
+}
+
+
+/// Oferta de propiedad pendiente (guardada: sobrevive a cerrar 939 Host).
+mod owner_offer {
+    use serde::{Deserialize, Serialize};
+    #[derive(Serialize, Deserialize, Clone)]
+    pub struct Offer { pub to: String, pub to_name: String, pub at: String }
+    fn path(server: &str) -> std::path::PathBuf { host939_core::paths::server_dir(server).join("propiedad-ofrecida.json") }
+    pub fn read(server: &str) -> Option<Offer> { std::fs::read(path(server)).ok().and_then(|b| serde_json::from_slice(&b).ok()) }
+    pub fn write(server: &str, o: &Offer) -> anyhow::Result<()> { std::fs::write(path(server), serde_json::to_vec(o)?)?; Ok(()) }
+    pub fn clear(server: &str) { let _ = std::fs::remove_file(path(server)); }
 }

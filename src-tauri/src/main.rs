@@ -524,6 +524,8 @@ fn main() {
             v3::optimize_set_pending,
             v3::optimize_install,
             network::group_transfer,
+            network::group_owner_answer,
+            network::group_owner_cancel,
             network::group_leave,
             v3::profile_export,
             network::client_prepare,

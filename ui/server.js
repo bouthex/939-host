@@ -377,7 +377,7 @@ tabDraw.group = async (el) => {
     const hostState = !l ? '' : l.state === 'released' ? 'libre: nadie lo está hosteando' : g.hostOnline ? 'en línea' : 'no responde';
     const online = g.members.filter((m) => m.online).length;
     const eligible = g.members.filter((m) => !m.isMe && m.online && m.canHost);
-    el.innerHTML = `<div class="stack" style="gap:16px">${head}
+    el.innerHTML = `<div class="stack" style="gap:16px">${head}${ownerOfferHTML(g)}
       <div class="grid2"><div class="stack" style="gap:16px">
         <div class="card pad stack"><h2>Dirección para jugar</h2>
           <div class="addr"><span>127.0.0.1:${st.routePort}</span><button class="btn s" data-a="copy" data-text="127.0.0.1:${st.routePort}" data-msg="Dirección copiada">${icon('copy', 14)}Copiar</button></div>
@@ -505,10 +505,27 @@ A['invite-revoke'] = async (el) => { try { await invoke('invite_revoke', { id: s
 A['member-transfer'] = async (el) => {
   const id = state.server.config.id;
   if (!(await dialog({ title: `Pasar la propiedad a ${el.dataset.name}`, confirm: 'Pasar la propiedad', danger: true,
-    body: `<p>${esc(el.dataset.name)} va a ser la PC propietaria: podrá invitar, quitar PCs y borrar el servidor. Esta PC queda como integrante.</p><p class="sm t2">El cambio lo firma esta PC y todo el grupo lo verifica. Para deshacerlo, la nueva propietaria tiene que devolvértela.</p>` }))) return;
-  try { await invoke('group_transfer', { id, nodeId: el.dataset.node }); toast('Propiedad transferida'); } catch (e) { fail(e); }
+    body: `<p>${esc(el.dataset.name)} recibe una solicitud y tiene que aceptarla. Hasta entonces seguís siendo la propietaria; si la rechaza o no responde, no cambia nada.</p><p class="sm t2">Al aceptar, la transferencia la firma esta PC y la verifica cada PC del grupo: nunca queda sin propietaria ni con dos. Esta PC queda como integrante.</p>` }))) return;
+  try { await invoke('group_transfer', { id, nodeId: el.dataset.node }); toast(`Solicitud enviada a ${el.dataset.name}: esperando que acepte`); } catch (e) { fail(e); }
   refreshServer();
 };
+A['owner-answer'] = async (el) => {
+  const id = state.server.config.id, accept = el.dataset.v === '1';
+  el.disabled = true;
+  try { toast(await invoke('group_owner_answer', { id, accept })); } catch (e) { fail(e); }
+  refreshServer();
+};
+A['owner-cancel'] = async () => {
+  try { await invoke('group_owner_cancel', { id: state.server.config.id }); toast('Oferta retirada'); } catch (e) { fail(e); }
+  refreshServer();
+};
+/* Transferencia de propiedad: solicitud recibida, enviada o resultado (estado real del backend). */
+function ownerOfferHTML(g) {
+  if (g.ownerOfferIn) return `<div class="note strong">${icon('host')}<div class="grow"><b>${esc(g.ownerOfferIn)} te ofrece la propiedad de este servidor</b><span class="sm t2">Si aceptás, vas a poder invitar, quitar PCs y administrar jugadores. Hasta que respondas no cambia nada.</span></div><button class="btn pri" data-a="owner-answer" data-v="1">Aceptar</button><button class="btn" data-a="owner-answer" data-v="0">Rechazar</button></div>`;
+  if (g.ownerOfferOut) return `<div class="note">${SHAPES.ring}<div class="grow"><b>Esperando que ${esc(g.ownerOfferOut)} acepte la propiedad</b><span class="sm t2">Seguís siendo la propietaria hasta que acepte.</span></div><button class="btn" data-a="owner-cancel">Retirar</button></div>`;
+  if (g.ownerResult) return `<div class="note">${g.ownerResult.accepted ? SHAPES.dot : SHAPES.tri}<div class="grow sm">${esc(g.ownerResult.message)}</div></div>`;
+  return '';
+}
 A['group-leave'] = async () => {
   const id = state.server.config.id;
   if (!(await dialog({ title: 'Salir del grupo', confirm: 'Salir', danger: true, body: '<p>Esta PC deja de participar en este servidor: no lo vas a poder alojar ni ver su estado. Para volver necesitás una invitación nueva.</p>' }))) return;

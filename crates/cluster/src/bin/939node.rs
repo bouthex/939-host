@@ -446,6 +446,9 @@ async fn main() {
                     node.commit_share(&p(1), &mut sh).map(|_| serde_json::json!(true)).map_err(|e| e.to_string())
                 }
                 "transfer" => node.transfer_ownership(&p(1), &p(2)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "ownanswer" => node.answer_ownership(&p(1), p(2) == "si").await.map(|t| serde_json::json!(t)).map_err(|e| e.to_string()),
+                "owncancel" => node.cancel_ownership_offer(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "recoverycode" => node.create_recovery_code(&p(1)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
                 "reccreate" => node.create_recovery_code(&p(1)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
                 "recrotate" => node.rotate_recovery_code(&p(1), &p(2)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
                 "recover" => node.recover_with_code(&p(1), &p(2)).await.map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),

@@ -755,9 +755,14 @@ fn tierra_e_inventario_no_retroceden() {
     b.ok(&format!("stopremote {sid}"));
     wait("A se detiene a pedido de B", Duration::from_secs(30), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
     println!("✔ B encendió y detuvo el servidor en la PC de A sin pedir ser anfitriona");
-    // Pedir ser anfitriona es otra acción: A está apagada, así que se lo pasa sola.
+    // Pedir ser anfitriona es otra acción (A decide, aunque esté apagada).
     let e = b.ok(&format!("request {sid}")).to_string();
     assert!(!e.is_empty());
+    // La anfitriona decide siempre (aunque tenga el servidor apagado): nunca se acepta sola.
+    wait("A ve la solicitud", Duration::from_secs(10), || a.status(&sid)["incomingRequest"].is_object());
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "no se acepta sola");
+    a.ok(&format!("answer {sid} si"));
     wait("B queda alojando", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
     assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "la tierra sigue colocada");
     assert_eq!(b.ok(&format!("read {sid} inventario.txt")).as_str(), Some("vacio"), "el inventario no vuelve atrás");
@@ -810,6 +815,11 @@ fn tras_un_cierre_inesperado_se_publica_lo_que_guardo_el_guardian() {
     assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "no se enciende solo");
     // B pide alojarlo: tiene lo jugado antes del cierre inesperado.
     b.ok(&format!("request {sid}"));
+    // La anfitriona decide siempre (aunque tenga el servidor apagado): nunca se acepta sola.
+    wait("A ve la solicitud", Duration::from_secs(10), || a.status(&sid)["incomingRequest"].is_object());
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "no se acepta sola");
+    a.ok(&format!("answer {sid} si"));
     wait("B queda alojando", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
     assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "lo jugado antes del cierre inesperado no se pierde");
     assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos anfitrionas");
@@ -848,6 +858,11 @@ fn tras_un_corte_sin_guardian_no_se_publica_lo_no_confirmado() {
     // B pide alojar: A le pasa lo que quedó en disco (es lo más nuevo), rotulado como sin confirmar,
     // y el punto anterior sigue disponible para volver.
     b.ok(&format!("request {sid}"));
+    // La anfitriona decide siempre (aunque tenga el servidor apagado): nunca se acepta sola.
+    wait("A ve la solicitud", Duration::from_secs(10), || a.status(&sid)["incomingRequest"].is_object());
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "no se acepta sola");
+    a.ok(&format!("answer {sid} si"));
     wait("B queda alojando", Duration::from_secs(60), || b.ok(&format!("running {sid}")).as_bool().unwrap());
     assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"));
     let snaps = b.ok(&format!("snapshots {sid}")).to_string();
@@ -1051,3 +1066,47 @@ fn conexion_por_ip_sin_939_host() {
     assert!(c.ok(&format!("entrance {sid}")).is_null() && ping_externo(25871).is_none());
     println!("✔ con 939 Host se sigue entrando; una PC que no acepta ser entrada no la abre");
 }
+
+
+/// Transferencia de propiedad en dos pasos (prueba real entre dos PCs: la anterior la perdía y la
+/// nueva nunca la recibía). Mientras no acepta, nada cambia; rechazar no cambia nada; aceptar deja
+/// una sola propietaria verificada en todas las PCs, también con código de recuperación creado.
+#[test]
+fn transferencia_de_propiedad_confirmada() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let (ia, ib) = (id(&mut a), id(&mut b));
+    let sid = a.ok("create Prop 25861").as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    for (n, role) in [(&mut b, "coanfitrion"), (&mut c, "jugador")] {
+        let t = a.ok(&format!("invite {sid} {role}")).as_str().unwrap().to_string();
+        n.ok(&format!("join {t}"));
+    }
+    a.ok(&format!("recoverycode {sid}"));
+    let owner = |n: &mut Node| n.status(&sid)["members"].as_array().unwrap().iter().find(|m| m["role"] == "propietario").map(|m| m["nodeId"].as_str().unwrap().to_string());
+    wait("todas ven a A propietaria", Duration::from_secs(20), || [&mut a, &mut b, &mut c].iter_mut().all(|n| owner(n).as_deref() == Some(ia.as_str())));
+    a.ok(&format!("transfer {sid} {ib}"));
+    wait("B ve la oferta", Duration::from_secs(15), || b.status(&sid)["ownerOfferIn"].is_string());
+    std::thread::sleep(Duration::from_secs(8));
+    assert_eq!(owner(&mut a).as_deref(), Some(ia.as_str()), "mientras B no acepta, A sigue siendo la propietaria");
+    assert_eq!(owner(&mut b).as_deref(), Some(ia.as_str()));
+    b.ok(&format!("ownanswer {sid} no"));
+    wait("A ve el rechazo", Duration::from_secs(10), || a.status(&sid)["ownerResult"]["accepted"] == false);
+    assert_eq!(owner(&mut a).as_deref(), Some(ia.as_str()), "rechazar no cambia nada");
+    println!("✔ la oferta espera la decisión y rechazarla no cambia nada");
+    a.ok(&format!("transfer {sid} {ib}"));
+    wait("B ve la oferta otra vez", Duration::from_secs(15), || b.status(&sid)["ownerOfferIn"].is_string());
+    let m = b.ok(&format!("ownanswer {sid} si"));
+    assert!(m.as_str().unwrap().contains("propietaria"), "{m}");
+    wait("las tres ven a B propietaria", Duration::from_secs(25), || [&mut a, &mut b, &mut c].iter_mut().all(|n| owner(n).as_deref() == Some(ib.as_str())));
+    for n in [&mut a, &mut b, &mut c] {
+        assert_eq!(n.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["role"] == "propietario").count(), 1, "una sola propietaria");
+    }
+    // La nueva propietaria administra el grupo; la anterior ya no.
+    assert!(a.err(&format!("transfer {sid} {ia}")).contains("Solo la PC propietaria"));
+    println!("✔ aceptada: B es la única propietaria en las tres PCs (con código de recuperación creado antes)");
+}
+
+fn id(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }
