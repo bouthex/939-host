@@ -1130,12 +1130,15 @@ async fn e2e_jugador_en_vivo() {
     let mut port = 25900;
     use host939_core::playeredit::{adjust, inventory, InvOp, Stat};
     use host939_core::playerdata::detail;
-    for mc in versions.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+    for spec in versions.split(',').map(str::trim).filter(|v| !v.is_empty()) {
         port += 1;
-        let mut inp = input(&format!("Vivo {mc}"), mc, Loader::Vanilla, port);
+        // «fabric:26.3» = servidor Fabric (sin mods: el cliente normal entra igual).
+        let (loader, mc) = match spec.split_once(':') { Some(("fabric", v)) => (Loader::Fabric, v), _ => (Loader::Vanilla, spec) };
+        let mut inp = input(&format!("Vivo {mc}"), mc, loader, port);
         inp.online_mode = false;
         inp.difficulty = "easy".into();
-        let cfg = instance::create(inp, 8192).await.expect("crear");
+        let mut cfg = instance::create(inp, 8192).await.expect("crear");
+        if loader == Loader::Fabric { cfg.loader_version = meta::loader_support(Loader::Fabric, mc).await.unwrap().loader_version; instance::save(&cfg).unwrap(); }
         instance::install(&mgr, cfg.id.clone()).await;
         let cfg = instance::load(&cfg.id).unwrap();
         assert!(cfg.installed, "{mc}: {:?}", cfg.install_error);

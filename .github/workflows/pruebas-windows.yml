@@ -723,16 +723,19 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Jugador conectado con el cliente real (hambre, vida, inventario, TPS · 26.2 y 1.20.4)
+      - name: Jugador conectado con el cliente real (hambre, vida, inventario, TPS · Fabric 26.3, 26.2 y 1.20.4)
         if: ${{ !cancelled() }}
-        timeout-minutes: 30
+        timeout-minutes: 40
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
+          # 26.3 usa SDL3: sin EGL no encuentra un modo GLX en el Xvfb.
+          SDL_VIDEO_FORCE_EGL: "1"
+          SDL_VIDEO_X11_FORCE_EGL: "1"
           CLIENTE_REAL: ${{ github.workspace }}/ci/cliente-real/cliente.py
-          E2E_VERSIONES: "26.2,1.20.4"
+          E2E_VERSIONES: "fabric:26.3,26.2,1.20.4"
         run: |
           export HOST939_TEST_JAVA25="$JAVA_HOME_25_X64" HOST939_TEST_JAVA17="$JAVA_HOME_17_X64" HOST939_TEST_JAVA21="$JAVA_HOME_25_X64"
-          xvfb-run -a -s "-screen 0 1280x720x24" cargo test --locked -p host939-core --test e2e_real e2e_jugador_en_vivo -- --ignored --nocapture
+          xvfb-run -a -s "-screen 0 1280x720x24 +extension GLX" cargo test --locked -p host939-core --test e2e_real e2e_jugador_en_vivo -- --ignored --nocapture
       - name: Resource pack obligatorio y opcional con el cliente real
         if: ${{ !cancelled() }}
         timeout-minutes: 30
