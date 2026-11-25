@@ -287,7 +287,7 @@ function paintProfile() {
   if (!p) { el.innerHTML = `<div class="empty" style="border:0">${icon('user', 28)}<h2>Elegí un jugador</h2><p>Vas a ver su vida, inventario, ubicación y estadísticas con datos reales del servidor.</p></div>`; return; }
   const d = pl.detail;
   const src = !d ? (pl.err ? `<span class="t2">${esc(pl.err)}</span>` : 'Cargando…')
-    : d.source === 'live' ? '<span class="live"><span class="dot"></span>En vivo · se actualiza cada 4 s</span>'
+    : d.source === 'live' ? '<span class="live"><span class="dot"></span>En vivo · se actualiza solo</span>'
       : d.source === 'saved' ? `Último guardado de Minecraft${d.savedAt ? ` · ${esc(fmtDate(d.savedAt))}` : ''}`
         : 'Sin datos guardados: todavía no entró a este mundo.';
   const scrollY = el.querySelector('.pf-scroll')?.scrollTop || 0;

@@ -119,7 +119,7 @@ otra vez.
   </picture>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/app-inventario-oscuro.png">
-    <img src="docs/img/app-inventario-claro.png" width="49%" alt="Inventario en lista: nombre completo, cantidad, durabilidad y mod de cada objeto">
+    <img src="docs/img/app-inventario-claro.png" width="49%" alt="Inventario en casilleros como en Minecraft: objetos, cantidades, durabilidad y encantamientos; se arrastran de un casillero a otro">
   </picture>
 </p>
 
@@ -192,23 +192,29 @@ funciona.
 
 ## Estado del proyecto
 
-La versión publicada es la **0.9.0**. La rama
-[`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3) tiene la **1.3.0** (próxima versión). Hasta la 1.2.0 se probó en Windows reales (servidores, dos
-PCs en lugares distintos y un cliente real de Minecraft); lo nuevo de la 1.3.0 (grupo compartido,
-chat de grupos, inventario en vivo) espera la prueba entre dos PCs. **Todavía no está publicada**. Las capturas de esta página son de esa versión, con datos de ejemplo.
+<p>
+<a href="https://github.com/bouthex/939-host/releases/latest"><img src="https://img.shields.io/github/v/release/bouthex/939-host?label=versi%C3%B3n%20publicada&color=black" alt="Versión publicada"></a>
+<a href="https://github.com/bouthex/939-host/actions/workflows/pruebas-windows.yml?query=branch%3Arediseno-v3"><img src="https://github.com/bouthex/939-host/actions/workflows/pruebas-windows.yml/badge.svg?branch=rediseno-v3" alt="Pruebas en Windows"></a>
+</p>
 
-En la 0.9.0 ya están: crear y administrar servidores, mods de Modrinth, puntos de restauración y
-compartir entre PCs. Preparar para jugar, la conexión por IP, las fichas de jugadores e
-inventarios con mods, las actualizaciones automáticas, los resource packs y lo demás de esta página llegan con la 1.1.0, la 1.2.0 y la 1.3.0.
+La versión publicada es la que figura arriba, en [Releases](https://github.com/bouthex/939-host/releases/latest).
+El desarrollo sigue en la rama [`rediseno-v3`](https://github.com/bouthex/939-host/tree/rediseno-v3); lo que
+todavía no está publicado se anota en el [registro de cambios](CHANGELOG.md).
+
+Cada versión se prueba en Windows reales en la integración continua: servidores de Minecraft reales,
+dos PCs de Windows hablándose por la red P2P, un cliente real de Minecraft que entra a jugar (Vanilla
+1.20.4 y 26.2, Fabric 26.3), instalación encima de la versión anterior y actualización con vuelta
+atrás. Lo que depende de dos casas con redes distintas (routers, CGNAT, entrada desde Internet) se
+prueba además a mano entre PCs reales.
 
 **Necesita configuración aparte:** CurseForge funciona solo con una clave de su API oficial
 ([cómo conseguirla](docs/MANUAL.md#curseforge)). Lo que todavía no hace está en
 [Limitaciones](docs/LIMITACIONES.md).
 
 > [!NOTE]
-> 939 Host está en desarrollo y puede tener errores. La versión 0.9.0 **no está firmada
-> digitalmente**: Windows puede mostrar un aviso al abrirla, y con Smart App Control activado la
-> bloquea. No recomendamos desactivar protecciones de Windows.
+> 939 Host **no está firmado digitalmente** todavía: Windows puede mostrar un aviso al abrirlo, y con
+> Smart App Control activado lo bloquea. Se pidió la firma gratuita de SignPath Foundation. No
+> recomendamos desactivar protecciones de Windows.
 
 <br>
 
@@ -220,7 +226,7 @@ inventarios con mods, las actualizaciones automáticas, los resource packs y lo 
 | **Para jugar** | Minecraft: Java Edition con una cuenta oficial |
 | **Java** | No hace falta: 939 Host baja el que necesita cada servidor |
 
-1. Descargá **`939Host-0.9.0-instalador.exe`** desde
+1. Descargá **`939Host-<versión>-instalador.exe`** desde
    [Releases](https://github.com/bouthex/939-host/releases/latest). También hay una versión
    portable y los hashes SHA-256 para verificar las descargas.
 2. Ejecutalo. Se instala para tu usuario, sin permisos de administrador.
@@ -293,11 +299,15 @@ perfiles y mods de siempre quedan como estaban.
 
 <details><summary><b>¿Cómo se actualiza?</b></summary>
 
-Solo. Desde la 1.1.0, al abrir 939 Host busca la última versión oficial; si hay una, la descarga, la
-verifica y la instala, y vuelve a abrir. Servidores, mundos, perfil y configuración quedan como
-estaban. Nunca se actualiza con un servidor encendido. Si estás usando la app, aparece un aviso
-«Actualizar ahora». Quien tenga una versión anterior a la 1.1.0 tiene que instalar la 1.1.0 una vez a
-mano, encima de la que tenga.
+Solo, desde la 1.3.0. Al abrir (y cada 6 horas) 939 Host busca la última versión oficial; si hay una,
+la descarga, comprueba su firma y su SHA-256, la instala y vuelve a abrir. Si la versión nueva no
+arranca, vuelve sola a la anterior. Servidores, mundos, mods, grupos, perfil y configuración quedan
+como estaban. Nunca se actualiza con un servidor encendido; si estás usando la app, aparece un aviso
+«Actualizar ahora». También en Configuración → Actualizaciones → *Buscar actualizaciones*.
+
+Si tenés la 0.9.0 o una versión de prueba anterior (1.1.0, 1.2.0), instalá la 1.3.0 **una vez a mano**
+encima de la que tengas (se conservan todos los datos): esas versiones confían en una clave de
+publicación anterior. Desde la 1.3.0, las siguientes llegan solas.
 </details>
 
 <details><summary><b>Windows me muestra un aviso al abrirlo</b></summary>

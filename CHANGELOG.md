@@ -1,6 +1,41 @@
 # Registro de cambios
 
-### 1.3.0 (rama rediseno-v3, sin release)
+## 1.3.0
+
+Primera versión oficial desde la 0.9.0. Reúne todo lo de las versiones de prueba 1.1.0, 1.2.0 y 1.3.0.
+
+**Servidor compartido entre PCs**
+- «Iniciar» y «Detener» desde cualquier PC del grupo actúan en la PC que aloja; el estado, los jugadores, el tiempo por tick, los TPS y la memoria se ven en vivo en todas.
+- Traspasos manuales y al salir sin perder el mundo; con dos PCs, si la anfitriona se cae, la otra lo levanta sola (con internet) y la que vuelve aparta su copia sin perderla.
+- Pedidos para alojar que siempre esperan la respuesta de quien aloja (nunca se aceptan solos), con estados reales y aviso de sincronización que siempre se cierra.
+- Traspaso de propiedad en dos pasos: la otra PC acepta y recién ahí cambia. Firmado, guardado y repetible: si un mensaje se pierde o una PC se cierra en el medio, termina igual y nunca quedan dos propietarias ni ninguna.
+- Nombres reales de cada PC en el grupo, también en las PCs que solo juegan.
+
+**Jugadores**
+- Detección con la lista del propio servidor (UUID real), además del registro: ya no queda en 0 jugadores con alguien conectado (26.3 cambió el formato de los avisos) y una salida no vista se corrige sola.
+- Ficha en vivo: UUID, tiempo conectado, vida, hambre, saturación, experiencia, inventario con objetos de mods y encantamientos. Cambios de a un paso que se hacen en el servidor real y se comprueban.
+- Inventario visual: arrastrar y soltar, dar, quitar y cambiar cantidades, desde 1.13 hasta 26.3. La propietaria administra aunque aloje otra PC.
+
+**Conexión**
+- Dirección `nombre.939host` para todo el grupo (también lleva Simple Voice Chat); se libera al borrar el servidor.
+- Jugadores sin 939 Host por IP (lo decide la propietaria; solo juegan): entradas desde Internet comprobadas desde otra PC, aviso de CGNAT y redirección manual.
+- Resumen con las direcciones separadas por quién las usa (integrantes, jugadores sin 939 Host, red local, esta PC), la IP real de la red local y «Copiar todas las direcciones» solo con las que funcionan.
+- Servidores encendidos fuera de 939 Host: se detecta uno propio encendido a mano (y no se abre una segunda copia sobre el mismo mundo) y se pueden vincular otros por dirección y puerto, con su estado real.
+
+**Versiones, mods y perfiles**
+- Cambiar la versión de Minecraft o el loader (Vanilla, Fabric, Forge, NeoForge) con revisión de cada mod, copia verificada y vuelta atrás.
+- Fabric en versiones viejas (Java 8) arranca; mods de rendimiento para cada versión exacta.
+- «Preparar para jugar» copia tus preferencias (teclas, idioma, accesibilidad, gráficos, sonido) desde tu perfil de siempre y conserva la lista de servidores; nada original se modifica.
+- Panel de Resource packs (Modrinth o `.zip`, obligatorio u opcional).
+
+**Además**
+- Actualizaciones automáticas desde las releases oficiales, con firma, SHA-256, vuelta atrás real y la portable incluida.
+- Chat con amigos y grupos de chat: sumar amigos a un grupo, copiar mensajes, direcciones, comandos e ids con un toque (nada se ejecuta solo).
+- Protección del spawn apagada al crear un servidor. Liberar la caché de descargas desde Configuración.
+
+## Historial de desarrollo (versiones de prueba, sin release)
+
+### 1.3.0 — etapas del 22 al 25/11
 - Servidor compartido: «Iniciar» desde cualquier integrante lo enciende en la PC que lo aloja (o, con el permiso libre, en la mejor PC conectada con la última versión); pedir ser anfitriona es otra acción. «Detener» desde otra PC (propietaria y coanfitrionas). Dos pedidos a la vez: gana uno y el otro ve quién lo está encendiendo.
 - Traspaso manual y al salir: arreglado «no se pudo copiar el mundo: el punto … no se puede verificar (época o PC no autorizadas)». Causa: la PC que recibía todavía tenía el permiso viejo; ahora lo actualiza desde la PC de origen antes de verificar.
 - Estado en vivo para todo el grupo: la anfitriona avisa cada cambio y las demás PCs lo muestran (lista de servidores y pantalla del servidor) y suenan al quedar en línea. Una comprobación de conexión fallida ya no deja «Preparando» para siempre; una instalación interrumpida ofrece reintentar.

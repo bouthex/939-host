@@ -33,18 +33,21 @@ with sync_playwright() as p:
         save(pg.screenshot(), f"app-jugadores-{suf}.png")
         # Inventario en lista, con un ítem elegido.
         pg.click('[data-a="pf-tab"][data-v="inv"]'); pg.wait_for_timeout(600)
-        pg.click('[data-a="inv-view"][data-v="list"]'); pg.wait_for_timeout(300)
-        pg.click('[data-key="inv:4"]'); pg.wait_for_timeout(500)
+        # Casilleros (la vista tipo Minecraft), con un objeto elegido.
+        pg.set_viewport_size({"width": 1280, "height": 1040})
+        pg.evaluate("pl.invView = 'grid'; paintProfile()"); pg.wait_for_timeout(300)
+        pg.click('[data-key="inv:0"]'); pg.wait_for_timeout(500)
         pg.evaluate("document.querySelector('.inv-wrap').scrollIntoView({block:'start'}); window.scrollBy(0,-90); document.querySelector('main, .main, #view')?.scrollBy?.(0,-90)")
         pg.wait_for_timeout(200)
         save(pg.screenshot(), f"app-inventario-{suf}.png")
+        pg.set_viewport_size({"width": 1280, "height": 800})
         # Conexión por IP.
         pg.click('.tab:has-text("Resumen")'); pg.wait_for_timeout(900)
         pg.set_viewport_size({"width": 1280, "height": 1060})
         pg.click('[data-a="ext-open"]'); pg.wait_for_timeout(700)
         pg.evaluate("document.querySelector('.overlay').scrollTop = 0; document.activeElement?.blur()"); pg.wait_for_timeout(150)
         save(pg.screenshot(), f"app-conexion-ip-{suf}.png")
-        pg.keyboard.press("Escape"); pg.wait_for_timeout(300)
+        pg.click('.overlay button:has-text("Cancelar")'); pg.wait_for_timeout(400)
         pg.set_viewport_size({"width": 1280, "height": 800})
         # Preparar para jugar (resultado).
         pg.click('[data-a="client-prepare"]'); pg.wait_for_timeout(800)

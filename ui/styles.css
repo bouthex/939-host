@@ -812,6 +812,14 @@ details.tech[open] > summary::before { content: '▾ '; }
 .slot .nm.full { padding: 3px; font-size: 9.5px; line-height: 1.12; font-weight: 550; color: var(--text2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; hyphens: auto; }
 .slot .nm.unk-q { font-size: 18px; color: var(--text3); }
 .slotcol .slot, .body3 .slot { width: 52px; height: 52px; }
+.slotcol { grid-template-rows: repeat(4, 52px); gap: 5px; }
+/* Ventanas más angostas: casilleros más chicos (va después de las reglas de arriba, que si no las pisan). */
+@media (max-width: 1180px) {
+  .grid9 { grid-template-columns: repeat(9, 44px); gap: 4px; }
+  .slot, .slotcol .slot, .body3 .slot { width: 44px; height: 44px; }
+  .slotcol { grid-template-rows: repeat(4, 44px); gap: 4px; }
+  .slot img { width: 30px; height: 30px; }
+}
 .inv-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .inv-group { font: 600 11px var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--text3); margin: 10px 0 4px; }
 .inv-group:first-child { margin-top: 0; }
