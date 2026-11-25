@@ -26,6 +26,8 @@ pub struct PlayerView {
     pub banned: bool,
     pub ban_reason: Option<String>,
     pub last_seen: Option<String>,
+    /// Hora de entrada de la sesión actual (solo si está conectado).
+    pub online_since: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -122,8 +124,11 @@ pub fn list(mgr: &Manager, cfg: &ServerConfig) -> Vec<PlayerView> {
     for e in read_list(cfg, "whitelist.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); map.get_mut(&k).unwrap().whitelisted = true; } }
     for e in read_list(cfg, "ops.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); map.get_mut(&k).unwrap().op_level = Some(e["level"].as_u64().unwrap_or(4) as u8); } }
     for e in read_list(cfg, "banned-players.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); let v = map.get_mut(&k).unwrap(); v.banned = true; v.ban_reason = e["reason"].as_str().map(String::from); } }
-    let online: Vec<String> = mgr.runtime(&cfg.id).lock().unwrap().players.iter().cloned().collect();
-    for n in &online { let k = touch(&mut map, n, ""); let v = map.get_mut(&k).unwrap(); v.online = true; v.name = n.clone(); }
+    let (online, since): (Vec<String>, Vec<Option<String>>) = {
+        let r = mgr.runtime(&cfg.id); let r = r.lock().unwrap();
+        r.players.iter().map(|n| (n.clone(), r.open_sessions.since(n).map(|t| t.to_rfc3339()))).unzip()
+    };
+    for (n, s) in online.iter().zip(since) { let k = touch(&mut map, n, ""); let v = map.get_mut(&k).unwrap(); v.online = true; v.name = n.clone(); v.online_since = s; }
     // Última vez visto: la salida registrada por 939 Host; si no hay, la última entrada que
     // anotó Minecraft.
     let sessions = crate::sessions::last_seen_map(&cfg.id);

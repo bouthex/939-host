@@ -222,7 +222,7 @@ async function loadPlayers(quiet = false) {
   if (!pl.sel && pl.list.length) pl.sel = (pl.list.find((p) => p.online) || pl.list[0]).name;
   paintList();
   const now = pl.list.find((p) => p.name === pl.sel);
-  const liveNow = !!(now?.online && state.server.status === 'running');
+  const liveNow = !!now?.online;
   // Sin cambios en el jugador abierto: no se vuelve a consultar (el sondeo sigue su ritmo).
   if (quiet && prevSel === pl.sel && wasLive === liveNow && pl.detail) { paintProfile(); return; }
   selectPlayer(pl.sel, prevSel === pl.sel);
@@ -235,7 +235,7 @@ function paintList() {
   el.innerHTML = pl.list.length ? pl.list.map((p) => `<button class="li ${p.name === pl.sel ? 'sel' : ''}" data-a="pl-sel" data-name="${esc(p.name)}" style="padding:12px 16px">
       <span class="avatar" data-skin="${esc(p.name)}">${esc(initials(p.name))}</span>
       <div class="grow"><div class="row" style="gap:6px"><b class="ellipsis">${esc(p.name)}</b>${p.opLevel ? '<span class="chip s">Operador</span>' : ''}</div>
-      <div class="xs t3 ellipsis">${p.online ? 'En línea' : p.banned ? 'Baneado' : p.lastSeen ? `Visto ${esc(ago(p.lastSeen))}` : p.whitelisted ? 'En la lista blanca' : 'Desconectado'}</div></div>
+      <div class="xs t3 ellipsis">${p.online ? `En línea${p.onlineSince ? ` · ${esc(onFor(p.onlineSince))}` : ''}` : p.banned ? 'Baneado' : p.lastSeen ? `Visto ${esc(ago(p.lastSeen))}` : p.whitelisted ? 'En la lista blanca' : 'Desconectado'}</div></div>
       ${p.online ? '<span class="dot" aria-label="en línea"></span>' : ''}</button>`).join('')
     : `<div class="pad sm t2">Todavía no entró nadie. ${state.server.config.whitelist ? 'La lista blanca está activa: agregá a tus amigos por nombre arriba.' : 'Cualquiera con la dirección puede entrar (la lista blanca está desactivada).'}</div>`;
   paintSkins(el);
@@ -258,7 +258,9 @@ function selectPlayer(name, keepData = false) {
   if (!name) { paintProfile(); return; }
   fetchDetail();
   const p = pl.list.find((x) => x.name === name);
-  if (p?.online && state.server.status === 'running') pl.poll = setInterval(() => { if (!document.hidden) fetchDetail(true); }, 4000);
+  // Conectado (aunque el servidor lo aloje otra PC del grupo): la ficha y el inventario se leen
+  // del juego cada 2,5 s, así lo que recoge, usa o tira aparece solo.
+  if (p?.online) pl.poll = setInterval(() => { if (!document.hidden) fetchDetail(true); }, 2500);
   paintProfile();
 }
 function stopPoll() { if (pl.poll) { clearInterval(pl.poll); pl.poll = null; } }
@@ -275,7 +277,7 @@ async function fetchDetail(quiet = false) {
   } finally { pl.loading = false; }
   if (pl.sel === name) repaintProfile();
 }
-function repaintProfile() { if (state.route === 'server' && state.tab === 'players') paintProfile(); }
+function repaintProfile() { if (pl.dragging) return; if (state.route === 'server' && state.tab === 'players') paintProfile(); }
 
 /* ───────── perfil ───────── */
 function paintProfile() {
@@ -293,7 +295,7 @@ function paintProfile() {
       <span class="avatar lg" data-skin="${esc(p.name)}">${esc(initials(p.name))}</span>
       <div class="grow stack" style="gap:6px"><div class="row wrap" style="gap:8px"><h2 style="font-size:20px">${esc(p.name)}</h2>
         ${p.online ? '<span class="chip fill s">En línea</span>' : '<span class="chip s">Desconectado</span>'}${p.opLevel ? `<span class="chip s">Operador · nivel ${p.opLevel}</span>` : ''}${p.banned ? '<span class="chip s">Baneado</span>' : ''}${d?.gamemode ? `<span class="chip soft s">${MODE[d.gamemode] || esc(d.gamemode)}</span>` : ''}</div>
-        <div class="sm t3">${src}</div></div>
+        <div class="sm t3">${src}</div>${p.uuid ? `<div class="xs t3 mono" title="UUID">${esc(p.uuid)}${p.online && p.onlineSince ? ` · conectado hace ${esc(onFor(p.onlineSince))}` : ''}</div>` : ''}</div>
       ${p.online ? `<button class="btn s" data-a="pl-act" data-act="kick">Expulsar</button>` : ''}</div>
     <div class="pf-tabs tabs" role="tablist">${PTABS.map(([k, l]) => `<button class="tab ${pl.tab === k ? 'on' : ''}" role="tab" aria-selected="${pl.tab === k}" data-a="pf-tab" data-v="${k}">${l}</button>`).join('')}</div>
     <div class="pf-body pf-scroll">${profileBody(p, d)}</div>`;
@@ -394,11 +396,14 @@ A['pl-kill'] = async () => {
   await fetchDetail(true);
 };
 
+const onFor = (iso) => { const m = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60000)); return m < 1 ? 'menos de 1 min' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
 const fmtClock = (s) => { s = Math.floor(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
 function slotHTML(item, opts = {}) {
   const ph = opts.ph ? sprite(`slot:${opts.ph}`) : null;
-  if (!item) return `<span class="slot ${opts.sel ? 'sel' : ''}" title="${esc(opts.label || 'Vacío')}" aria-label="${esc(opts.label || 'Vacío')}">${ph ? `<img class="ghost" src="${ph}" alt="">` : ''}</span>`;
+  const dk = opts.slot != null ? `${opts.group === 'ender' ? 'ender' : 'inv'}:${opts.slot}` : item ? `${opts.group === 'ender' ? 'ender' : 'inv'}:${item.slot}` : '';
+  const dnd = canDrag() && dk ? `data-drop="${dk}"` : '';
+  if (!item) return `<span class="slot ${opts.sel ? 'sel' : ''}" ${dnd} title="${esc(opts.label || 'Vacío')}" aria-label="${esc(opts.label || 'Vacío')}">${ph ? `<img class="ghost" src="${ph}" alt="">` : ''}</span>`;
   const img = itemImg(item.id);
   const mi = isModded(item.id) ? media.mods[item.id] : null;
   const unknown = mi && !mi.known;
@@ -406,9 +411,40 @@ function slotHTML(item, opts = {}) {
   const dur = item.maxDamage && item.damage != null ? Math.max(0, 1 - item.damage / item.maxDamage) : null;
   const name = item.customName || itemName(item.id);
   const label = unknown ? `${name} (mod no instalado: ${item.id.split(':')[0]})` : mi?.modName ? `${name} · ${mi.modName}` : name;
-  return `<button class="slot has ${unknown ? 'unk' : ''} ${opts.sel ? 'sel' : ''} ${pl.picked === key ? 'picked' : ''}" data-a="pick-item" data-key="${esc(key)}" title="${esc(label)}${item.count > 1 ? ` ×${item.count}` : ''}" aria-label="${esc(label)}${item.count > 1 ? `, ${item.count}` : ''}">
+  return `<button class="slot has ${unknown ? 'unk' : ''} ${opts.sel ? 'sel' : ''} ${pl.picked === key ? 'picked' : ''}" data-a="pick-item" data-key="${esc(key)}" ${dnd}${dnd ? ' draggable="true"' : ''} title="${esc(label)}${item.count > 1 ? ` ×${item.count}` : ''}" aria-label="${esc(label)}${item.count > 1 ? `, ${item.count}` : ''}">
     ${img ? `<img src="${img}" alt="">` : unknown ? '<span class="nm unk-q" aria-hidden="true">?</span>' : `<span class="nm full" lang="es">${esc(name)}</span>`}
     ${item.count > 1 ? `<span class="ct">${item.count}</span>` : ''}${dur != null && dur < 1 ? `<span class="dur"><i style="width:${Math.round(dur * 100)}%"></i></span>` : ''}</button>`;
+}
+/* Arrastrar y soltar: mueve de verdad en el servidor (op «move», que verifica el resultado
+   leyendo el inventario de nuevo). Equipo e inventario comparten grupo; el cofre de ender es aparte. */
+function canDrag() { return !!(pl.access?.allowed && pl.detail?.source === 'live' && !pl.busy.inv); }
+function dropOk(from, to) {
+  if (!from || !to || from === to) return false;
+  const [gf] = from.split(':'), [gt] = to.split(':');
+  return gf === gt && !findItem(pl.detail, to.replace(/^inv:(10[0-3]|-106)$/, 'eq:$1'));
+}
+if (!window.__plDnd) {
+  window.__plDnd = true;
+  const slotOf = (e) => e.target.closest?.('#pl-profile [data-drop]');
+  document.addEventListener('dragstart', (e) => {
+    const el = slotOf(e); if (!el || !canDrag()) return;
+    pl.dragging = el.dataset.drop; el.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', el.dataset.drop);
+  });
+  document.addEventListener('dragover', (e) => {
+    const el = slotOf(e); if (!el || !pl.dragging) return;
+    if (dropOk(pl.dragging, el.dataset.drop)) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; el.classList.add('drop-on'); }
+  });
+  document.addEventListener('dragleave', (e) => { slotOf(e)?.classList.remove('drop-on'); });
+  document.addEventListener('drop', (e) => {
+    const el = slotOf(e); if (!el || !pl.dragging) return;
+    e.preventDefault();
+    const from = pl.dragging, to = el.dataset.drop; pl.dragging = null;
+    if (!dropOk(from, to)) { repaintProfile(); return; }
+    const [g, f] = from.split(':'), t = +to.split(':')[1];
+    invRun({ op: 'move', group: g, from: +f, to: t }, () => { pl.picked = `${t >= 100 || t === -106 ? 'eq' : g}:${t}`; });
+  });
+  document.addEventListener('dragend', () => { if (pl.dragging) { pl.dragging = null; repaintProfile(); } });
 }
 function findItem(d, key) {
   const [g, s] = key.split(':');
@@ -515,9 +551,9 @@ function itemRows(groups) {
 function invBody(d) {
   const at = (s) => d.inventory.find((i) => i.slot === s) || null;
   const eq = d.equipment;
-  const main = []; for (let s = 9; s < 36; s++) main.push(slotHTML(at(s)));
-  const hot = []; for (let s = 0; s < 9; s++) hot.push(slotHTML(at(s), { sel: d.selectedSlot === s }));
-  const e = (it, slot, ph, label) => slotHTML(it ? { ...it, slot } : null, { group: 'eq', ph, label });
+  const main = []; for (let s = 9; s < 36; s++) main.push(slotHTML(at(s), { slot: s }));
+  const hot = []; for (let s = 0; s < 9; s++) hot.push(slotHTML(at(s), { sel: d.selectedSlot === s, slot: s }));
+  const e = (it, slot, ph, label) => slotHTML(it ? { ...it, slot } : null, { group: 'eq', ph, label, slot });
   if (pl.invView === 'list') {
     const eqs = [[eq.head, 103, 'Casco'], [eq.chest, 102, 'Pechera'], [eq.legs, 101, 'Pantalones'], [eq.feet, 100, 'Botas'], [eq.offhand, -106, 'Mano secundaria']].map(([it, sl, note]) => ({ item: it ? { ...it, slot: sl } : null, key: `eq:${sl}`, note }));
     const hotL = []; for (let sl = 0; sl < 9; sl++) hotL.push({ item: at(sl), key: `inv:${sl}`, note: d.selectedSlot === sl ? 'en la mano' : `casillero ${sl + 1}` });
@@ -532,11 +568,11 @@ function invBody(d) {
         <div class="stack" style="gap:6px;justify-content:flex-end;align-self:flex-end"><span class="xs t3">Mano secundaria</span>${e(eq.offhand, -106, 'shield', 'Mano secundaria')}</div></div>
       <div class="grid9">${main.join('')}</div>
       <div class="grid9" style="padding-top:10px;border-top:1px solid var(--line)">${hot.join('')}</div>
-      <span class="xs t3">El casillero marcado es el que tiene en la mano.</span>
+      <span class="xs t3">El casillero marcado es el que tiene en la mano.${canDrag() ? ' Arrastrá un objeto a un casillero vacío para moverlo.' : ''}</span>
     </div>${itemDetail(d)}</div>`;
 }
 function enderBody(d) {
-  const cells = []; for (let s = 0; s < 27; s++) cells.push(slotHTML(d.ender.find((i) => i.slot === s) || null, { group: 'ender' }));
+  const cells = []; for (let s = 0; s < 27; s++) cells.push(slotHTML(d.ender.find((i) => i.slot === s) || null, { group: 'ender', slot: s }));
   if (pl.invView === 'list') {
     const L = []; for (let sl = 0; sl < 27; sl++) L.push({ item: d.ender.find((i) => i.slot === sl) || null, key: `ender:${sl}` });
     return `<div class="inv-wrap"><div class="stack">${viewToggle()}${itemRows([['Cofre de ender', L]])}</div>${itemDetail(d)}</div>`;

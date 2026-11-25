@@ -80,6 +80,7 @@ pub fn load(id: &str) -> Vec<Session> {
 pub struct Open(HashMap<String, (DateTime<Local>, Option<String>)>);
 
 impl Open {
+    pub fn since(&self, name: &str) -> Option<DateTime<Local>> { self.0.get(name).map(|(t, _)| *t) }
     pub fn join(&mut self, name: &str, previously: Option<String>, at: DateTime<Local>) { self.0.insert(name.to_string(), (at, previously)); }
     pub fn leave(&mut self, id: &str, name: &str, at: DateTime<Local>) {
         if let Some((j, p)) = self.0.remove(name) { record(id, &Session { n: name.into(), p, j: j.to_rfc3339(), l: at.to_rfc3339(), cut: false }); }
