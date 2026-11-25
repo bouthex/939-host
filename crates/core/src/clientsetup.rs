@@ -196,9 +196,19 @@ pub fn resolve_game_dir(mc: &Path, plan: &Plan) -> PathBuf {
 }
 
 /// Perfil que la persona usó por última vez (para tomar sus preferencias), sin contar `except`.
+///
+/// Se prefieren los perfiles propios de la persona (los que no creó 939 Host): ahí están sus
+/// teclas y opciones de verdad. Un perfil de otro servidor de 939 Host solo cuenta si ya había
+/// recibido las preferencias de la persona; si no, podría tener las opciones por defecto y se
+/// copiarían esas (las teclas «se perdían» así). Sin perfiles con opciones, la carpeta
+/// `.minecraft` misma.
 pub fn last_used_profile(mc: &Path, except: &Path) -> Option<(String, PathBuf)> {
-    launcher_profiles(mc).into_iter().filter(|(_, _, g, _)| g != except && g.is_dir()).filter(|(_, _, g, _)| PREF_FILES.iter().any(|f| g.join(f).is_file()) || g.join("servers.dat").is_file())
-        .max_by(|a, b| a.3.cmp(&b.3)).map(|(_, n, g, _)| (n, g))
+    let has_prefs = |g: &Path| PREF_FILES.iter().any(|f| g.join(f).is_file()) || g.join("servers.dat").is_file();
+    let all: Vec<_> = launcher_profiles(mc).into_iter().filter(|(_, _, g, _)| g != except && g.is_dir() && has_prefs(g)).collect();
+    let own = all.iter().filter(|(k, _, g, _)| !k.starts_with("939host-") && read_marker(g).is_none()).max_by(|a, b| a.3.cmp(&b.3));
+    if let Some((_, n, g, _)) = own { return Some((n.clone(), g.clone())); }
+    if mc != except && mc.join("options.txt").is_file() { return Some(("Minecraft".into(), mc.to_path_buf())); }
+    all.iter().filter(|(_, _, g, _)| read_marker(g).map(|m| m.seeded_from.is_some()).unwrap_or(false)).max_by(|a, b| a.3.cmp(&b.3)).map(|(_, n, g, _)| (n.clone(), g.clone()))
 }
 
 /// Preferencias personales que se copian a un perfil nuevo: opciones del juego (idioma, teclas,
@@ -832,6 +842,28 @@ mod tests {
         enable_resource_pack(&g, "pack opcional.zip").unwrap();
         enable_resource_pack(&g, "pack opcional.zip").unwrap();
         assert_eq!(std::fs::read_to_string(g.join("options.txt")).unwrap(), "lang:pt_br\nresourcePacks:[\"vanilla\",\"file/pack opcional.zip\"]\n");
+    }
+
+    #[test]
+    fn las_teclas_salen_del_perfil_propio_y_no_de_otro_perfil_de_939host_con_opciones_por_defecto() {
+        let t = tempfile::tempdir().unwrap();
+        let mc = t.path();
+        let otro = mc.join("939 Host/Otro");
+        std::fs::create_dir_all(&otro).unwrap();
+        // Mi juego de siempre: el perfil por defecto (sin gameDir), con mis teclas.
+        std::fs::write(mc.join("options.txt"), "key_key.jump:key.keyboard.g\n").unwrap();
+        // Perfil de otro servidor de 939 Host, usado más recientemente, con opciones por defecto.
+        std::fs::write(otro.join("options.txt"), "key_key.jump:key.keyboard.space\n").unwrap();
+        paths::write_json(&otro.join(MARKER), &Marker { server_id: "x".into(), server_name: "Otro".into(), seeded_from: None }).unwrap();
+        std::fs::write(mc.join("launcher_profiles.json"), serde_json::json!({"profiles": {
+            "939host-x": {"name": "Otro", "lastVersionId": "1.21.1", "gameDir": otro, "lastUsed": "2026-11-23T10:00:00.000Z"},
+            "latest": {"type": "latest-release", "lastVersionId": "latest-release", "lastUsed": "2026-11-01T10:00:00.000Z"}}}).to_string()).unwrap();
+        let g = mc.join("939 Host/Nuevo");
+        std::fs::create_dir_all(&g).unwrap();
+        let (_, from) = last_used_profile(mc, &g).unwrap();
+        assert_eq!(from, mc.to_path_buf());
+        seed_preferences(&from, &g).unwrap();
+        assert_eq!(std::fs::read_to_string(g.join("options.txt")).unwrap(), "key_key.jump:key.keyboard.g\n");
     }
 
     #[test]
