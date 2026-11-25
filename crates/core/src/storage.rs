@@ -108,6 +108,50 @@ pub(crate) fn clean_temps_older_than(age: std::time::Duration) -> (usize, u64) {
     (n, bytes)
 }
 
+/// Caché de descargas: todo se puede volver a bajar (y se verifica por hash al usarlo). No incluye
+/// servidores, mundos, copias, Java instalado ni la configuración. Las fotos de perfil de otras
+/// PCs no se borran (si esa PC no está conectada, no se podrían recuperar).
+const CACHE_KEEP: [&str; 1] = ["fotos"];
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheUsage { pub bytes: u64, pub files: usize, pub removable_bytes: u64 }
+
+fn walk_cache(mut f: impl FnMut(&std::path::Path, &std::fs::Metadata, bool)) {
+    let root = paths::cache();
+    let mut stack = vec![(root.clone(), 0u32, false)];
+    while let Some((dir, depth, keep)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let Ok(m) = e.metadata() else { continue };
+            let k = keep || (depth == 0 && CACHE_KEEP.iter().any(|x| e.file_name().to_string_lossy().eq_ignore_ascii_case(x)));
+            if m.is_dir() { if depth < 8 && !m.file_type().is_symlink() { stack.push((e.path(), depth + 1, k)); } continue; }
+            f(&e.path(), &m, k);
+        }
+    }
+}
+
+/// Un archivo de la caché que cambió hace menos de 30 minutos puede ser una descarga en curso.
+fn recent(m: &std::fs::Metadata) -> bool { m.modified().ok().and_then(|t| t.elapsed().ok()).map(|e| e < std::time::Duration::from_secs(1800)).unwrap_or(true) }
+
+pub fn cache_usage() -> CacheUsage {
+    let (mut bytes, mut files, mut rem) = (0u64, 0usize, 0u64);
+    walk_cache(|_, m, keep| { bytes += m.len(); files += 1; if !keep && !recent(m) { rem += m.len(); } });
+    CacheUsage { bytes, files, removable_bytes: rem }
+}
+
+/// Limpia la caché de descargas (ver [`CACHE_KEEP`]) y los temporales viejos. Devuelve archivos y
+/// bytes liberados. Nunca toca nada fuera de la carpeta de caché salvo los temporales de siempre.
+pub fn clean_cache() -> (usize, u64) {
+    let (mut n, mut bytes) = (0usize, 0u64);
+    walk_cache(|p, m, keep| { if !keep && !recent(m) && std::fs::remove_file(p).is_ok() { n += 1; bytes += m.len(); } });
+    // Carpetas que quedaron vacías.
+    fn prune(d: &std::path::Path) { for e in std::fs::read_dir(d).into_iter().flatten().flatten() { if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { prune(&e.path()); let _ = std::fs::remove_dir(e.path()); } } }
+    prune(&paths::cache());
+    let (tn, tb) = clean_temps();
+    (n + tn, bytes + tb)
+}
+
 /// Verifica un punto: todos sus bloques están y coinciden con su SHA-256.
 pub fn verify_snapshot(id: &str, snap: &str) -> AppResult<(usize, u64)> { snapshots::verify(id, snap) }
 
@@ -148,6 +192,23 @@ mod tests {
         let data: Vec<u8> = (0..300_000u32).map(|i| (i as u8).wrapping_mul(n).wrapping_add(n)).collect();
         std::fs::write(paths::server_run_dir(id).join("world/region/r.0.0.mca"), data).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+
+    #[test]
+    fn limpiar_cache_borra_solo_descargas_viejas_y_nunca_mundos_ni_fotos() {
+        let id = setup();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        let put = |p: std::path::PathBuf, age: bool| { std::fs::create_dir_all(p.parent().unwrap()).unwrap(); std::fs::write(&p, vec![1u8; 1000]).unwrap(); if age { std::fs::File::options().write(true).open(&p).unwrap().set_modified(old).unwrap(); } p };
+        let jar = put(paths::cache().join("jars/abc.jar"), true);
+        let busy = put(paths::cache().join("mods/en-curso.jar"), false);
+        let foto = put(paths::cache().join("fotos/x.png"), true);
+        let mundo = paths::server_run_dir(&id).join("world/level.dat");
+        assert!(cache_usage().removable_bytes >= 1000);
+        clean_cache();
+        assert!(!jar.exists(), "una descarga vieja se borra");
+        assert!(busy.exists(), "una descarga reciente puede estar en curso");
+        assert!(foto.exists(), "las fotos de otras PCs no se pueden volver a bajar");
+        assert!(mundo.exists());
     }
 
     #[test]

@@ -751,6 +751,11 @@ pub async fn mods_import_folder(app: AppHandle, id: String, path: String) -> App
 /* ── Espacio y protección de las copias ── */
 
 #[tauri::command]
+pub async fn cache_usage() -> host939_core::storage::CacheUsage { tauri::async_runtime::spawn_blocking(host939_core::storage::cache_usage).await.unwrap_or(host939_core::storage::CacheUsage { bytes: 0, files: 0, removable_bytes: 0 }) }
+#[tauri::command]
+pub async fn cache_clean() -> (usize, u64) { tauri::async_runtime::spawn_blocking(host939_core::storage::clean_cache).await.unwrap_or((0, 0)) }
+
+#[tauri::command]
 pub fn storage_usage(id: String) -> AppResult<host939_core::storage::Usage> { instance::load(&id)?; Ok(host939_core::storage::usage(&id)) }
 
 #[tauri::command]

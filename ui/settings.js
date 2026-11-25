@@ -39,6 +39,7 @@ routes.settings = async function renderSettings() {
           ${sw('startSound', 'Sonido al iniciar un servidor', 'Tres notas breves cuando el servidor quedó listo y respondió de verdad. Suena una vez por arranque, nunca si falla.', '<button class="btn s" data-a="sound-test" style="margin-top:8px;align-self:flex-start">Probar sonido</button>')}
           ${sw('keepAwakeWhileHosting', 'No suspender la PC mientras aloja un servidor', 'Windows puede apagar la pantalla, pero no suspende la PC mientras haya un servidor encendido. Un servidor no puede seguir funcionando en una PC suspendida o apagada.')}
           <div class="switch" style="cursor:default"><div class="grow"><b>Salir de 939 Host</b><span class="sm t2">Guarda y detiene todos los servidores (los compartidos pasan a otra PC si lo activaste) y deja de participar en el grupo. Para que un servidor siga funcionando, cerrá solo la ventana.</span></div><button class="btn" data-a="quit">${icon('logout', 16)}Salir</button></div>
+          <div class="switch" style="cursor:default"><div class="grow"><b>Liberar espacio de la caché</b><span class="sm t2" id="cache-size">Descargas guardadas (Minecraft, loaders, mods, packs) que se vuelven a bajar solas cuando hagan falta. No toca servidores, mundos, copias, Java ni tu configuración; lo que se está descargando ahora no se borra.</span></div><button class="btn" data-a="cache-clean">Liberar</button></div>
           <div class="switch" style="cursor:default"><div class="grow"><b>Quitar integraciones del sistema</b><span class="sm t2">Desactiva el inicio con Windows y quita las direcciones .939host del archivo hosts (Windows pide permiso para «Windows PowerShell»). Útil con la versión portable o antes de borrar 939 Host a mano. No borra servidores, mundos ni copias.</span></div><button class="btn" data-a="sys-cleanup">Quitar</button></div>
         </div></section>
 
@@ -108,6 +109,7 @@ routes.settings = async function renderSettings() {
             .map(([t, d, u]) => `<button class="li" data-a="link" data-url="${u}"><span class="grow">${t}</span><span class="sm t3">${d}</span>${icon('external', 15)}</button>`).join('')}</div></section>
       </div></div></div>`;
   scrollToSection();
+  cacheSize();
   scrollSpy('.settings .toc', 'set');
   const tick = async () => {
     if (state.route !== 'settings' || !a) return;
@@ -201,6 +203,14 @@ A['photo-edit'] = async () => {
 
 A['sound-test'] = (el, ev) => { ev?.preventDefault?.(); invoke('play_start_sound').catch(fail); };
 
+A['cache-clean'] = async (el) => {
+  el.disabled = true;
+  try { const [n, b] = await invoke('cache_clean'); toast(n ? `Se liberaron ${fmtMB(b / 1048576)} (${n} archivos).` : 'No había nada para liberar.'); } catch (e) { fail(e); }
+  el.disabled = false; cacheSize();
+};
+function cacheSize() {
+  invoke('cache_usage').then((u) => { const el = document.getElementById('cache-size'); if (el && !el.dataset.done) { el.dataset.done = '1'; el.insertAdjacentHTML('beforeend', ` <b class="nowrap" id="cache-n"></b>`); } const n = document.getElementById('cache-n'); if (n) n.textContent = `Ahora: ${fmtMB(u.bytes / 1048576)}, se pueden liberar ${fmtMB(u.removableBytes / 1048576)}.`; }).catch(() => {});
+}
 A['sys-cleanup'] = async () => {
   if (!(await dialog({ title: 'Quitar integraciones del sistema', body: '<p>Se desactiva el inicio con Windows y se quitan las direcciones .939host (las podés volver a crear). Tus servidores, mundos y copias no se tocan.</p>', confirm: 'Quitar' }))) return;
   try { const r = await invoke('system_cleanup'); toast(r.join(' · ')); } catch (e) { fail(e); }

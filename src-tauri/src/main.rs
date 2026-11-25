@@ -398,6 +398,8 @@ fn main() {
             commands::list_runtimes,
             commands::jvm_preview,
             commands::quit_app,
+            commands::cache_usage,
+            commands::cache_clean,
             commands::storage_usage,
             commands::storage_protect,
             commands::storage_verify,
