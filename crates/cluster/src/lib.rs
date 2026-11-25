@@ -23,7 +23,7 @@ pub mod friends;
 pub mod moving;
 pub mod signed;
 pub mod wire;
-mod entrance;
+pub mod entrance;
 pub use entrance::EntranceInfo;
 
 use anyhow::{anyhow, bail, Context, Result};

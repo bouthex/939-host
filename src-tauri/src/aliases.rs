@@ -204,6 +204,9 @@ pub struct ExternalStatus {
     best_verified: bool,
     /// Nombre propio (dominio o túnel) que guardó la propietaria, si hay.
     public_name: Option<String>,
+    /// IP de esta PC en la red de la casa (para quien está en la misma red), si se pudo saber.
+    lan_ip: Option<String>,
+    game_port: u16,
 }
 
 #[tauri::command]
@@ -225,6 +228,7 @@ pub async fn external_status(app: AppHandle, id: String) -> AppResult<ExternalSt
         allowed: host939_core::access::external_allowed(&id), shared: share.enabled, can_change, online_mode: cfg.online_mode, whitelist: cfg.whitelist,
         lan_access: st.lan_access, consent: st.public_entrance, mapping: st.public_entrance_mapping, my_port: host939_core::access::entrance_port(&id),
         entrances, best, best_verified, public_name: alias::public::get(&id),
+        lan_ip: host939_cluster::entrance::local_ipv4().map(|i| i.to_string()), game_port: cfg.port,
     })
 }
 

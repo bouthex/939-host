@@ -92,7 +92,7 @@ impl Guard {
 }
 
 /// IP local de la interfaz que sale a Internet (sin mandar nada: `connect` en UDP solo elige ruta).
-fn local_ipv4() -> Option<Ipv4Addr> {
+pub fn local_ipv4() -> Option<Ipv4Addr> {
     let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("8.8.8.8:53").ok()?;
     match s.local_addr().ok()?.ip() { IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip), _ => None }

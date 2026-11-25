@@ -233,7 +233,7 @@ tabDraw.summary = async (el) => {
             const paths = [...new Set(on.map((m) => m.path).filter(Boolean))].join(' · ');
             return `<div class="kv"><span class="k">Grupo</span><span class="row" style="gap:8px">${state.share.routePort ? `<span class="mono">127.0.0.1:${state.share.routePort}</span>` : ''}<span class="chk ${on.length ? 'ok' : others.length ? 'bad' : ''}">${others.length ? `${on.length} de ${others.length} PCs conectadas${paths ? ` · ${esc(paths)}` : ''}` : 'Nadie más en el grupo'}</span></span></div>`;
           })() : `<div class="kv"><span class="k">Desde otras casas</span><button class="btn s ghost" data-a="tab" data-v="group">Invitar con un código${icon('chev', 14)}</button></div>`}
-          <div class="kv"><span class="k">Desde tu red</span><span class="t2">IP de esta PC + puerto ${c.port}</span></div></div></div>
+          ${lanRow(c)}</div>${copyAllBtn(c)}</div>
         <div class="card pad stack"><h2>Identidad del servidor</h2>
           <p class="sm t2" style="margin:0">Identifica a este servidor en todas las PCs del grupo. No depende de la IP: sigue siendo el mismo aunque cambie la PC anfitriona.</p>
           <div class="addr"><span>${esc(c.identity.accessCode)}</span><button class="btn s" data-a="copy" data-text="${esc(c.identity.accessCode)}">${icon('copy', 14)}Copiar</button></div></div>
@@ -744,6 +744,31 @@ function loadExt(id, force = false) {
     .catch(() => { EXT[id] = { v: null, at: Date.now() }; });
 }
 const ENT_STATE = { preparando: 'Preparando', abierta: 'Abierta, sin comprobar', comprobada: 'Funciona', 'sin-acceso': 'No se llega desde Internet', cgnat: 'IP compartida por el proveedor (CGNAT)', error: 'Error' };
+/* Dirección en la red de la casa: la IP real de esta PC (no «IP + puerto» genérico). Solo se
+   muestra como válida si el servidor acepta conexiones de la red local. */
+function lanRow(c) {
+  const x = EXT[c.id]?.v;
+  const cp = (t) => `<button class="btn s icon ghost" data-a="copy" data-text="${esc(t)}" data-msg="Dirección copiada" aria-label="Copiar">${icon('copy', 14)}</button>`;
+  if (!x) return `<div class="kv"><span class="k">Desde tu red</span><span class="sm t3">Buscando la IP de esta PC…</span></div>`;
+  if (!x.lanIp) return `<div class="kv"><span class="k">Desde tu red</span><span class="sm t2">No se pudo saber la IP de esta PC (¿sin conexión de red?)</span></div>`;
+  const a = `${x.lanIp}:${x.gamePort}`;
+  if (!x.lanAccess) return `<div class="kv"><span class="k">Desde tu red</span><span class="sm t2">Apagado: activá «Permitir conexiones de mi red local» en Ajustes para usar <span class="mono">${esc(a)}</span></span></div>`;
+  return `<div class="kv"><span class="k">Desde tu red</span><span class="row" style="gap:6px"><span class="mono">${esc(a)}</span>${cp(a)}</span></div>`;
+}
+/* Todas las direcciones que funcionan, listas para pegar en un chat. Solo entran las
+   comprobadas o las que no dependen de Internet. */
+function connLines(c) {
+  const x = EXT[c.id]?.v, ai = state.aliases?.items.find((i) => i.id === c.id), al = ai && ai.inHosts && ai.listening ? ai.address : null;
+  const L = [`Minecraft ${c.mcVersion}${c.loader === 'vanilla' ? '' : ` con ${loaderName(c.loader)}`}`];
+  if (al) L.push(`Con 939 Host: ${al}`);
+  if (x?.allowed === true && (x.publicName || (x.best && x.bestVerified))) L.push(`Desde Internet: ${x.publicName || x.best}`);
+  if (x?.lanIp && x.lanAccess) L.push(`En la misma red: ${x.lanIp}:${x.gamePort}`);
+  L.push(`En esta PC: localhost:${c.port}`);
+  return L;
+}
+function copyAllBtn(c) {
+  return `<button class="btn s ghost" style="align-self:flex-start" data-a="copy" data-text="${esc(connLines(c).join('\n'))}" data-msg="Direcciones copiadas">${icon('copy', 14)}Copiar todas las direcciones</button>`;
+}
 function publicRow(id) {
   loadExt(id);
   const x = EXT[id]?.v;
