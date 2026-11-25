@@ -77,7 +77,9 @@ Restaurar es elegir un momento y confirmar.
 
 ### Compartirlo con tu grupo
 Invitaciones de un solo uso, roles (propietaria, coanfitrionas y jugadores) y cambios del grupo
-firmados por la PC propietaria.
+firmados por la PC propietaria. Cada pedido para alojar espera la respuesta de quien aloja (nunca
+se acepta solo), y pasar la propiedad es en dos pasos: la otra PC acepta y recién ahí cambia, sin
+quedar nunca sin dueña ni con dos. Los nombres, el estado y quién aloja se ven en vivo.
 
 <p align="center">
   <picture>
@@ -103,9 +105,12 @@ y mods de siempre no se tocan. Funciona también en la PC de un amigo que solo j
 </p>
 
 ### Ver y cuidar a los jugadores
-Cada jugador con su vida, hambre, experiencia, inventario (también los objetos de mods, con su
-nombre e ícono) y las sesiones que jugó. La PC propietaria puede subir o bajar vida, hambre y nivel
-con − y +, o matar a un jugador conectado, con lo que Minecraft permite de verdad en cada caso.
+Cada jugador con su UUID, cuánto hace que está conectado, vida, hambre, saturación, experiencia,
+inventario (también los objetos de mods, con su nombre, ícono y encantamientos) y las sesiones que
+jugó, todo al día mientras juega. La PC propietaria administra aunque aloje otra PC: sube o baja
+vida, hambre y nivel con − y +, cambia cantidades, da o quita objetos y **arrastra objetos de un
+casillero a otro**; cada cambio se hace en el servidor real y se comprueba leyendo el inventario
+otra vez.
 
 <p align="center">
   <picture>
@@ -125,7 +130,9 @@ con − y +, o matar a un jugador conectado, con lo que Minecraft permite de ver
 | **Mods** | Modrinth con dependencias y actualizaciones. Mods de rendimiento elegidos para cada versión. |
 | **Archivos** | Administrador integrado, también para servidores alojados en otra PC del grupo. El mundo queda protegido mientras está encendido. |
 | **Papelera** | Lo que borrás se guarda 30 días y se restaura completo. |
-| **Versiones** | Cambiar la versión de Minecraft con copia previa verificada y opción de volver atrás. |
+| **Versiones** | Cambiar la versión de Minecraft o el loader (Vanilla, Fabric, Forge, NeoForge), con revisión de cada mod, copia previa verificada y opción de volver atrás. |
+| **Chat** | Con amigos y grupos de amigos. Mensajes copiables; las direcciones, puertos, comandos e ids de mods se copian con un toque (nada se ejecuta solo). |
+| **Espacio** | Liberar la caché de descargas sin tocar servidores, mundos ni copias. |
 | **Modpacks** | Crear un servidor desde un `.mrpack` o un modpack de Modrinth. |
 | **Resource packs** | Panel propio: buscar en Modrinth o subir un `.zip`. Obligatorio (lo envía el servidor al entrar; quien lo rechaza no entra) u opcional (lo instala «Preparar para jugar»). Los packs propios llegan a cada jugador por el grupo, sin publicarlos en internet. |
 | **Otros launchers** | Exportar el perfil como `.mrpack` para Modrinth App, Prism Launcher y similares. |
@@ -144,6 +151,10 @@ con − y +, o matar a un jugador conectado, con lo que Minecraft permite de ver
 `127.0.0.1:…`, una dirección que siempre lleva a la PC que esté alojando el servidor. No hace falta
 abrir puertos: las PCs se conectan entre sí de forma directa y cifrada, y si no se puede, por un
 relay que solo pasa datos cifrados.
+
+**En la misma red** (misma casa): la pestaña Resumen muestra la IP real de la PC con su puerto y
+un botón para copiarla; **Copiar todas las direcciones** junta solo las que funcionan, listas para
+pegar en un chat.
 
 **Sin 939 Host, por IP**: la propietaria puede activar **Permitir conexiones sin 939 Host**. Una o
 más PCs del grupo que lo acepten hacen de *entrada*: piden al router que abra el puerto y llevan a
