@@ -302,11 +302,13 @@ jobs:
           Start-Process $old -ArgumentList '/S' -Wait
           $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
           $p = Start-Process $exe -PassThru
-          Start-Sleep 15
+          $root = "$env:LOCALAPPDATA\939Host"
+          # Se espera a que cree su identidad (en un runner lento tarda más de 15 s), hasta 90 s.
+          for ($i = 0; $i -lt 90 -and !(Test-Path "$root\identity\node.key") -and !$p.HasExited; $i++) { Start-Sleep 1 }
+          Start-Sleep 5
           if ($p.HasExited) { throw "v0.9.0 se cerró al abrir" }
           Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep 3
-          $root = "$env:LOCALAPPDATA\939Host"
           if (!(Test-Path "$root\identity\node.key")) { throw "v0.9.0 no creó su identidad" }
           # Una preferencia elegida por la persona, para ver que la actualización la conserva.
           $s = if (Test-Path "$root\settings.json") { Get-Content "$root\settings.json" -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
