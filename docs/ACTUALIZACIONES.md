@@ -1,6 +1,6 @@
 # Actualizaciones de 939 Host
 
-Estado al 21/11/2026 (desde 1.1.0):
+Estado al 25/11/2026:
 
 | Parte | Estado |
 |---|---|
@@ -52,9 +52,20 @@ Estado al 21/11/2026 (desde 1.1.0):
 
 ### Primera vez con actualizaciones
 
-La 1.0.0 (versión de prueba) y la v0.9.0 no consultan actualizaciones: **hay que instalar 1.1.0 una vez
-a mano**, con su instalador, encima de la versión que esté (se conservan todos los datos; probado en la
-CI desde v0.9.0 y desde 1.0.0). Desde 1.1.0 en adelante, todo es automático.
+Estado real de la confianza (25/11/2026):
+
+- La raíz pública que traen las apps (`src-tauri/distribucion.json`, raíz 1, vence en 2036) se generó el
+  22/11 (`9dbd5a8`) porque las claves anteriores se perdieron antes de cargarse en GitHub. El secreto
+  `H939_CLAVE_PUBLICACION` del entorno protegido `publicacion` corresponde a esa raíz: lo comprobó el
+  workflow «Comprobar clave de publicación» (corrida 44988197652, en verde) sin mostrar la clave.
+- **La 0.9.0** no consulta actualizaciones. **Las versiones de prueba 1.1.0 y 1.2.0** confían en la raíz
+  anterior, cuya clave privada ya no existe: no se puede firmar nada que acepten, y no se inventa una
+  transición. **Hay que instalar la 1.3.0 una vez a mano**, encima de la que esté (se conservan todos los
+  datos; la CI lo prueba desde la v0.9.0 publicada).
+- **Desde la 1.3.0** (y las compilaciones de prueba 1.3.0 entregadas el 24 y 25/11, que ya traen la raíz
+  nueva y no tienen ganchos de prueba), las siguientes versiones oficiales llegan solas. Una compilación
+  de prueba 1.3.0 no recibe la release oficial 1.3.0 como actualización (es la misma versión): para
+  pasar a la oficial se instala una vez a mano; desde ahí, todo es automático.
 
 ## Publicar una versión oficial
 

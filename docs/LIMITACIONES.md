@@ -11,17 +11,18 @@
 ## Limitaciones conocidas
 
 - **Pérdida máxima en una caída**: lo jugado desde el último punto sincronizado (15 min por defecto). En traspasos y al soltar no se pierde nada. Bajar el intervalo de sincronización reduce la pérdida a costa de más pausas de guardado (decenas de ms).
-- **Dos PCs**: sin mayoría no hay recuperación automática; se usa «Recuperar aquí» a mano. Con tres o más PCs conectadas es automática.
+- **Dos PCs**: si la anfitriona deja de responder más de un minuto, la otra lo levanta sola **solo si tiene internet** (así una PC que perdió la conexión no enciende otra copia). Sin internet se usa «Recuperar aquí» a mano. Con tres o más PCs conectadas decide la mayoría.
 - **Partición de red con PCs que se conectaron durante el corte**: si la anfitriona pierde contacto con el grupo pero otras PCs que ella nunca vio forman mayoría, por un rato puede haber dos copias encendidas en PCs distintas. Nunca escriben el mismo archivo y, al reconectarse, la de época vieja se detiene y aparta su copia (no se mezcla), pero lo jugado en ella queda solo como punto de seguridad.
 - **Hole punching necesita el relay público para el primer contacto** (así funciona iroh). Si desactivás los relays públicos, solo queda conexión directa (misma red, IPv6 o un puerto que ya esté abierto) o por otra PC del grupo.
 - **El puente por otra PC** solo sirve si esa PC llega directo a la anfitriona.
 - **Reconexión automática**: necesita un perfil Fabric o NeoForge (en Vanilla puro no hay mods). Depende de que el mod AutoReconnect (Reforged) tenga versión para tu Minecraft. Sin el mod, el jugador vuelve a entrar a mano con la misma dirección (la lista de servidores muestra «se está mudando» mientras tanto).
 - **Modo offline y lista blanca**: si el servidor está en modo offline, banear u operar a alguien que nunca entró puede quedar registrado con el nombre en minúsculas (comportamiento de Minecraft). La lista blanca no tiene ese problema.
 - **Zombie Horde 1.3.1** no arranca en un servidor dedicado con un mundo nuevo (error del mod). Con un mundo donde ya se jugó con el mod, sí.
-- **Forge y NeoForge**: en 0.9.0 no se habían probado en vivo. En la rama en desarrollo ya arrancan en las pruebas reales de Windows.
-- **Cambiar la versión de Minecraft** no está en 0.9.0 (en desarrollo, ver abajo). Volver a una versión anterior con el mismo mundo nunca se hace sobre el servidor original: Minecraft no convierte mundos hacia atrás.
+- **Quilt**: no está disponible para servidores (939 Host no lo instala ni lo administra). Los mods de Quilt que también son de Fabric se usan con Fabric.
+- **Cambiar la versión** (o el loader) se hace con copia verificada y vuelta atrás. Volver a una versión anterior con el mismo mundo nunca se hace sobre el servidor original: Minecraft no convierte mundos hacia atrás.
+- **Servidores encendidos fuera de 939 Host**: se detectan y se muestran con su estado real, pero 939 Host no tiene su consola: para administrarlos (jugadores, copias, traspasos) hay que cerrarlos y encenderlos desde 939 Host, o importarlos como servidor de 939 Host.
 - El ejecutable **no está firmado**. SmartScreen avisa y **Smart App Control (Windows 11) lo bloquea** sin opción de continuar.
-- **Actualizaciones automáticas** desde la 1.1.0. Las versiones anteriores (0.9.0 y la de prueba 1.0.0) no consultan: hay que instalar la 1.1.0 una vez a mano, encima (se conservan los datos). La primera release oficial firmada con la clave real todavía no se publicó.
+- **Actualizaciones automáticas** desde la 1.3.0. La 0.9.0 no consulta y las versiones de prueba 1.1.0 y 1.2.0 confían en una clave que se perdió: hay que instalar la 1.3.0 una vez a mano, encima (se conservan los datos). Detalle en [Actualizaciones](ACTUALIZACIONES.md).
 - El mundo completo se copia a cada coanfitriona la primera vez (por ejemplo, 2,5 GB en nuestro modpack de prueba); después solo viajan los cambios.
 
 ## En desarrollo (rama `rediseno-v3`, todavía sin versión publicada)
@@ -49,7 +50,6 @@ Límites conocidos de esas funciones:
 ## Pendiente para una próxima versión
 
 - Firma de código del ejecutable.
-- Activar el actualizador integrado (ya implementado): falta que el propietario cree su identidad de publicación y elija dónde distribuir.
 - Conexión por IP: verificar con routers reales (UPnP/NAT-PMP/PCP), desde otra red y con CGNAT real (ver DIRECCIONES-PUBLICAS.md). Una dirección que no cambie con la IP pública necesita un nombre propio (DNS dinámico o dominio).
 - Descubrimiento de PCs del grupo en la red local (mDNS) para no depender de direcciones guardadas cuando cambia la IP y no hay relays.
 - Compresión de los bloques de sincronización que no sean regiones (las regiones ya vienen comprimidas).

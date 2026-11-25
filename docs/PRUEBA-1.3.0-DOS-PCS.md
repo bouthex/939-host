@@ -121,3 +121,25 @@ Repitan solo esto si lo anterior ya pasó.
     *Fabric* con la misma versión de Minecraft. → Muestra el análisis, hace la copia, instala y
     arranca. *Volver a la versión anterior* lo deja como estaba.
 32. **Protección del spawn**: un servidor nuevo tiene la protección en 0 (todos construyen).
+
+## Tanda del 25/11 (solo lo que necesita dos PCs o redes reales)
+
+33. **Pasar la propiedad con un corte**: PC 1 → *Hacer propietaria* a PC 2. Apenas PC 2 toca
+    *Aceptar*, desconecten el Wi-Fi/cable **de PC 1** un minuto y vuelvan a conectarlo. → Al volver,
+    las dos muestran a PC 2 como única propietaria. Mientras PC 1 estaba sin red, PC 2 ya figuraba
+    como propietaria y PC 1 no podía cambiar el grupo («traspaso en curso»).
+34. **Jugadores con Minecraft 26.3 desde la otra casa**: PC 2 entra a jugar a un servidor alojado
+    en PC 1. → En PC 1 aparece en ≤ 15 s con su UUID; al cerrar el juego de golpe (Administrador de
+    tareas), desaparece en ≤ 30 s.
+35. **Sin 939 Host desde otra red**: con *Permitir conexiones sin 939 Host* encendido y una entrada
+    «Funciona», alguien con Minecraft normal, desde **otra conexión a Internet** (datos del celular
+    compartidos sirven), entra con la dirección de *Desde Internet*. → Juega; no aparece en *Grupo*
+    ni puede alojar. Si la entrada dice CGNAT, la otra PC del grupo puede ser la entrada.
+36. **En la misma casa**: con *Permitir conexiones de mi red local* encendido (Ajustes), otra PC de
+    la misma red entra con *En tu red local* (IP real y puerto). Si Windows pregunta por el firewall
+    la primera vez, aceptar «Redes privadas».
+37. **Encendido fuera de 939 Host**: en la carpeta de un servidor de prueba (Archivos → abrir
+    carpeta), abrir `run.bat` o `java -jar server.jar nogui` a mano. → 939 Host lo muestra
+    «Encendido fuera de 939 Host» con su versión y jugadores, y *Iniciar* no abre otra copia.
+38. **Vincular otro servidor**: *Servidores → Vincular* con la IP de un servidor de la otra PC
+    (red local). → Muestra «Responde» con versión y jugadores; apagado, «No responde».

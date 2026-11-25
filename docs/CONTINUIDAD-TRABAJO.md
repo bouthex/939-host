@@ -106,3 +106,18 @@ OpenGL por software: es una limitación del entorno de prueba, no de 939 Host.
 
 No hecho en esta etapa: servidores Quilt (el modelo de servidor no lo tiene) y vincular un servidor
 externo que no creó 939 Host («Otro puerto»). Guía de prueba: `docs/PRUEBA-1.3.0-DOS-PCS.md` pasos 22–32.
+
+## Etapa 25/11 (finalización)
+
+| Problema | Causa / solución | Verificación |
+|---|---|---|
+| CI del PR #7: `slow_two_phase_handover_keeps_playing`, `two_pcs_automatic_recovery` | Las pruebas corren en paralelo y repetían puertos fijos (25821, 25831, 41931…; 41931 además en el rango efímero de Linux). `ports::<N>()` da puertos únicos y comprobados (TCP+UDP) fuera del rango efímero. No era un fallo del producto: la app real pasa a un puerto libre (`resolve_port`) | `Pruebas` (Linux) en verde en `0989448`; local con 16 hilos |
+| Jugadores solo por líneas del registro | `list uuids` cada 15 s (oculto) como fuente de verdad: corrige entradas/salidas no vistas y da el UUID real | cliente real 26.3 y 1.20.4 (entrada borrada a mano vuelve; salida al cerrar el juego) |
+| Traspaso de propiedad con mensajes perdidos | La lista firmada se guarda en la oferta; la saliente no firma otra ni retira la oferta hasta ver a la nueva con esa revisión; `OwnerSigned` la reenvía (idempotente) | `traspaso_de_propiedad_con_mensajes_perdidos` |
+| «Otro puerto» / encendido a mano | `external::started_outside` (puerto que responde como Minecraft + carpeta en uso) y servidores vinculados con estado real | cliente real: servidor a mano detectado y 939 Host no abre otra copia |
+| Nombre de integrante invisible | El nombre se achicaba a cero por los botones; acciones en otra línea | captura |
+| Notas de la release vacías | `notas-release.sh` busca `## 1.3.0`; el registro tenía `### 1.3.0` | script local |
+| Temporizadores acumulados en Servidores | cada actualización agregaba otro intervalo | código |
+
+Claves: el secreto del entorno `publicacion` coincide con la raíz de las apps (corrida 44988197652). 1.1.0/1.2.0 de prueba
+confían en la raíz anterior (clave perdida): instalación manual única de la 1.3.0. Guía física: pasos 33–38.
