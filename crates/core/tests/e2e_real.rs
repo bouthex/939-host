@@ -1161,6 +1161,11 @@ async fn e2e_jugador_en_vivo() {
         // El cliente con OpenGL por software tarda en terminar de cargar el mundo (hasta entonces,
         // desde 1.21.4, el servidor no le aplica efectos).
         std::thread::sleep(Duration::from_secs(25));
+        for l in mgr.console(&cfg.id).iter().filter(|l| l.contains(name)).take(4) { println!("    entrada: {l}"); }
+        // 939 Host tiene que verlo conectado (contador, lista de jugadores).
+        assert!(rt.lock().unwrap().players.contains(name), "[{mc}] 939 Host no detectó al jugador conectado");
+        let lst = host939_core::players::list(&mgr, &cfg);
+        assert!(lst.iter().any(|p| p.name == name && p.online), "[{mc}] la lista de jugadores no lo muestra conectado");
         let d = || detail(&mgr, &cfg, name, "", true).unwrap();
         let tag = format!("[{mc}]");
         // ── Hambre y saturación de a un paso ──
@@ -1211,7 +1216,9 @@ async fn e2e_jugador_en_vivo() {
         assert!(r.is_ok() && h1 < h0, "{tag} vida −1");
         println!("✔ {tag} vida de a un paso");
         // ── Inventario ──
-        let m = inventory(&mgr, &cfg, name, "", &InvOp::Give { item: "minecraft:diamond".into(), count: 5 }, "prueba").expect("dar");
+        let r = inventory(&mgr, &cfg, name, "", &InvOp::Give { item: "minecraft:diamond".into(), count: 5 }, "prueba");
+        if r.is_err() { println!("{tag} dar: {r:?}"); for l in mgr.console(&cfg.id).iter().rev().take(15).rev() { println!("    consola: {l}"); } }
+        let m = r.expect("dar");
         println!("{tag} {m}");
         let inv = d().inventory;
         let dia = inv.iter().find(|i| i.id == "minecraft:diamond").expect("tiene los diamantes").clone();

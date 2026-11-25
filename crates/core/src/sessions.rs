@@ -23,8 +23,8 @@ const KEEP: usize = 2000;
 
 // Prefijo: uno o más bloques «[...]» al comienzo de la línea (vanilla, Paper, Forge, NeoForge,
 // Fabric), y después «: ». El chat siempre trae «<Nombre>» o «[Nombre]:» después de eso.
-static RE_JOIN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\[[^\[\]]*\] ?)+: ([A-Za-z0-9_]{1,16})(?: \(formerly known as ([A-Za-z0-9_]{1,16})\))? joined the game\s*$").unwrap());
-static RE_LEAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\[[^\[\]]*\] ?)+: ([A-Za-z0-9_]{1,16}) left the game\s*$").unwrap());
+static RE_JOIN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\[[^\[\]]*\] ?)+: (?:System chat: )?([A-Za-z0-9_]{1,16})(?: \(formerly known as ([A-Za-z0-9_]{1,16})\))? joined the game\s*$").unwrap());
+static RE_LEAVE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\[[^\[\]]*\] ?)+: (?:System chat: )?([A-Za-z0-9_]{1,16}) left the game\s*$").unwrap());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event { Join { name: String, previously: Option<String> }, Leave { name: String } }
@@ -171,6 +171,11 @@ mod tests {
         assert_eq!(parse("[12:00:01 INFO]: Ana joined the game"), j("Ana"), "Paper");
         assert_eq!(parse("[12:00:01] [Server thread/INFO] [minecraft/MinecraftServer]: Ana_2 joined the game"), j("Ana_2"), "Forge/NeoForge");
         assert_eq!(parse("[12:00:01] [Server thread/INFO]: Ana left the game\r\n"), Some(Event::Leave { name: "Ana".into() }));
+        // Minecraft 26.3: los avisos del sistema llegan con «System chat: » (visto con un cliente
+        // real; sin esto 939 Host mostraba 0 jugadores con gente conectada).
+        assert_eq!(parse("[22:06:37] [Server thread/INFO]: System chat: Jugador939 joined the game"), j("Jugador939"));
+        assert_eq!(parse("[22:06:37] [Server thread/INFO]: System chat: Jugador939 left the game"), Some(Event::Leave { name: "Jugador939".into() }));
+        assert_eq!(parse("[22:06:37] [Server thread/INFO]: <Bob> System chat: Ana joined the game"), None, "el chat de un jugador no cuenta");
         assert_eq!(parse("[12:00:01] [Server thread/INFO]: Nuevo (formerly known as Viejo) joined the game"), Some(Event::Join { name: "Nuevo".into(), previously: Some("Viejo".into()) }));
         // Chat: no cuenta, escriba lo que escriba.
         for chat in [

@@ -126,7 +126,7 @@ pub struct JoinWatch {
 
 static RE_AUTH: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"UUID of player ([A-Za-z0-9_]{1,16}) is").unwrap());
 // Anclada al prefijo del registro: el chat («<Bob> Ana lost connection: …») no cuenta.
-static RE_LOST: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"^(?:\[[^\[\]]*\] ?)+: ([A-Za-z0-9_]{1,16})(?: \([0-9a-f-]{36}\))? lost connection: (.*)$").unwrap());
+static RE_LOST: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"^(?:\[[^\[\]]*\] ?)+: (?:System chat: )?([A-Za-z0-9_]{1,16})(?: \([0-9a-f-]{36}\))? lost connection: (.*)$").unwrap());
 static RE_DISC: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| regex::Regex::new(r"Disconnecting (?:([A-Za-z0-9_]{1,16})|.*?name=([A-Za-z0-9_]{1,16}).*?)(?: \(/[^)]*\))?: (.*)$").unwrap());
 
 impl JoinWatch {
