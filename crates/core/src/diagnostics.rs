@@ -31,7 +31,7 @@ pub fn world_info(cfg: &ServerConfig) -> WorldInfo {
             }
         }
     }
-    let players = std::fs::read_dir(w.join("playerdata")).or_else(|_| std::fs::read_dir(w.join("players"))).map(|r| r.count()).unwrap_or(0);
+    let players = crate::playerdata::saved_player_count(&w);
     WorldInfo {
         size_bytes: paths::dir_size(&w),
         level_name: "world".into(),
@@ -49,7 +49,7 @@ pub fn new_world(mgr: &Manager, cfg: &mut ServerConfig, seed: Option<String>) ->
     let w = paths::server_run_dir(&cfg.id).join("world");
     if w.join("level.dat").exists() {
         crate::snapshots::capture(&cfg.id, "Antes de crear un mundo nuevo", "manual", &cfg.mc_version)?;
-        std::fs::rename(&w, paths::trash_slot(&format!("{}-mundo", cfg.id))).map_err(|e| AppError::io("No se pudo apartar el mundo", e))?;
+        paths::rename_retry(&w, paths::trash_slot(&format!("{}-mundo", cfg.id))).map_err(|e| AppError::io("No se pudo apartar el mundo", e))?;
     }
     if let Some(s) = seed { cfg.level_seed = s.trim().chars().take(64).collect(); }
     crate::instance::save(cfg)
@@ -61,6 +61,59 @@ fn tail(path: &std::path::Path, max: usize) -> Vec<u8> {
 }
 
 /// Arma un .zip con lo necesario para entender un problema (sin el mundo, sin claves).
+/// Quita de un texto lo que no debe salir de la PC en un informe: direcciones IPv4 e IPv6
+/// (salvo 127.x y 0.0.0.0, que no identifican a nadie) y el nombre de usuario en rutas
+/// (`C:\\Users\\nombre`, `/home/nombre`).
+pub fn redact(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        // IPv4
+        if b[i].is_ascii_digit() && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'.')) {
+            let mut j = i; let mut parts = vec![]; let mut ok = true;
+            for k in 0..4 {
+                let st = j;
+                while j < b.len() && b[j].is_ascii_digit() && j - st < 3 { j += 1; }
+                if j == st { ok = false; break; }
+                parts.push(text[st..j].parse::<u16>().unwrap_or(999));
+                if k < 3 { if j < b.len() && b[j] == b'.' { j += 1; } else { ok = false; break; } }
+            }
+            let tail_ok = j >= b.len() || !(b[j].is_ascii_alphanumeric() || (b[j] == b'.' && j + 1 < b.len() && b[j + 1].is_ascii_digit()));
+            if ok && tail_ok && parts.iter().all(|p| *p <= 255) {
+                if parts[0] == 127 || parts.iter().all(|p| *p == 0) { out.push_str(&text[i..j]); } else { out.push_str("x.x.x.x"); }
+                i = j; continue;
+            }
+        }
+        // IPv6 (al menos tres grupos hexadecimales con dos puntos; no 0:0:0 ni ::1)
+        if b[i].is_ascii_hexdigit() || b[i] == b':' {
+            let st = i; let mut j = i; let mut colons = 0;
+            while j < b.len() && (b[j].is_ascii_hexdigit() || b[j] == b':') { if b[j] == b':' { colons += 1; } j += 1; }
+            let cand = &text[st..j];
+            let prev_ok = st == 0 || !b[st - 1].is_ascii_alphanumeric();
+            if prev_ok && colons >= 3 && cand.len() >= 7 && cand.chars().any(|c| c.is_ascii_hexdigit() && c != '0') && cand != "::1" && cand.split(':').all(|g| g.len() <= 4) {
+                out.push_str("x:x:x:x"); i = j; continue;
+            }
+        }
+        out.push(text[i..].chars().next().unwrap());
+        i += text[i..].chars().next().unwrap().len_utf8();
+    }
+    // Nombre de usuario en rutas.
+    let mut s = out;
+    for pre in ["\\Users\\", "/Users/", "/home/", "\\\\Users\\\\"] {
+        let mut res = String::new(); let mut rest = s.as_str();
+        while let Some(pos) = rest.find(pre) {
+            res.push_str(&rest[..pos + pre.len()]);
+            let after = &rest[pos + pre.len()..];
+            let end = after.find(|c: char| c == '\\' || c == '/' || c == '"' || c.is_whitespace()).unwrap_or(after.len());
+            res.push_str("<usuario>");
+            rest = &after[end..];
+        }
+        res.push_str(rest); s = res;
+    }
+    s
+}
+
 pub fn report(mgr: &Manager, cfg: &ServerConfig, hardware_json: &str) -> AppResult<std::path::PathBuf> {
     let run = paths::server_run_dir(&cfg.id);
     let out_dir = paths::root().join("logs");
@@ -69,9 +122,11 @@ pub fn report(mgr: &Manager, cfg: &ServerConfig, hardware_json: &str) -> AppResu
     let f = std::fs::File::create(&out).map_err(|e| AppError::io("No se pudo crear el informe", e))?;
     let mut z = zip::ZipWriter::new(f);
     let opt = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    // Todo lo que entra al informe pasa por `redact`: sin IPs, sin el nombre de usuario de
+    // Windows en las rutas y sin contraseñas o secretos de server.properties.
     let mut add = |name: &str, data: &[u8]| -> AppResult<()> {
         z.start_file(name, opt)?;
-        z.write_all(data).map_err(|e| AppError::io("informe", e))?;
+        z.write_all(redact(&String::from_utf8_lossy(data)).as_bytes()).map_err(|e| AppError::io("informe", e))?;
         Ok(())
     };
     let mut safe = serde_json::to_value(cfg)?;
@@ -92,7 +147,7 @@ pub fn report(mgr: &Manager, cfg: &ServerConfig, hardware_json: &str) -> AppResu
     }).collect()).unwrap_or_default();
     add("mods.txt", mods.join("\n").as_bytes())?;
     let props = std::fs::read_to_string(run.join("server.properties")).unwrap_or_default()
-        .lines().filter(|l| !l.starts_with("rcon.password") && !l.starts_with("management-server-secret")).collect::<Vec<_>>().join("\n");
+        .lines().filter(|l| { let k = l.split('=').next().unwrap_or("").to_ascii_lowercase(); !(k.contains("password") || k.contains("secret") || k.contains("token") || k == "server-ip") }).collect::<Vec<_>>().join("\n");
     add("server.properties", props.as_bytes())?;
     z.finish()?;
     Ok(out)
@@ -119,7 +174,7 @@ mod tests {
         let run = paths::server_run_dir(&cfg.id);
         std::fs::create_dir_all(run.join("logs")).unwrap();
         std::fs::create_dir_all(run.join("crash-reports")).unwrap();
-        std::fs::write(run.join("logs/latest.log"), "Done (3s)!").unwrap();
+        std::fs::write(run.join("logs/latest.log"), "Done (3s)! Steve[/203.0.113.9:5555] logged in").unwrap();
         std::fs::write(run.join("crash-reports/crash-1.txt"), "NullPointerException").unwrap();
         std::fs::write(run.join("server.properties"), "server-port=1\nrcon.password=hunter2\n").unwrap();
         let mgr = Manager::new(std::sync::Arc::new(crate::events::NoEvents));
@@ -128,12 +183,24 @@ mod tests {
         let mut all = String::new();
         for i in 0..z.len() {
             let mut f = z.by_index(i).unwrap();
-            all.push_str(f.name());
+            all.push_str(&f.name().map(|n| n.to_string()).unwrap_or_default());
             std::io::Read::read_to_string(&mut f, &mut all).unwrap();
         }
+        assert!(!all.contains("203.0.113.9"), "el informe no lleva IPs");
         assert!(all.contains("Done (3s)!") && all.contains("NullPointerException") && all.contains("server-port=1"));
         assert!(!all.contains("CLAVE-SECRETA") && !all.contains("hunter2"));
         let info = world_info(&cfg);
         assert!(!info.exists);
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    #[test]
+    fn removes_ips_users_and_keeps_the_rest() {
+        let t = "[12:00:01] Steve[/203.0.113.9:51234] logged in; 192.168.0.12 y 10.0.0.1:25565; local 127.0.0.1:25565; ver 1.21.4; 2001:db8:85a3::8a2e:370:7334; ::1; C:\\Users\\Ana\\AppData\\Local\\939Host y /home/ana/x; 12:00:01";
+        let r = super::redact(t);
+        for leak in ["203.0.113.9", "192.168.0.12", "10.0.0.1", "2001:db8", "Ana", "/home/ana"] { assert!(!r.contains(leak), "{leak} en {r}"); }
+        for keep in ["127.0.0.1:25565", "1.21.4", "12:00:01", "logged in", "::1", "AppData"] { assert!(r.contains(keep), "{keep} falta en {r}"); }
     }
 }

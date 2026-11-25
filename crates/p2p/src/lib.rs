@@ -18,31 +18,67 @@ pub const ALPN_MC: &[u8] = b"939host/mc/1";
 /// Protocolo de invitación: el amigo presenta el secreto del código y queda autorizado.
 pub const ALPN_JOIN: &[u8] = b"939host/join/1";
 
-/// Cómo se permite usar relays. Orden de prioridad acordado: directo → hole punching →
-/// puente de un miembro → relays públicos gratuitos solo como último recurso.
+/// Cómo se conecta esta PC con las demás.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Relays {
-    /// Solo conexiones directas (red local, IPv6, puerto abierto).
+    /// Solo conexiones directas (red local, IPv6, puerto abierto). Sin servicios de terceros.
     Disabled,
-    /// Permite los relays públicos de iroh como último recurso.
+    /// Directo cuando se puede (hole punching) y relays públicos de iroh como último recurso.
     PublicFallback,
+    /// Modo privado: SOLO relays. Esta PC no abre ningún socket UDP propio hacia las demás, así
+    /// que ninguna otra PC del grupo puede ver su IP pública ni local (no hay transporte IP que
+    /// anunciar ni por el que conectarse). Si el relay no responde, no hay conexión: nunca se
+    /// cambia a directo. El relay sí ve la IP de esta PC, cuándo se conecta y cuánto tráfico pasa,
+    /// pero no el contenido (QUIC/TLS 1.3 de punta a punta entre las dos PCs).
+    Private,
+}
+
+impl Relays {
+    pub fn uses_relays(self) -> bool { self != Relays::Disabled }
 }
 
 /// Crea el endpoint de este nodo con su identidad permanente.
+///
+/// UPnP/PCP/NAT-PMP queda desactivado en todos los modos: 939 Host no abre puertos en el router
+/// por su cuenta.
 pub async fn endpoint(secret: [u8; 32], relays: Relays, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
     let builder = match relays {
-        // Sin servicios de terceros: solo direcciones directas.
         Relays::Disabled => Endpoint::builder(iroh::endpoint::presets::Minimal).relay_mode(RelayMode::Disabled),
-        // Relays y descubrimiento públicos gratuitos de iroh (último recurso).
         Relays::PublicFallback => Endpoint::builder(iroh::endpoint::presets::N0),
+        Relays::Private => Endpoint::builder(iroh::endpoint::presets::N0).clear_ip_transports(),
     };
     let ep = builder
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .secret_key(SecretKey::from_bytes(&secret))
         .alpns(alpns)
         .bind()
         .await
         .context("no se pudo abrir el endpoint P2P")?;
     Ok(ep)
+}
+
+/// La misma dirección sin IPs (solo identidad y relay): lo que se comparte cuando hay relays.
+pub fn without_ips(a: &EndpointAddr) -> EndpointAddr {
+    EndpointAddr::from_parts(a.id, a.addrs.iter().filter(|t| !t.is_ip()).cloned())
+}
+
+/// ¿Es uno de los relays públicos de n0 (los únicos que configura 939 Host)?
+pub fn is_n0_relay(url: &iroh::RelayUrl) -> bool {
+    url.host_str().map(|h| h.ends_with(".relay.n0.iroh.link") || h == "relay.n0.iroh.link").unwrap_or(false)
+}
+
+/// Dirección de una PC contada por OTRA PC (no por ella misma): con relays sin IPs, y solo con
+/// relays de n0. Así un integrante no puede hacer que el resto intente llegar a otra PC a través
+/// de un relay propio (vería sus IPs y podría cortarles la conexión).
+pub fn hearsay(a: &EndpointAddr, relays: Relays) -> EndpointAddr {
+    let a = shareable(a, relays);
+    EndpointAddr::from_parts(a.id, a.addrs.iter().filter(|t| match t { iroh::TransportAddr::Relay(u) => is_n0_relay(u), _ => true }).cloned())
+}
+
+/// Lo que esta PC publica de sí misma según su modo: con relays, nunca sus IPs (las demás la
+/// encuentran por su identidad y el relay); sin relays, las IPs son la única forma de llegar.
+pub fn shareable(a: &EndpointAddr, relays: Relays) -> EndpointAddr {
+    if relays.uses_relays() { without_ips(a) } else { a.clone() }
 }
 
 /// Lista de nodos autorizados (miembros del grupo). Compartida y actualizable en vivo.

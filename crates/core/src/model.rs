@@ -45,7 +45,16 @@ pub struct ServerIdentity {
 #[serde(rename_all = "camelCase")]
 pub struct ServerConfig {
     pub id: String,
+    /// «Permitir conexiones sin 939 Host» (servidores no compartidos; los compartidos lo llevan en
+    /// la lista firmada). `None` = sin decidir: se mantiene lo de antes (solo la red local, si la
+    /// PC lo permite).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_access: Option<bool>,
     pub name: String,
+    /// Logo propio del servidor: `preset:<n>` (diseños de 939 Host) o `custom` (imagen subida,
+    /// guardada como `logo.png`). `None` = el ícono genérico.
+    #[serde(default)]
+    pub logo: Option<String>,
     #[serde(default)]
     pub description: String,
     pub mc_version: String,
@@ -54,6 +63,12 @@ pub struct ServerConfig {
     pub loader_version: Option<String>,
     #[serde(default)]
     pub java_major: u32,
+    /// Java que pide esta versión de Minecraft (según Mojang).
+    #[serde(default)]
+    pub java_required: u32,
+    /// Java elegido a mano (None = automático, el recomendado).
+    #[serde(default)]
+    pub java_choice: Option<u32>,
 
     // Rendimiento
     pub memory_mb: u32,
@@ -132,6 +147,9 @@ pub struct CreateServerInput {
     pub accept_eula: bool,
     #[serde(default)]
     pub import_world_path: Option<String>,
+    /// Mods de rendimiento elegidos en el asistente (se instalan al terminar la instalación).
+    #[serde(default)]
+    pub optimize: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -149,14 +167,40 @@ pub enum RunStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ServerView {
     pub config: ServerConfig,
+    /// `data:` del logo propio (256×256), si tiene.
+    pub logo_url: Option<String>,
     pub status: RunStatus,
     pub players: Vec<String>,
     pub started_at: Option<String>,
     pub memory_used_mb: Option<u64>,
     pub mspt: Option<f64>,
+    pub tps: Option<f64>,
     pub mspt_p95: Option<f64>,
     pub last_error: Option<String>,
     pub needs_restart: bool,
     pub installing: bool,
     pub world_size_mb: f64,
+    /// Mundo congelado con /tick freeze.
+    pub paused: bool,
+    /// Minecraft está guardando.
+    pub saving: bool,
+    /// Reinicio en curso.
+    pub restarting: bool,
+    /// Etapa del arranque en palabras.
+    pub phase: Option<String>,
+    /// Cuenta regresiva antes de detener o reiniciar.
+    pub countdown: Option<crate::process::Countdown>,
+    /// La versión permite pausar (/tick freeze, 1.20.3+).
+    pub pause_supported: bool,
+    /// Conexión real comprobada: "checking" | "ok" | "fail".
+    pub reach: Option<String>,
+    pub reach_info: Option<crate::reach::StatusInfo>,
+    pub reach_error: Option<String>,
+    /// Último intento fallido de entrar, explicado.
+    pub join_issue: Option<crate::reach::JoinIssue>,
+    /// Cantidad de .jar en la carpeta de mods (el juego de cada jugador tiene que coincidir).
+    pub mods_count: usize,
+    /// Encendido fuera de 939 Host (por ejemplo, con run.bat en su carpeta): 939 Host no lo
+    /// administra hasta que se cierre desde allá.
+    pub outside: Option<crate::external::OutsideRun>,
 }

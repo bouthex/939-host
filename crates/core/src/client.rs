@@ -191,7 +191,7 @@ pub fn remove_reconnect(profile: &ClientProfile) -> AppResult<Vec<String>> {
     for (name, sha) in &marker.files {
         let p = dir.join(name);
         if p.exists() && net::sha1_file(&p).map(|h| &h == sha).unwrap_or(false) {
-            std::fs::rename(&p, paths::trash_slot(&format!("cliente-{name}"))).map_err(|e| AppError::io("No se pudo quitar", e))?;
+            paths::rename_retry(&p, paths::trash_slot(&format!("cliente-{name}"))).map_err(|e| AppError::io("No se pudo quitar", e))?;
             removed.push(name.clone());
         }
     }

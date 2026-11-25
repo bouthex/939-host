@@ -26,11 +26,18 @@ pub struct InstalledMod {
     pub required_by: Vec<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// De dónde vino: `optimizacion` = desde «Mods de rendimiento». `None` = gestor de mods.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Manifest {
     pub mods: Vec<InstalledMod>,
+    /// «Buscar actualizaciones compatibles automáticamente»: al abrir los mods se buscan versiones
+    /// nuevas para esta versión de Minecraft y este loader. Nunca se instalan sin revisarlas.
+    #[serde(default)]
+    pub auto_updates: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,6 +76,138 @@ pub fn mods_dir(id: &str) -> PathBuf { paths::server_run_dir(id).join("mods") }
 pub fn load_manifest(id: &str) -> Manifest { paths::read_json(&manifest_path(id)).unwrap_or_default() }
 pub fn save_manifest(id: &str, m: &Manifest) -> AppResult<()> { paths::write_json(&manifest_path(id), m) }
 
+/* ── Compatibilidad comprobada en el propio mod (versiones viejas de Fabric/Quilt) ──
+   Muchos mods se publicaron en Modrinth solo con la última versión de una serie (por ejemplo
+   1.14.4), pero su `fabric.mod.json` acepta toda la serie («1.14.x», «>=1.14»). Para no dejar a
+   esas versiones sin opciones, se buscan versiones de la misma serie y se baja el archivo
+   (verificado por hash) para leer qué versiones de Minecraft declara aceptar. Solo cuenta si el
+   propio mod lo declara. */
+
+static VERIFIED: std::sync::LazyLock<std::sync::Mutex<HashSet<(String, String)>>> = std::sync::LazyLock::new(Default::default);
+
+/// Versiones de la misma serie: «1.14» → 1.14, 1.14.1 … 1.14.9.
+pub fn mc_series(mc: &str) -> Vec<String> {
+    let parts: Vec<&str> = mc.split('.').collect();
+    if parts.len() < 2 || !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) { return vec![mc.to_string()]; }
+    let base = format!("{}.{}", parts[0], parts[1]);
+    std::iter::once(base.clone()).chain((1..=9).map(|n| format!("{base}.{n}"))).collect()
+}
+
+/// ¿Sirve esta versión del mod para `mc`? Por Modrinth o porque el mod lo declara (comprobado).
+pub fn compatible(v: &Version, mc: &str, loader: &str) -> bool {
+    v.supports(mc, loader) || (v.loaders.iter().any(|l| l == loader) && VERIFIED.lock().unwrap().contains(&(v.id.clone(), mc.to_string())))
+}
+
+/// Baja el archivo del mod (con su hash) y mira si su `fabric.mod.json` acepta `mc`.
+pub async fn jar_accepts(v: &Version, mc: &str, loader: &str) -> bool {
+    if !matches!(loader, "fabric" | "quilt") || !v.loaders.iter().any(|l| l == loader) { return false; }
+    let Some(f) = v.primary_file() else { return false };
+    if f.size > 40 * 1024 * 1024 { return false; }
+    let dest = crate::paths::cache().join("mods-comprobados").join(&f.hashes.sha1).join(&f.filename);
+    if !dest.exists() && crate::net::download(&f.url, &dest, crate::net::Hash::Sha1(&f.hashes.sha1), |_, _| {}).await.is_err() { return false; }
+    let jar = crate::repair::read_jar(&dest);
+    let ok = jar.kind == "fabric" && jar.environment != "client" && jar.depends.get("minecraft").map(|c| c.iter().any(|c| crate::repair::fabric_matches(c, mc))).unwrap_or(true) && !jar.corrupt;
+    if ok { VERIFIED.lock().unwrap().insert((v.id.clone(), mc.to_string())); }
+    ok
+}
+
+/// Para mods encontrados en la búsqueda (no del catálogo revisado): el propio mod tiene que
+/// aceptar `mc`, correr en el servidor y no necesitar nada más que Minecraft, el loader, Java o
+/// Fabric API completa. Comprobado en la CI con Fabric 1.14 real: mods etiquetados para todas las
+/// versiones pedían módulos sueltos de Fabric API que esa versión no tiene, y el servidor no
+/// arrancaba.
+pub async fn jar_server_safe(v: &Version, mc: &str, loader: &str) -> bool {
+    if !matches!(loader, "fabric" | "quilt") { return true; }
+    let Some(f) = v.primary_file() else { return false };
+    if f.size > 40 * 1024 * 1024 { return false; }
+    let dest = crate::paths::cache().join("mods-comprobados").join(&f.hashes.sha1).join(&f.filename);
+    if !dest.exists() && crate::net::download(&f.url, &dest, crate::net::Hash::Sha1(&f.hashes.sha1), |_, _| {}).await.is_err() { return false; }
+    let jar = crate::repair::read_jar(&dest);
+    if jar.corrupt || jar.kind != "fabric" || jar.environment == "client" { return false; }
+    if !jar.depends.get("minecraft").map(|c| c.iter().any(|c| crate::repair::fabric_matches(c, mc))).unwrap_or(true) { return false; }
+    jar.depends.keys().all(|k| matches!(k.as_str(), "minecraft" | "fabricloader" | "java" | "fabric" | "fabric-api" | "quilt_loader"))
+        && jar_java_ok(&dest, java_for_mc(mc))
+        && !(java_for_mc(mc) <= 8 && uses_mixinextras(v).await)
+}
+
+/// Mods que usan MixinExtras: con Minecraft anterior a 1.17 (Java 8) el servidor no arranca
+/// («ImmutablePair cannot be cast to org.apache.commons.lang3.tuple.Pair», visto en la CI con
+/// Fabric 1.14 real). Se detecta buscando la referencia en las clases del propio mod.
+pub async fn uses_mixinextras(v: &Version) -> bool {
+    use std::io::Read;
+    let Some(f) = v.primary_file() else { return false };
+    let dest = crate::paths::cache().join("mods-comprobados").join(&f.hashes.sha1).join(&f.filename);
+    if !dest.exists() && crate::net::download(&f.url, &dest, crate::net::Hash::Sha1(&f.hashes.sha1), |_, _| {}).await.is_err() { return false; }
+    let Ok(file) = std::fs::File::open(&dest) else { return false };
+    let Ok(mut z) = zip::ZipArchive::new(file) else { return false };
+    let needle = b"llamalad7/mixinextras";
+    for i in 0..z.len() {
+        let Ok(mut e) = z.by_index(i) else { continue };
+        let Ok(name) = e.name().map(|n| n.to_string()) else { continue };
+        if !(name.ends_with(".class") || name.ends_with(".json")) || name.starts_with("META-INF/jars/") { continue; }
+        let mut b = vec![];
+        if e.read_to_end(&mut b).is_ok() && b.windows(needle.len()).any(|w| w == needle) { return true; }
+    }
+    false
+}
+
+/// Java con el que corre el servidor de esa versión de Minecraft (lo que pide Mojang).
+pub fn java_for_mc(mc: &str) -> u32 {
+    use crate::playeredit::release_at_least as at;
+    if mc.split('.').next().and_then(|m| m.parse::<u32>().ok()).map(|m| m >= 26).unwrap_or(false) { 25 }
+    else if at(mc, 20, 5) { 21 } else if at(mc, 18, 0) { 17 } else if at(mc, 17, 0) { 16 } else { 8 }
+}
+
+/// ¿El mod está compilado para un Java que el servidor tiene? Se mira la versión de las clases y
+/// el nivel que piden sus configuraciones de Mixin (en la CI, un mod para Java 17 «aceptaba»
+/// Minecraft 1.14 y rompía el arranque con Java 8).
+fn jar_java_ok(path: &std::path::Path, java: u32) -> bool {
+    use std::io::Read;
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    let Ok(mut z) = zip::ZipArchive::new(f) else { return false };
+    let max_class = 44 + java;
+    let mut seen = 0;
+    for i in 0..z.len() {
+        let Ok(mut e) = z.by_index(i) else { continue };
+        let Ok(name) = e.name().map(|n| n.to_string()) else { continue };
+        if name.ends_with(".class") && !name.starts_with("META-INF/") && seen < 40 {
+            let mut h = [0u8; 8];
+            if e.read_exact(&mut h).is_ok() && h[..4] == [0xCA, 0xFE, 0xBA, 0xBE] {
+                seen += 1;
+                if u16::from_be_bytes([h[6], h[7]]) as u32 > max_class { return false; }
+            }
+        } else if name.ends_with(".mixins.json") || name.ends_with("mixins.json") {
+            let mut t = String::new();
+            if e.read_to_string(&mut t).is_ok() {
+                if let Some(n) = t.split("JAVA_").nth(1).and_then(|r| r.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().ok()) {
+                    if n > java { return false; }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// La mejor versión de un proyecto para `mc`: la publicada para esa versión exacta o, si no hay,
+/// una de la misma serie que el propio mod declare compatible.
+pub async fn best_compatible<S: Source>(src: &S, project: &str, mc: &str, loader: &str) -> Option<Version> {
+    if let Some(v) = src.project_versions(project, mc, loader).await.ok().and_then(|l| modrinth::best_version(l, mc, loader)) { return Some(v); }
+    if !matches!(loader, "fabric" | "quilt") { return None; }
+    let mut cands: Vec<Version> = vec![];
+    for g in mc_series(mc).into_iter().filter(|g| g != mc) {
+        if let Ok(l) = src.project_versions(project, &g, loader).await { for v in l { if !cands.iter().any(|c| c.id == v.id) { cands.push(v); } } }
+    }
+    cands.retain(|v| v.primary_file().is_some());
+    // Más viejas primero: las primeras de la serie suelen aceptar también las versiones anteriores.
+    cands.sort_by(|a, b| a.date_published.cmp(&b.date_published));
+    for kind in ["release", "beta"] {
+        for v in cands.iter().filter(|v| v.version_type == kind).take(6) {
+            if jar_accepts(v, mc, loader).await { return Some(v.clone()); }
+        }
+    }
+    None
+}
+
 /// Arma el plan para instalar `version_id` (o la mejor versión del proyecto) con sus
 /// dependencias obligatorias, verificando incompatibilidades y el lado (cliente/servidor).
 pub async fn plan_install<S: Source>(src: &S, cfg: &ServerConfig, project_id: &str, version_id: Option<&str>) -> AppResult<InstallPlan> {
@@ -79,10 +218,10 @@ pub async fn plan_install<S: Source>(src: &S, cfg: &ServerConfig, project_id: &s
 
     let root = match version_id {
         Some(v) => src.version(v).await?,
-        None => modrinth::best_version(src.project_versions(project_id, mc, loader).await?, mc, loader)
+        None => best_compatible(src, project_id, mc, loader).await
             .ok_or_else(|| AppError::invalid(format!("Este mod no tiene una versión para {} {mc}.", loader_title(loader))))?,
     };
-    if !root.supports(mc, loader) {
+    if !compatible(&root, mc, loader) && !jar_accepts(&root, mc, loader).await {
         return Err(AppError::invalid(format!("La versión {} no es compatible con {} {mc}.", root.version_number, loader_title(loader))));
     }
 
@@ -112,10 +251,10 @@ pub async fn plan_install<S: Source>(src: &S, cfg: &ServerConfig, project_id: &s
                     if installed.contains_key(pid.as_str()) || seen.contains(&pid) { continue; }
                     let dv = match &dep.version_id {
                         Some(vid) => src.version(vid).await?,
-                        None => modrinth::best_version(src.project_versions(&pid, mc, loader).await?, mc, loader)
+                        None => best_compatible(src, &pid, mc, loader).await
                             .ok_or_else(|| AppError::invalid(format!("Falta una dependencia obligatoria sin versión para {mc}: {pid}. No se puede instalar sin ella.")))?,
                     };
-                    if !dv.supports(mc, loader) {
+                    if !compatible(&dv, mc, loader) && !jar_accepts(&dv, mc, loader).await {
                         return Err(AppError::invalid(format!("La dependencia {} no es compatible con {} {mc}.", dv.name, loader_title(loader))));
                     }
                     queue.push_back((dv, format!("Necesario para {}", version.name), false));
@@ -184,6 +323,7 @@ pub async fn apply_plan(cfg: &ServerConfig, plan: &InstallPlan, mut progress: im
         }
         std::fs::copy(&staging, dir.join(&file.filename)).map_err(|e| AppError::io("No se pudo copiar el mod", e))?;
         let previous_explicit = manifest.mods.iter().find(|m| m.project_id == item.project_id).map(|m| m.explicit).unwrap_or(false);
+        let previous_origin = manifest.mods.iter().find(|m| m.project_id == item.project_id).and_then(|m| m.origin.clone());
         manifest.mods.retain(|m| m.project_id != item.project_id);
         let entry = InstalledMod {
             project_id: item.project_id.clone(),
@@ -194,6 +334,7 @@ pub async fn apply_plan(cfg: &ServerConfig, plan: &InstallPlan, mut progress: im
             sha1: file.hashes.sha1.clone(),
             side: item.side.clone(),
             explicit: item.explicit || previous_explicit,
+            origin: previous_origin,
             required_by: vec![],
             depends_on: item.depends_on.clone(),
         };
@@ -259,6 +400,8 @@ pub struct ModFileStatus {
     /// ok | duplicate | incompatible | client_only | unknown
     pub issues: Vec<String>,
     pub update: Option<String>,
+    /// `optimizacion` si se instaló desde «Mods de rendimiento».
+    pub origin: Option<String>,
 }
 
 /// Diagnóstico de la carpeta `mods`: identifica cada jar por hash en Modrinth y detecta
@@ -323,7 +466,7 @@ pub async fn scan<S: Source>(src: &S, cfg: &ServerConfig, online: bool) -> AppRe
 
     let mut out = vec![];
     for (name, size, sha) in files {
-        let mut st = ModFileStatus { file_name: name.clone(), size_kb: size, sha1: sha.clone(), project_id: None, title: name.trim_end_matches(".jar").into(), version_number: None, side: "unknown".into(), managed: false, explicit: false, required_by: vec![], issues: vec![], update: None };
+        let mut st = ModFileStatus { file_name: name.clone(), size_kb: size, sha1: sha.clone(), project_id: None, title: name.trim_end_matches(".jar").into(), version_number: None, side: "unknown".into(), managed: false, explicit: false, required_by: vec![], issues: vec![], update: None, origin: None };
         if let Some(m) = by_file.get(&name) {
             st.project_id = Some(m.project_id.clone());
             st.title = m.title.clone();
@@ -332,6 +475,7 @@ pub async fn scan<S: Source>(src: &S, cfg: &ServerConfig, online: bool) -> AppRe
             st.managed = true;
             st.explicit = m.explicit;
             st.required_by = m.required_by.clone();
+            st.origin = m.origin.clone();
         } else if let Some(v) = identified.get(&sha) {
             st.project_id = Some(v.project_id.clone());
             st.version_number = Some(v.version_number.clone());
@@ -392,22 +536,17 @@ pub async fn check_updates<S: Source>(src: &S, cfg: &ServerConfig) -> AppResult<
     let mut out = HashMap::new();
     for m in load_manifest(&cfg.id).mods {
         if let Ok(list) = src.project_versions(&m.project_id, &cfg.mc_version, loader).await {
+            let installed_date = list.iter().find(|v| v.id == m.version_id).map(|v| v.date_published.clone());
             if let Some(best) = modrinth::best_version(list, &cfg.mc_version, loader) {
-                if best.id != m.version_id { out.insert(m.project_id.clone(), best); }
+                // Nunca se propone volver atrás (por ejemplo, de una beta nueva a una versión
+                // estable más vieja): solo versiones posteriores a la instalada.
+                let newer = installed_date.map(|d| best.date_published > d).unwrap_or(true);
+                if best.id != m.version_id && newer { out.insert(m.project_id.clone(), best); }
             }
         }
     }
     Ok(out)
 }
-
-/// Mods de optimización de servidor recomendados para Fabric (verificados por versión al instalar).
-pub const PERFORMANCE_FABRIC: &[(&str, &str, &str, bool)] = &[
-    ("lithium", "Lithium", "Lógica de juego más eficiente.", true),
-    ("ferrite-core", "FerriteCore", "Menos uso de memoria.", true),
-    ("scalablelux", "ScalableLux", "Cálculo de luz mucho más rápido.", true),
-    ("c2me-fabric", "C2ME", "Generación y carga de chunks en paralelo. Probalo con tus mods de mundo.", false),
-    ("krypton", "Krypton", "Red más eficiente.", false),
-];
 
 #[cfg(test)]
 mod tests {
@@ -459,11 +598,11 @@ mod tests {
         let _ = paths::init(std::env::temp_dir().join("939host-unit-tests"));
         let id = format!("t{}", rand_id());
         std::fs::create_dir_all(paths::server_run_dir(&id)).unwrap();
-        ServerConfig {
-            id, name: "T".into(), description: String::new(), mc_version: "26.2".into(), loader: Loader::Fabric, loader_version: None, java_major: 25,
+        ServerConfig { external_access: None,
+            id, name: "T".into(), logo: None, description: String::new(), mc_version: "26.2".into(), loader: Loader::Fabric, loader_version: None, java_major: 25, java_required: 25, java_choice: None,
             memory_mb: 2048, jvm_profile: JvmProfile::Balanced, extra_jvm_args: String::new(), port: 25565, max_players: 8, motd: String::new(),
             online_mode: true, whitelist: true, difficulty: "hard".into(), gamemode: "survival".into(), hardcore: false, pvp: true, level_seed: String::new(),
-            level_type: "minecraft:normal".into(), view_distance: 10, simulation_distance: 8, spawn_protection: 16, allow_flight: false, enable_command_block: false,
+            level_type: "minecraft:normal".into(), view_distance: 10, simulation_distance: 8, spawn_protection: 0, allow_flight: false, enable_command_block: false,
             sync_interval_min: 15, restore_interval_min: 15, installed: true, install_error: None, eula_accepted_at: None, created_at: String::new(),
             identity: Default::default(), extra_properties: Default::default(),
         }
@@ -485,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn plan_rejects_incompatible_with_installed() {
         let cfg = server(&root());
-        save_manifest(&cfg.id, &Manifest { mods: vec![InstalledMod { project_id: "bad".into(), version_id: "bad1".into(), title: "BAD".into(), version_number: "1".into(), file_name: "bad1.jar".into(), sha1: "x".into(), side: "both".into(), explicit: true, required_by: vec![], depends_on: vec![] }] }).unwrap();
+        save_manifest(&cfg.id, &Manifest { mods: vec![InstalledMod { project_id: "bad".into(), version_id: "bad1".into(), title: "BAD".into(), version_number: "1".into(), file_name: "bad1.jar".into(), sha1: "x".into(), side: "both".into(), explicit: true, required_by: vec![], depends_on: vec![], origin: None }], auto_updates: false }).unwrap();
         let err = plan_install(&fake(), &cfg, "a", None).await.unwrap_err();
         assert!(err.message.contains("incompatible"), "{}", err.message);
     }
@@ -516,7 +655,7 @@ mod tests {
         for it in &plan.items {
             let f = it.version.primary_file().unwrap();
             std::fs::write(dir.join(&f.filename), b"jar").unwrap();
-            m.mods.push(InstalledMod { project_id: it.project_id.clone(), version_id: it.version.id.clone(), title: it.title.clone(), version_number: it.version.version_number.clone(), file_name: f.filename.clone(), sha1: f.hashes.sha1.clone(), side: it.side.clone(), explicit: it.explicit, required_by: vec![], depends_on: it.depends_on.clone() });
+            m.mods.push(InstalledMod { project_id: it.project_id.clone(), version_id: it.version.id.clone(), title: it.title.clone(), version_number: it.version.version_number.clone(), file_name: f.filename.clone(), sha1: f.hashes.sha1.clone(), side: it.side.clone(), explicit: it.explicit, required_by: vec![], depends_on: it.depends_on.clone(), origin: None });
         }
         save_manifest(&cfg.id, &m).unwrap();
         let err = remove(&cfg, "api").unwrap_err();
@@ -556,6 +695,14 @@ pub struct ImportReport {
     pub skipped_duplicate: Vec<String>,
     pub skipped_existing: Vec<String>,
     pub not_mods: Vec<String>,
+    /// No se copiaron porque no pueden funcionar en este servidor (otro loader u otra versión de
+    /// Minecraft), con el motivo.
+    #[serde(default)]
+    pub skipped_incompatible: Vec<String>,
+    /// Mods del servidor que declaraban como obligatoria una dependencia de cliente (por ejemplo,
+    /// Mod Menu): se ajustó con el archivo oficial de Fabric para que el servidor no la exija.
+    #[serde(default)]
+    pub client_deps_ignored: Vec<String>,
 }
 
 /// Copia los mods de otra carpeta (por ejemplo, la de un perfil de Minecraft) al servidor.
@@ -563,6 +710,12 @@ pub struct ImportReport {
 /// el archivo más nuevo de cada mod) y nunca pisa archivos que el servidor ya tenga.
 pub fn import_folder(cfg: &ServerConfig, src: &Path) -> AppResult<ImportReport> {
     if !src.is_dir() { return Err(AppError::invalid("La carpeta no existe.")); }
+    let files: Vec<PathBuf> = std::fs::read_dir(src).map_err(|e| AppError::io("No se pudo leer la carpeta", e))?.flatten().map(|e| e.path()).collect();
+    import_files(cfg, &files)
+}
+
+/// Importa archivos sueltos (arrastrados o elegidos): mismas reglas que una carpeta.
+pub fn import_files(cfg: &ServerConfig, files: &[PathBuf]) -> AppResult<ImportReport> {
     let dest = mods_dir(&cfg.id);
     std::fs::create_dir_all(&dest).map_err(|e| AppError::io("No se pudo crear la carpeta de mods", e))?;
     let mut present: HashSet<String> = HashSet::new();
@@ -570,21 +723,35 @@ pub fn import_folder(cfg: &ServerConfig, src: &Path) -> AppResult<ImportReport> 
         for e in rd.flatten() { if let Some(m) = jar_meta(&e.path()) { present.insert(m.id); } }
     }
     let mut best: HashMap<String, (std::time::SystemTime, PathBuf, String)> = HashMap::new();
-    let mut r = ImportReport { copied: vec![], skipped_client: vec![], skipped_duplicate: vec![], skipped_existing: vec![], not_mods: vec![] };
+    let mut r = ImportReport { copied: vec![], skipped_client: vec![], skipped_duplicate: vec![], skipped_existing: vec![], not_mods: vec![], skipped_incompatible: vec![], client_deps_ignored: vec![] };
     let mut metas = vec![];
-    for e in std::fs::read_dir(src).map_err(|e| AppError::io("No se pudo leer la carpeta", e))?.flatten() {
-        let p = e.path();
-        let name = e.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".jar") { continue; }
-        match jar_meta(&p) { Some(m) => metas.push((e, p, name, m)), None => r.not_mods.push(name) }
+    for p in files {
+        if !p.is_file() { continue; }
+        let name = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+        if !name.to_lowercase().ends_with(".jar") { if !name.is_empty() { r.not_mods.push(name); } continue; }
+        let mtime = std::fs::metadata(p).and_then(|x| x.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        let Some(m) = jar_meta(p) else { r.not_mods.push(name); continue };
+        // Compatibilidad antes de copiar: loader y versión de Minecraft que declara el propio mod.
+        if let Some(why) = incompatibility(cfg, p) { r.skipped_incompatible.push(format!("{} ({name}): {why}", if m.name.is_empty() { &m.id } else { &m.name })); continue; }
+        metas.push((mtime, p.clone(), name, m));
     }
-    // Un mod "solo de cliente" se copia igual si otro mod del servidor lo declara como dependencia:
-    // Fabric no lo carga en el servidor, pero exige que esté presente.
-    let needed: HashSet<String> = metas.iter().filter(|(_, _, _, m)| m.environment != "client").flat_map(|(_, _, _, m)| m.depends.clone()).collect();
-    for (e, p, name, m) in metas {
-        if m.environment == "client" && !needed.contains(&m.id) { r.skipped_client.push(format!("{} ({name})", if m.name.is_empty() { &m.id } else { &m.name })); continue; }
+    // Un mod «solo de cliente» nunca se copia al servidor. Si un mod del servidor lo declara como
+    // obligatorio (pasa con Mod Menu), en Fabric se usa el archivo oficial de dependencias para
+    // que el servidor no lo exija. Antes se copiaba igual y el reparador después pedía quitarlo:
+    // quitar → falta → instalar → quitar…
+    let client_ids: HashSet<String> = metas.iter().filter(|(_, _, _, m)| m.environment == "client").map(|(_, _, _, m)| m.id.clone()).collect();
+    if cfg.loader == Loader::Fabric {
+        let run = paths::server_run_dir(&cfg.id);
+        for (_, _, _, m) in metas.iter().filter(|(_, _, _, m)| m.environment != "client") {
+            for d in m.depends.iter().filter(|d| client_ids.contains(*d)) {
+                crate::repair::add_fabric_override(&run, &m.id, d)?;
+                r.client_deps_ignored.push(format!("{} → {d}", if m.name.is_empty() { &m.id } else { &m.name }));
+            }
+        }
+    }
+    for (mtime, p, name, m) in metas {
+        if m.environment == "client" { r.skipped_client.push(format!("{} ({name})", if m.name.is_empty() { &m.id } else { &m.name })); continue; }
         if present.contains(&m.id) { r.skipped_existing.push(name); continue; }
-        let mtime = e.metadata().and_then(|x| x.modified()).unwrap_or(std::time::UNIX_EPOCH);
         match best.get(&m.id) {
             Some((t, _, _)) if *t >= mtime => r.skipped_duplicate.push(name),
             Some((_, _, old)) => { r.skipped_duplicate.push(old.clone()); best.insert(m.id.clone(), (mtime, p, name)); }
@@ -599,4 +766,85 @@ pub fn import_folder(cfg: &ServerConfig, src: &Path) -> AppResult<ImportReport> 
     }
     r.copied.sort();
     Ok(r)
+}
+
+/// ¿Por qué este jar no puede funcionar en el servidor? (None = puede)
+pub fn incompatibility(cfg: &ServerConfig, jar: &Path) -> Option<String> {
+    let j = crate::repair::read_jar(jar);
+    if j.corrupt { return Some("el archivo está dañado".into()); }
+    let want = match cfg.loader { Loader::Fabric => "fabric", Loader::Forge => "forge", Loader::NeoForge => "neoforge", Loader::Vanilla => return Some("el servidor es Vanilla (no carga mods)".into()) };
+    if j.kind.is_empty() { return None; }
+    let fabric_jar = j.kind == "fabric";
+    if fabric_jar != (want == "fabric") {
+        let name = |k: &str| match k { "fabric" => "Fabric", "neoforge" => "NeoForge", _ => "Forge" };
+        return Some(format!("es para {}, y este servidor usa {}", name(&j.kind), name(want)));
+    }
+    if let Some(conds) = j.depends.get("minecraft") {
+        let ok = if fabric_jar { conds.iter().any(|c| crate::repair::fabric_matches(c, &cfg.mc_version)) } else { conds.iter().any(|c| crate::repair::maven_matches(c, &cfg.mc_version)) };
+        if !ok { return Some(format!("pide Minecraft {}, y este servidor usa {}", conds.join(" o "), cfg.mc_version)); }
+    }
+    None
+}
+
+/// Quita todos los mods del servidor: los archivos van juntos a la Papelera de 939 Host (se
+/// pueden recuperar) y el registro de mods queda vacío. No toca el mundo, las configuraciones,
+/// la cuarentena ni las aprobaciones. Devuelve los archivos apartados.
+pub fn remove_all(cfg: &ServerConfig) -> AppResult<Vec<String>> {
+    let dir = mods_dir(&cfg.id);
+    let jars: Vec<PathBuf> = std::fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().map(|x| x.eq_ignore_ascii_case("jar")).unwrap_or(false)).collect()).unwrap_or_default();
+    if jars.is_empty() { return Ok(vec![]); }
+    let slot = paths::trash_slot(&format!("{}-mods-todos", cfg.id));
+    std::fs::create_dir_all(&slot).map_err(|e| AppError::io("No se pudo preparar la Papelera", e))?;
+    let mut moved = vec![];
+    for p in jars {
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        paths::rename_retry(&p, slot.join(&name)).map_err(|e| AppError::io("No se pudo apartar un mod", e))?;
+        moved.push(name);
+    }
+    let mut m = load_manifest(&cfg.id);
+    m.mods.clear();
+    save_manifest(&cfg.id, &m)?;
+    moved.sort();
+    Ok(moved)
+}
+
+/// Vincula un archivo agregado a mano con su proyecto de Modrinth (identificado por hash), para
+/// que 939 Host lo administre: actualizaciones, dependencias y quitar con un clic. No descarga
+/// ni cambia el archivo.
+pub async fn link_file<S: Source>(src: &S, cfg: &ServerConfig, file_name: &str) -> AppResult<InstalledMod> {
+    if file_name.contains(['/', '\\']) || !file_name.ends_with(".jar") { return Err(AppError::invalid("Archivo inválido.")); }
+    let path = mods_dir(&cfg.id).join(file_name);
+    if !path.is_file() { return Err(AppError::not_found("el archivo")); }
+    let mut manifest = load_manifest(&cfg.id);
+    if manifest.mods.iter().any(|m| m.file_name == file_name) { return Err(AppError::invalid("Ese archivo ya está administrado por 939 Host.")); }
+    let sha = net::sha1_file(&path)?;
+    let found = src.versions_by_sha1(std::slice::from_ref(&sha)).await?;
+    let v = found.get(&sha).ok_or_else(|| AppError::invalid("Modrinth no reconoce este archivo: no se puede vincular."))?;
+    if manifest.mods.iter().any(|m| m.project_id == v.project_id) { return Err(AppError::invalid("Ese mod ya está instalado con otro archivo. Apartá el duplicado.")); }
+    let project = src.projects(std::slice::from_ref(&v.project_id)).await?.into_iter().next();
+    let m = InstalledMod {
+        project_id: v.project_id.clone(),
+        version_id: v.id.clone(),
+        title: project.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| v.name.clone()),
+        version_number: v.version_number.clone(),
+        file_name: file_name.to_string(),
+        sha1: sha,
+        side: project.as_ref().map(|p| modrinth::side_label(&p.client_side, &p.server_side).to_string()).unwrap_or_else(|| "unknown".into()),
+        explicit: true,
+        required_by: vec![],
+        depends_on: vec![],
+        origin: None,
+    };
+    manifest.mods.push(m.clone());
+    save_manifest(&cfg.id, &manifest)?;
+    Ok(m)
+}
+
+#[cfg(test)]
+mod java_por_version {
+    #[test]
+    fn java_segun_minecraft() {
+        use super::java_for_mc as j;
+        assert_eq!((j("1.14"), j("1.16.5"), j("1.17.1"), j("1.18.2"), j("1.20.4"), j("1.20.5"), j("1.21.11"), j("26.2")), (8, 8, 16, 17, 17, 21, 21, 25));
+    }
 }

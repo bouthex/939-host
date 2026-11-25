@@ -88,3 +88,130 @@ Prueba con jsdom (DOM simulado y comandos de la app reemplazados por respuestas 
 | Descargas reales de Modrinth, Adoptium (Java) y del servicio de Fabric | Bloqueados en el entorno. Modrinth se probó con datos en su formato oficial; Fabric por su repositorio Maven (accesible) |
 | Mundo completo del modpack (2,5 GB) | Se usó una muestra de 119 MB para no cargar la conexión de la PC |
 | Reconexión automática dentro del juego | Necesita un cliente de Minecraft; se probó la instalación del mod en una carpeta de perfil simulada |
+
+## 8. Diseño v3, nombres de PC y «Solicitar ser anfitrión» (15/11/2026)
+
+Mismo entorno Linux aislado. Nada de esto se ejecutó contra la instalación de Minecraft del usuario ni contra el mundo 939 Z: los servidores reales son servidores oficiales de Mojang descargados en carpetas temporales.
+
+| Prueba | Tipo | Qué verifica |
+|---|---|---|
+| `cargo test` core + p2p + cluster | Automática | 31 + 5 + 2 pruebas, 0 fallas (incluye `pcname`: nombres válidos, sin caracteres de control, 1–24) |
+| `host_requests_and_pc_names` (3 PCs, P2P real por localhost) | Protocolo con servidores simulados | Renombrar no cambia la identidad ni el permiso; un jugador sin rol de coanfitrión no puede solicitar; solicitud duplicada o simultánea rechazada; cancelar y rechazar; aceptar usa el traspaso existente y el mundo llega intacto; si la copia previa falla, la anfitriona vieja sigue; si la anfitriona no responde, no se crea solicitud |
+| `slow_two_phase_handover_keeps_playing` | Protocolo con servidores simulados | Durante una fase 1 lenta (copia en caliente) el juego sigue en la anfitriona vieja y nunca hay dos encendidos |
+| `real_minecraft_handover` | **Servidor real** 26.2 | Traspaso en dos fases entre dos procesos: el marcador del scoreboard llega a B y la dirección fija apunta a B |
+| `v3_features` | **Servidor real** 26.2 | Fases de arranque, consulta oculta, pausa, guardado, SNBT real de jugadores, cuenta regresiva, reinicio, recursos del juego (1,1 MB, no se redistribuyen), reparación de puerto ocupado + deshacer, reparación de mods |
+| `full_server_lifecycle`, `players_and_permissions_real_server` | **Servidor real** 26.2 | Sin regresiones respecto de 0.9.0 |
+| Capturas en claro y oscuro, 1024×680 a 2560×1440 | Interfaz con backend simulado (Playwright) | Sin desbordes ni textos cortados |
+| Rendimiento de animaciones (CPU ×4 más lenta) | Interfaz con backend simulado | Mediana 16,7 ms por cuadro, p99 33 ms, 3 cuadros > 50 ms al cambiar de pantalla |
+| Movimiento reducido | Interfaz con backend simulado | Con `prefers-reduced-motion` o la opción de la app: transiciones 0 s, sin animación de páginas |
+
+Errores encontrados en la revisión y corregidos antes de esta tanda: durante un traspaso largo se salteaba el control de aislamiento (riesgo de dos escritores); tras perder el permiso se podía reiniciar localmente; una confirmación sin respuesta podía reencender en la PC vieja; dos traspasos simultáneos; cualquier miembro podía quitar a otro (ahora solo la propietaria).
+
+**Hallazgo de esta tanda (corregido):** la primera corrida de `real_minecraft_handover` falló porque la PC que recibe ahora instala el servidor *antes* de tener el mundo (fase de preparación) y la carpeta del servidor todavía no existía. El traspaso se canceló de forma segura —el servidor siguió encendido en A, sin dos escritores— y tras crear la carpeta en la instalación la prueba pasó: traspaso real en 11,8 s, marcador = 939 en B. Las pruebas con servidores simulados no lo detectaban porque no instalan nada.
+
+### Limitaciones conocidas de esta versión
+
+- Una PC con 939 Host anterior a esta rama no puede **recibir** un traspaso desde una nueva (no conoce la orden `Prefetch`). Todas las PC del grupo deben actualizarse juntas.
+- Si después de confirmar el traspaso la PC nueva no logra encender, queda con el permiso y el servidor apagado. El mundo está a salvo y cualquiera puede usar «Recuperar aquí» o reintentar; no se vuelve atrás sola para no arriesgar dos escritores.
+- Si la confirmación se envía pero no llega respuesta, la PC vieja asume que se entregó y **no** reenciende. Puede quedar el servidor apagado hasta que la nueva encienda o se recupere.
+- Skins reales de Mojang y la búsqueda de Modrinth en vivo solo se probaron con datos de prueba en su formato oficial (los servicios están bloqueados en el entorno).
+- Arrastrar y soltar `.jar` solo se probó en el navegador del entorno, no en WebView2 de Windows.
+
+## 9. Validación real pendiente (hacer en PCs reales antes de publicar)
+
+Nada de esta lista se ejecutó. **No hay que presentarlo como probado** hasta completarlo en equipos reales.
+
+| # | Qué validar | Cómo | Resultado esperado |
+|---|---|---|---|
+| 1 | Windows 11 real — *app instalada y usada en Windows Server 2025; falta Windows 11 de escritorio* | Instalar el `.exe` en una PC de prueba (no en la PC donde corre el mundo 939 Z) | Abre, bandeja, inicio con Windows, Firewall pide permiso una vez, tema claro y oscuro |
+| 2 | Arrastrar y soltar `.jar` | Arrastrar 2–3 mods sobre la pantalla Mods de un servidor de prueba | Se importan, se marcan los de cliente, no se duplican |
+| 3 | Modrinth en vivo — *hecho en Windows (Lithium en Fabric 26.3)* | Buscar «sodium», filtrar por versión y loader, abrir ficha, instalar en servidor de prueba | Resultados reales, dependencias resueltas, hash verificado |
+| 4 | Skins reales de Mojang | Servidor de prueba en modo online con una cuenta real | Se ve la skin; con la opción desactivada no se descarga nada |
+| 5 | Traspaso entre dos PC físicas (misma red) — *hecho entre dos máquinas Windows de GitHub; falta en casa* | Solicitar ser anfitrión desde B, aceptar en A | B enciende con el mundo de A, A queda apagada, los jugadores vuelven a entrar por la misma dirección |
+| 6 | Traspaso entre dos casas/redes — *hecho entre regiones de Azure; falta con routers hogareños* | Igual que 5 con B en otra red | Conecta directo o por relay; avisos de conectividad visibles en la solicitud |
+| 7 | Reconexión de jugadores tras el cambio | Con un jugador dentro del juego durante el traspaso | Ve «se está mudando», puede volver a entrar sin cambiar la dirección |
+| 8 | Cortes de conexión y recuperación | Desconectar el cable o Wi-Fi de la anfitriona con 3 PC en el grupo | Se detiene sola en la PC aislada; otra toma el servidor en ~35–45 s; al volver, la vieja no reenciende |
+| 9 | Rechazo, cancelación y vencimiento con PCs reales | Solicitar y cancelar; solicitar y dejar vencer (10 min) | El aviso desaparece en ambas PC |
+
+Recomendación: hacer estas pruebas con un **servidor de prueba nuevo** y una copia del mundo, nunca con el mundo 939 Z en uso.
+
+## 10. Pruebas reales en Windows (GitHub Actions, Windows Server 2025)
+
+Flujo `.github/workflows/pruebas-windows.yml`, en la rama `rediseno-v3`. Corre en máquinas
+Windows limpias de GitHub (misma base que Windows 11, con internet real): **no es la PC del
+usuario** y no toca ninguna instalación de Minecraft. No publica nada.
+
+| Prueba | Resultado (15/11/2026) |
+|---|---|
+| Núcleo, P2P y grupo (38 pruebas), con PCs congeladas de verdad (`NtSuspendProcess`) | ✔ incluida la recuperación por mayoría en ~14 s y «Recuperar aquí» con 2 PCs |
+| Vanilla 26.3: descarga real de Java 25 y del servidor de Mojang, encendido, comando, apagado | ✔ en línea en ~15 s |
+| Fabric 26.3 (loader 0.20.1) | ✔ ~17 s |
+| Forge 26.3 (66.1.8, instalador oficial) | ✔ ~18 s |
+| NeoForge 26.3 (26.3.0.103, instalador oficial) | ✔ ~17 s |
+| Modrinth real: búsqueda, plan, descarga con hash verificado, servidor Fabric con Lithium, quitar | ✔ |
+| Ciclo completo: copia en caliente, puntos incrementales, puerto ocupado, restaurar, borrar a la Papelera | ✔ (después de corregir el bloqueo de Windows, ver abajo) |
+| Jugadores y permisos con servidor real | ✔ |
+| Funciones v3 (pausa, guardado, SNBT, cuenta regresiva, reinicio, recursos del juego, reparación) | ✔ |
+| **Traspaso de anfitrión real entre dos «PCs» por P2P** (dos nodos en la misma máquina, sin relays) | ✔ en 27,9 s; el marcador del mundo llegó intacto y la misma dirección apunta a la nueva anfitriona |
+| Instalador NSIS silencioso sin administrador, SHA-256, app abre y queda abierta | ✔ |
+| Interfaz de la app instalada, manejada por WebView2 como una persona: crear un servidor con el asistente, descarga real, encender, comando en la consola, todas las pestañas, copia en caliente, tema claro y oscuro, detener con confirmación | ✔ 15/15 pasos, sin errores de JavaScript (ventana de 1024×768) |
+| **Dos máquinas Windows distintas** (regiones centralus y westcentralus de Azure), P2P con relays habilitados como la app | ✔ unión en 1 s; la invitada entra al servidor real de la otra máquina por `127.0.0.1:41911`; «Solicitar ser anfitrión» → aceptar → traspaso en 16 s con el marcador intacto; la PC vieja deja de alojar y entra por su dirección fija al servidor nuevo |
+
+**Problemas que solo aparecieron en Windows y se corrigieron:**
+- Mover un servidor (o un mundo) a la Papelera fallaba con «Acceso denegado» cuando un archivo
+  quedaba abierto un instante. Ahora se reintenta unos segundos (antivirus/indexador).
+- Los diálogos del instalador/desinstalador bloqueaban la desinstalación silenciosa.
+- La barra lateral cortaba «Servidores de amigos» en la ventana mínima (1024 px).
+
+**Observado y no corregido (bajo impacto):** en Windows, la primera consulta de estado justo
+después de «Done» se corta y la siguiente (1 s después) responde. Pasó con los cuatro loaders y
+con la ruta P2P. Para un jugador significa, a lo sumo, un «No se pudo conectar» que se resuelve
+al reintentar.
+
+**Lo que estas pruebas no cubren:** routers hogareños con NAT estricto (las máquinas de Azure
+tienen redes de datacenter; la conexión fue directa), Smart App Control activo, antivirus de
+terceros, PCs con poca memoria, y un cliente de Minecraft real conectado jugando durante el
+traspaso.
+
+Nota: la máquina Linux de una prueba intermedia no pudo preparar Java para Linux (la app solo
+se distribuye para Windows); el traspaso se canceló de forma segura y el servidor siguió en la
+PC anfitriona. Por eso la prueba definitiva usa dos Windows.
+
+## 11. «Error de protocolo de red» y cliente real de Minecraft (15/11/2026)
+
+**Diagnóstico con datos reales:** registros del servidor «Eventos» (Fabric 26.2, sin mods) en la
+PC del usuario, leídos sin modificar nada. Minecraft autentica al jugador y 1–2 s después
+`lost connection: Disconnected`, sin «joined the game» y sin errores del servidor: corta el
+propio juego. El usuario confirmó que entró con el perfil del modpack 939 Z. Causa: mods en el
+cliente que el servidor no tiene. No es una falla de red de 939 Host.
+
+**Prueba con cliente real** (GitHub Actions, Linux con pantalla virtual y OpenGL por software;
+cliente oficial descargado de Mojang y verificado por SHA-1, cuenta sin conexión):
+
+| Servidor creado por 939 Host | Comprobación de conexión de 939 Host | Cliente oficial 26.2 |
+|---|---|---|
+| Vanilla 26.2 | ✔ protocolo 776, 8 ms | ✔ entró («Jugador939 joined the game») |
+| Fabric 26.2 sin mods (igual a «Eventos») | ✔ protocolo 776, 20 ms | ✔ entró |
+
+La detección de entrada fallida se probó con las líneas reales del servidor del usuario
+(prueba `explains_client_side_rejection_from_real_log`). No se reprodujo el error con un cliente
+modificado en CI.
+
+
+## 12. Fase final (rama rediseno-v3)
+
+Todo en GitHub Actions, en Windows reales. Resultado: todo aprobado en la última ejecución completa.
+
+| Prueba | Dónde | Resultado |
+|---|---|---|
+| Administrador de archivos local (`archivos`) | Windows | rutas confinadas, mundo protegido, sin sobrescrituras, Papelera y restauración, importar/exportar, subida en partes, validación de .jar |
+| Archivos remotos entre 3 nodos (`remote_files_follow_host_and_protect_world`) | Windows y Linux | SHA-1 igual en las dos puntas (3 MB), sin sobrescritura, cancelación sin restos, mundo protegido, la PC jugadora no puede, sigue a la nueva anfitriona |
+| Archivos entre dos PCs reales | dos Windows en máquinas distintas | listar, 8 MB subidos y bajados con el mismo SHA-1, mundo protegido, cancelación, traspaso posterior correcto |
+| Servidor desde un `.mrpack` (`e2e_modpack_mrpack`) | Windows | Fabric 26.3 con los mods verificados, arranca |
+| Mods de rendimiento (`e2e_optimizacion`) | Windows | Fabric y NeoForge 26.3 arrancan con la selección; ModernFix y Noisium quedan afuera por no tener versión; Chunky termina |
+| Logo firmado (`server_logo_reaches_players_and_survives_handover`) | Windows y Linux | la PC jugadora lo recibe y sigue tras el traspaso |
+| Cambio de versión, perfil `.mrpack`, direcciones `.939host`, Papelera | Windows | aprobadas |
+| App instalada y portable (interfaz real) | Windows | sin errores de JavaScript; recorre todas las pantallas, crea y borra archivos |
+| Cliente real de Minecraft | Windows | entra a Vanilla y Fabric |
+
+**No probado en vivo:** CurseForge (falta una clave aprobada por CurseForge).

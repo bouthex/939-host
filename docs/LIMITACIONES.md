@@ -11,24 +11,53 @@
 ## Limitaciones conocidas
 
 - **Pérdida máxima en una caída**: lo jugado desde el último punto sincronizado (15 min por defecto). En traspasos y al soltar no se pierde nada. Bajar el intervalo de sincronización reduce la pérdida a costa de más pausas de guardado (decenas de ms).
-- **Dos PCs**: sin mayoría no hay recuperación automática; se usa «Recuperar aquí» a mano. Con tres o más PCs conectadas es automática.
+- **Dos PCs**: si la anfitriona deja de responder más de un minuto, la otra lo levanta sola **solo si tiene internet** (así una PC que perdió la conexión no enciende otra copia). Sin internet se usa «Recuperar aquí» a mano. Con tres o más PCs conectadas decide la mayoría.
 - **Partición de red con PCs que se conectaron durante el corte**: si la anfitriona pierde contacto con el grupo pero otras PCs que ella nunca vio forman mayoría, por un rato puede haber dos copias encendidas en PCs distintas. Nunca escriben el mismo archivo y, al reconectarse, la de época vieja se detiene y aparta su copia (no se mezcla), pero lo jugado en ella queda solo como punto de seguridad.
-- **Hole punching necesita el relay público para el primer contacto** (así funciona iroh). Si desactivás los relays públicos, solo queda conexión directa (misma red, IPv6, UPnP) o por otra PC del grupo.
+- **Hole punching necesita el relay público para el primer contacto** (así funciona iroh). Si desactivás los relays públicos, solo queda conexión directa (misma red, IPv6 o un puerto que ya esté abierto) o por otra PC del grupo.
 - **El puente por otra PC** solo sirve si esa PC llega directo a la anfitriona.
 - **Reconexión automática**: necesita un perfil Fabric o NeoForge (en Vanilla puro no hay mods). Depende de que el mod AutoReconnect (Reforged) tenga versión para tu Minecraft. Sin el mod, el jugador vuelve a entrar a mano con la misma dirección (la lista de servidores muestra «se está mudando» mientras tanto).
 - **Modo offline y lista blanca**: si el servidor está en modo offline, banear u operar a alguien que nunca entró puede quedar registrado con el nombre en minúsculas (comportamiento de Minecraft). La lista blanca no tiene ese problema.
 - **Zombie Horde 1.3.1** no arranca en un servidor dedicado con un mundo nuevo (error del mod). Con un mundo donde ya se jugó con el mod, sí.
-- **Forge y NeoForge** están implementados con el instalador oficial pero no se pudieron probar en vivo.
-- **Cambiar la versión de Minecraft** de un servidor existente no está disponible: se crea uno nuevo importando una copia del mundo.
-- El ejecutable **no está firmado**. SmartScreen avisa y **Smart App Control (Windows 11) lo bloquea** sin opción de continuar. Se solicitó la firma gratuita de SignPath Foundation (ver `docs/firma/SIGNPATH.md`).
-- No hay **actualizaciones automáticas** de 939 Host: se instala la versión nueva encima (el instalador conserva los datos).
+- **Quilt**: no está disponible para servidores (939 Host no lo instala ni lo administra). Los mods de Quilt que también son de Fabric se usan con Fabric.
+- **Cambiar la versión** (o el loader) se hace con copia verificada y vuelta atrás. Volver a una versión anterior con el mismo mundo nunca se hace sobre el servidor original: Minecraft no convierte mundos hacia atrás.
+- **Servidores encendidos fuera de 939 Host**: se detectan y se muestran con su estado real, pero 939 Host no tiene su consola: para administrarlos (jugadores, copias, traspasos) hay que cerrarlos y encenderlos desde 939 Host, o importarlos como servidor de 939 Host.
+- El ejecutable **no está firmado**. SmartScreen avisa y **Smart App Control (Windows 11) lo bloquea** sin opción de continuar.
+- **Actualizaciones automáticas** desde la 1.3.0. La 0.9.0 no consulta y las versiones de prueba 1.1.0 y 1.2.0 confían en una clave que se perdió: hay que instalar la 1.3.0 una vez a mano, encima (se conservan los datos). Detalle en [Actualizaciones](ACTUALIZACIONES.md).
 - El mundo completo se copia a cada coanfitriona la primera vez (por ejemplo, 2,5 GB en nuestro modpack de prueba); después solo viajan los cambios.
+
+## En desarrollo (rama `rediseno-v3`, todavía sin versión publicada)
+
+Probado en Windows reales: cambio de versión con copia verificada y vuelta atrás, Papelera de 30 días,
+mods de rendimiento elegidos por versión y loader, pregeneración con Chunky, perfil `.mrpack` para
+los jugadores, servidores desde modpacks `.mrpack`, administrador de archivos local y remoto (también
+entre dos PCs en lugares distintos), logo por servidor (también en Servidores de amigos), direcciones
+internas `.939host` y cambios del grupo firmados.
+
+Límites conocidos de esas funciones:
+
+- Las direcciones `.939host` son **internas**: cada PC las crea en su 939 Host (pide permiso de
+  administrador una vez) y no sirven para quien no tenga la app. No son direcciones públicas.
+- **CurseForge** está implementado con su API oficial pero **no se pudo probar en vivo**: hace falta una
+  clave aprobada por CurseForge (ver el Manual). Sin clave, la app lo explica y todo lo demás funciona.
+  Los modpacks de CurseForge no indican qué mods son solo para jugadores: se instalan todos.
+- En el administrador de archivos remoto, exportar carpetas grandes baja archivo por archivo (no
+  comprime antes).
+- La app no detecta si tu Minecraft ya tiene la versión y los mods: el perfil `.mrpack` se importa en
+  un launcher compatible (Modrinth App, Prism Launcher, ATLauncher).
+- Con la ventana minimizada la memoria baja poco (de unos 344 a 313 MB en RAM en las mediciones);
+  la mayor parte la usa WebView2, el motor de la ventana.
 
 ## Pendiente para una próxima versión
 
 - Firma de código del ejecutable.
-- Actualizador integrado.
-- Cambio de versión de Minecraft con punto de restauración previo.
+- Conexión por IP: verificar con routers reales (UPnP/NAT-PMP/PCP), desde otra red y con CGNAT real (ver DIRECCIONES-PUBLICAS.md). Una dirección que no cambie con la IP pública necesita un nombre propio (DNS dinámico o dominio).
 - Descubrimiento de PCs del grupo en la red local (mDNS) para no depender de direcciones guardadas cuando cambia la IP y no hay relays.
 - Compresión de los bloques de sincronización que no sean regiones (las regiones ya vienen comprimidas).
 - Panel de historial del grupo (quién hosteó, traspasos, recuperaciones).
+
+## Resource packs
+
+- Minecraft permite **un solo** pack enviado por el servidor (`server.properties`): solo uno puede ser obligatorio. Los opcionales los instala «Preparar para jugar» en el Minecraft de cada jugador.
+- Un pack **propio** obligatorio llega a quienes entran con 939 Host (por el grupo, sin publicarlo). Quien entra por IP **sin** 939 Host no puede bajarlo y no podría entrar: para esos jugadores, usar un pack de Modrinth.
+- Los packs de más de 250 MB no se pueden enviar desde el servidor (límite de Minecraft).
+- El rechazo de un pack obligatorio lo aplica Minecraft; en la prueba automática se comprobó que sin aceptarlo el jugador no entra (no se automatizó tocar «No» en la pantalla del juego).

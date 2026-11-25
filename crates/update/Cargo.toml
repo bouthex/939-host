@@ -1,0 +1,46 @@
+[package]
+name = "host939-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Actualizaciones de 939 Host: metadatos firmados, verificación, descarga reanudable y herramienta del propietario"
+
+[lib]
+name = "host939_update"
+
+[[bin]]
+# Herramienta del propietario para firmar publicaciones. No va en el instalador.
+name = "939publicar"
+path = "src/bin/939publicar.rs"
+required-features = ["propietario"]
+
+[features]
+propietario = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+ed25519-dalek = "2"
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
+semver = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+getrandom = "0.2"
+data-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "default-tls"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["fs", "io-util", "time", "rt-multi-thread", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util", "time"] }
+
+[[test]]
+name = "propietario"
+required-features = ["propietario"]

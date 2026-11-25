@@ -52,6 +52,12 @@ async fn manifest() -> AppResult<Manifest> {
     }
 }
 
+/// Fecha de publicación y tipo («release», «snapshot»…) de una versión, según Mojang.
+pub async fn version_info(id: &str) -> AppResult<Option<(String, String)>> {
+    let m = manifest().await?;
+    Ok(m.versions.into_iter().find(|v| v.id == id).map(|v| (v.release_time, v.kind)))
+}
+
 pub async fn list_versions(include_snapshots: bool) -> AppResult<Vec<VersionOption>> {
     let m = manifest().await?;
     Ok(m.versions
@@ -68,10 +74,15 @@ pub struct ServerDownload {
     pub java_major: u32,
 }
 
-pub async fn server_download(mc_version: &str) -> AppResult<ServerDownload> {
+/// Datos oficiales de una versión (descargas, índice de recursos, Java).
+pub async fn version_json(mc_version: &str) -> AppResult<serde_json::Value> {
     let m = manifest().await?;
     let entry = m.versions.iter().find(|v| v.id == mc_version).ok_or_else(|| AppError::not_found(&format!("la versión {mc_version} en el listado de Mojang")))?;
-    let v: serde_json::Value = net::get_json(&entry.url, "los datos de la versión").await?;
+    net::get_json(&entry.url, "los datos de la versión").await
+}
+
+pub async fn server_download(mc_version: &str) -> AppResult<ServerDownload> {
+    let v = version_json(mc_version).await?;
     let server = v.pointer("/downloads/server").ok_or_else(|| AppError::invalid(format!("Mojang no publica servidor dedicado para la versión {mc_version}.")))?;
     let url = server.get("url").and_then(|x| x.as_str()).ok_or_else(|| AppError::invalid("Datos de versión incompletos"))?;
     let sha1 = server.get("sha1").and_then(|x| x.as_str()).ok_or_else(|| AppError::invalid("Datos de versión incompletos"))?;
@@ -273,10 +284,11 @@ pub async fn fabric_install_maven(run: &std::path::Path, mc: &str, loader: &str)
         let rel = maven_path(&coord).ok_or_else(|| AppError::invalid(format!("Coordenada inválida: {coord}")))?;
         let url = format!("{}/{}", base.trim_end_matches('/'), rel);
         let sha = net::get_text(&format!("{url}.sha1"), "la huella de una librería").await?;
-        let sha = sha.split_whitespace().next().unwrap_or("").to_string();
+        let sha = sha.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(AppError::invalid(format!("El repositorio de Fabric no publicó una huella válida para {coord}."))); }
         let dest = run.join("libraries").join(&rel);
-        if !(dest.exists() && net::sha1_file(&dest).map(|h| h == sha).unwrap_or(false)) {
-            net::download(&url, &dest, if sha.len() == 40 { net::Hash::Sha1(&sha) } else { net::Hash::None }, |_, _| {}).await?;
+        if !(dest.exists() && net::sha1_file(&dest).map(|h| h.eq_ignore_ascii_case(&sha)).unwrap_or(false)) {
+            net::download(&url, &dest, net::Hash::Sha1(&sha), |_, _| {}).await?;
         }
         cp.push(format!("libraries/{rel}"));
     }

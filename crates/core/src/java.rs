@@ -57,6 +57,29 @@ pub fn list_installed() -> Vec<RuntimeInfo> {
     out
 }
 
+/// Versiones de Java que 939 Host sabe instalar (Eclipse Temurin, imágenes JRE oficiales).
+pub const AVAILABLE: &[u32] = &[8, 11, 17, 21, 25];
+
+/// Java a instalar para un requisito de Mojang. Java 16 (Minecraft 1.17) no tiene imagen JRE
+/// publicada: Java 17 es compatible y se usa en su lugar.
+pub fn install_major(required: u32) -> u32 {
+    match required { 0 => 21, 16 => 17, r if AVAILABLE.contains(&r) => r, r => AVAILABLE.iter().copied().find(|a| *a >= r).unwrap_or(r) }
+}
+
+/// Java a usar: el elegido si es compatible, si no el recomendado. Devuelve (java, aviso).
+/// Reglas: nunca menos que lo que pide Mojang; Forge/NeoForge anteriores a 1.17 solo con Java 8.
+pub fn pick(required: u32, choice: Option<u32>, mc: &str, loader: crate::model::Loader) -> (u32, Option<String>) {
+    let rec = install_major(required);
+    let Some(c) = choice else { return (rec, None) };
+    if !AVAILABLE.contains(&c) { return (rec, Some(format!("Java {c} no está disponible; se usa Java {rec}."))); }
+    if c < required.max(8) { return (rec, Some(format!("Minecraft {mc} necesita Java {required} o posterior; se usa Java {rec}."))); }
+    let old = mc.starts_with("1.") && mc.split('.').nth(1).and_then(|m| m.parse::<u32>().ok()).map(|m| m < 17).unwrap_or(false);
+    if old && c != 8 && matches!(loader, crate::model::Loader::Forge | crate::model::Loader::NeoForge) {
+        return (8, Some("Forge para versiones anteriores a 1.17 solo funciona con Java 8; se usa Java 8.".into()));
+    }
+    (c, None)
+}
+
 /// Garantiza que exista Java `major`; lo descarga si hace falta.
 pub async fn ensure<F: FnMut(&str, f64)>(major: u32, mut progress: F) -> AppResult<PathBuf> {
     if let Some(p) = installed_java(major) { return Ok(p); }
@@ -104,4 +127,45 @@ pub fn extract_zip(archive: &Path, dest: &Path) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+    use crate::model::Loader;
+    #[test]
+    fn picks_compatible_java() {
+        assert_eq!(pick(25, None, "26.2", Loader::Vanilla), (25, None));
+        assert_eq!(pick(16, None, "1.17.1", Loader::Vanilla).0, 17);
+        assert_eq!(pick(21, Some(17), "1.21.4", Loader::Fabric).0, 21, "no puede ser menor que lo requerido");
+        assert_eq!(pick(17, Some(21), "1.20.1", Loader::Fabric), (21, None));
+        assert_eq!(pick(8, Some(17), "1.12.2", Loader::Forge).0, 8, "Forge viejo solo con Java 8");
+        assert_eq!(pick(8, Some(17), "1.12.2", Loader::Vanilla), (17, None));
+    }
+}
+
+/// Variables de entorno que Java lee por su cuenta y que pueden cambiar cómo arranca (agregar un
+/// `-javaagent`, cambiar la configuración de Log4j o anular la protección contra Log4Shell, ya que
+/// `_JAVA_OPTIONS` se aplica después de la línea de comandos). Los procesos de Java de 939 Host no
+/// las heredan: solo valen los argumentos que arma 939 Host.
+pub const JAVA_ENV_BLOCKLIST: &[&str] = &["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH", "JAVA_OPTIONS", "JAVA_OPTS"];
+
+/// Quita esas variables del entorno de un proceso hijo.
+pub fn sanitize_env(c: &mut std::process::Command) -> &mut std::process::Command {
+    for k in JAVA_ENV_BLOCKLIST { c.env_remove(k); }
+    c
+}
+
+#[cfg(test)]
+mod env_t {
+    /// Un `_JAVA_OPTIONS` del entorno (se aplica después de la línea de comandos) no llega a Java.
+    #[test]
+    fn java_no_hereda_opciones_del_entorno() {
+        let mut c = std::process::Command::new("x");
+        c.env("_JAVA_OPTIONS", "-javaagent:malo.jar").env("PATH", "/usr/bin");
+        super::sanitize_env(&mut c);
+        let envs: Vec<(String, Option<String>)> = c.get_envs().map(|(k, v)| (k.to_string_lossy().into(), v.map(|v| v.to_string_lossy().into()))).collect();
+        for k in super::JAVA_ENV_BLOCKLIST { assert!(envs.iter().any(|(n, v)| n == k && v.is_none()), "{k} tiene que quitarse: {envs:?}"); }
+        assert!(envs.iter().any(|(n, v)| n == "PATH" && v.is_some()), "lo demás se conserva");
+    }
 }

@@ -25,6 +25,8 @@ struct Local {
     fake: bool,
     name: String,
     fakes: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Servidores simulados detenidos sin punto posterior (como `Runtime::exited_unsaved`).
+    exited: Mutex<std::collections::HashSet<String>>,
     rt: tokio::runtime::Handle,
 }
 
@@ -51,9 +53,13 @@ impl LocalHost for Local {
         let cfg = instance::load(server).map_err(|e| e.message)?;
         if self.fake {
             host939_core::lease::can_start(server).map_err(|e| e.message)?;
+            // Mismo control de mods que el arranque real (process::Manager::start).
+            let (held, back) = host939_core::modguard::enforce(server).map_err(|e| e.message)?;
+            if !held.is_empty() || !back.is_empty() { say("##", &format!("mods apartados {held:?}, devueltos {back:?}")); }
             let run = paths::server_run_dir(server);
             std::fs::create_dir_all(run.join("world")).map_err(|e| e.to_string())?;
             if !run.join("world/level.dat").exists() { std::fs::write(run.join("world/level.dat"), b"nuevo").map_err(|e| e.to_string())?; }
+            host939_core::process::mark_running(server);
             let l = std::net::TcpListener::bind(("127.0.0.1", cfg.port)).map_err(|e| format!("puerto: {e}"))?;
             l.set_nonblocking(true).unwrap();
             let name = self.name.clone();
@@ -84,22 +90,154 @@ impl LocalHost for Local {
     }
     fn stop(&self, server: &str) -> Result<(), String> {
         if self.fake {
-            if let Some(t) = self.fakes.lock().unwrap().remove(server) { t.abort(); }
+            if let Some(t) = self.fakes.lock().unwrap().remove(server) { t.abort(); self.exited.lock().unwrap().insert(server.to_string()); host939_core::process::clear_running(server); }
             std::thread::sleep(Duration::from_millis(100));
             return Ok(());
         }
         if !self.mgr.runtime(server).lock().unwrap().is_active() { return Ok(()); }
         self.mgr.stop(server).map_err(|e| e.message)?;
-        if self.mgr.wait_inactive(server, Duration::from_secs(120)) { Ok(()) } else { Err("no se detuvo a tiempo".into()) }
+        if self.mgr.wait_inactive(server, Duration::from_secs(620)) { Ok(()) } else { Err("no se detuvo a tiempo".into()) }
     }
     fn snapshot(&self, server: &str, label: &str, kind: &str) -> Result<SnapshotInfo, String> {
         let mc = instance::load(server).map(|c| c.mc_version).unwrap_or_default();
-        snapshots::take(&self.mgr, server, label, kind, &mc).map_err(|e| e.message)
+        let r = snapshots::take(&self.mgr, server, label, kind, &mc).map_err(|e| e.message);
+        if r.is_ok() && !self.is_running(server) { self.exited.lock().unwrap().remove(server); }
+        r
+    }
+    fn command(&self, server: &str, cmd: &str) -> Result<(), String> {
+        if self.fake {
+            // El servidor simulado registra los comandos y lleva su propio ops.json.
+            let run = paths::server_run_dir(server);
+            let mut ops: Vec<serde_json::Value> = paths::read_json(&run.join("ops.json")).unwrap_or_default();
+            if let Some(n) = cmd.strip_prefix("op ") { if !ops.iter().any(|o| o["name"] == n) { ops.push(serde_json::json!({ "name": n, "level": 4 })); } }
+            if let Some(n) = cmd.strip_prefix("deop ") { ops.retain(|o| o["name"] != n); }
+            paths::write_json(&run.join("ops.json"), &ops).map_err(|e| e.message)?;
+            say("##", &format!("comando: {cmd}"));
+            return Ok(());
+        }
+        self.mgr.send_command(server, cmd).map_err(|e| e.message)
+    }
+    fn exited_unsaved(&self, server: &str) -> bool {
+        if self.fake { return self.exited.lock().unwrap().remove(server) | host939_core::process::take_exit_mark(server); }
+        self.mgr.take_exit_unsaved(server)
+    }
+    fn profile(&self) -> host939_cluster::HostProfile {
+        host939_cluster::HostProfile { cpu: "CPU de prueba".into(), cores: 4, ram_total_mb: std::env::var("H939_RAM").ok().and_then(|s| s.parse().ok()).unwrap_or(16384), ram_free_mb: 8192, cpu_score: Some(self.score()), disk_free_gb: Some(100.0) }
     }
     fn score(&self) -> u32 { std::env::var("H939_SCORE").ok().and_then(|s| s.parse().ok()).unwrap_or(100) }
     fn allow_hosting(&self, _: &str) -> bool { std::env::var("H939_NO_HOST").is_err() }
     fn note(&self, server: &str, message: &str) { say("##", &format!("[{}] {message}", &server[..server.len().min(8)])); }
     fn changed(&self, _: &str) {}
+}
+
+mod redteam {
+    //! Herramientas de la prueba ofensiva: hablan el protocolo «a mano», como lo haría un
+    //! cliente modificado. Solo existen en el nodo de pruebas, no en la app.
+    use host939_cluster::{cert, wire};
+    use iroh::{Endpoint, EndpointAddr, EndpointId};
+    use serde_json::{json, Value};
+    use std::time::Duration;
+
+    fn alpn(name: &str) -> &'static [u8] {
+        match name {
+            "ctrl" => host939_cluster::ALPN_CTRL, "sync" => host939_cluster::ALPN_SYNC, "mc" => host939_cluster::ALPN_MC,
+            "bridge" => host939_cluster::ALPN_BRIDGE, "join" => host939_cluster::ALPN_JOIN, "files" => host939_cluster::files::ALPN_FILES,
+            "friend" => host939_cluster::friends::ALPN_FRIEND, "voice" => host939_cluster::ALPN_VOICE,
+            _ => b"939host/desconocido/9",
+        }
+    }
+    /// Direcciones que el atacante conoce por fuera del protocolo (misma red, captura de tráfico).
+    static KNOWN: std::sync::Mutex<Vec<EndpointAddr>> = std::sync::Mutex::new(Vec::new());
+    pub fn know(addr: &str) -> Result<Value, String> {
+        let a: EndpointAddr = serde_json::from_str(addr).map_err(|e| e.to_string())?;
+        KNOWN.lock().unwrap().push(a);
+        Ok(json!(true))
+    }
+    fn addr_of(id: EndpointId) -> EndpointAddr {
+        KNOWN.lock().unwrap().iter().rev().find(|a| a.id == id).cloned().unwrap_or_else(|| EndpointAddr::new(id))
+    }
+    async fn open(ep: &Endpoint, node: &str, a: &str) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream), String> {
+        let id: EndpointId = node.parse().map_err(|_| "id inválido".to_string())?;
+        let c = tokio::time::timeout(Duration::from_secs(10), ep.connect(addr_of(id), alpn(a))).await.map_err(|_| "sin respuesta".to_string())?.map_err(|e| format!("conexión rechazada: {e}"))?;
+        c.open_bi().await.map_err(|e| e.to_string())
+    }
+    /// Manda `n` pedidos iguales por una misma conexión, uno tras otro; devuelve cuántos fueron
+    /// rechazados por el límite de pedidos.
+    pub async fn flood(ep: &Endpoint, node: &str, a: &str, body: &str, n: usize) -> Result<Value, String> {
+        let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let id: EndpointId = node.parse().map_err(|_| "id inválido".to_string())?;
+        let c = tokio::time::timeout(Duration::from_secs(10), ep.connect(addr_of(id), alpn(a))).await.map_err(|_| "sin respuesta".to_string())?.map_err(|e| format!("conexión rechazada: {e}"))?;
+        let (mut limited, mut answered, mut stop, mut first_err) = (0usize, 0usize, None::<String>, None::<String>);
+        for _ in 0..n {
+            let (mut s, mut r) = match c.open_bi().await { Ok(x) => x, Err(e) => { stop = Some(format!("abrir: {e}")); break } };
+            if let Err(e) = wire::write_msg(&mut s, &v).await { stop = Some(format!("escribir: {e}")); break; }
+            let _ = s.finish();
+            let got = tokio::time::timeout(Duration::from_secs(5), wire::read_msg::<_, Value>(&mut r)).await;
+            if let Ok(Err(e)) = &got { if first_err.is_none() { first_err = Some(e.to_string()); } }
+            if let Ok(Ok(resp)) = got {
+                answered += 1;
+                if resp["msg"].as_str().unwrap_or("").contains("Demasiados pedidos") { limited += 1; }
+            }
+        }
+        Ok(json!({ "answered": answered, "limited": limited, "stop": stop, "error": first_err }))
+    }
+    pub async fn raw(ep: &Endpoint, node: &str, a: &str, body: &str) -> Result<Value, String> {
+        let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let (mut s, mut r) = open(ep, node, a).await?;
+        wire::write_msg(&mut s, &v).await.map_err(|e| e.to_string())?;
+        let _ = s.finish();
+        match tokio::time::timeout(Duration::from_secs(15), wire::read_msg::<_, Value>(&mut r)).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Ok(json!({ "closed": e.to_string() })),
+            Err(_) => Ok(json!({ "closed": "sin respuesta" })),
+        }
+    }
+    pub async fn raw_frames(ep: &Endpoint, node: &str, a: &str, body: &str, n: usize) -> Result<Value, String> {
+        let v: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+        let (mut s, mut r) = open(ep, node, a).await?;
+        wire::write_msg(&mut s, &v).await.map_err(|e| e.to_string())?;
+        let _ = s.finish();
+        let mut sizes = vec![];
+        for _ in 0..n {
+            match tokio::time::timeout(Duration::from_secs(10), wire::read_frame(&mut r, 64 * 1024 * 1024)).await {
+                Ok(Ok(f)) => sizes.push(f.len()),
+                _ => break,
+            }
+        }
+        Ok(json!(sizes))
+    }
+    pub async fn raw_bytes(ep: &Endpoint, node: &str, a: &str, hexs: &str) -> Result<Value, String> {
+        let bytes = hex::decode(hexs).map_err(|e| e.to_string())?;
+        let (mut s, mut r) = open(ep, node, a).await?;
+        s.write_all(&bytes).await.map_err(|e| e.to_string())?;
+        let _ = s.finish();
+        let got = tokio::time::timeout(Duration::from_secs(5), r.read_to_end(1 << 20)).await;
+        Ok(json!({ "replyBytes": got.ok().and_then(|x| x.ok()).map(|b| b.len()).unwrap_or(0) }))
+    }
+    pub async fn forge(ep: &Endpoint, secret: &[u8; 32], sid: &str, to: &str, kind: &str, host: &str, epoch: Option<u64>) -> Result<Value, String> {
+        let cur = host939_core::lease::read(sid).ok_or("sin permiso")?;
+        let key = iroh::SecretKey::from_bytes(secret);
+        let me = key.public().to_string();
+        let k: host939_core::lease::LeaseKind = serde_json::from_value(json!(kind)).map_err(|e| e.to_string())?;
+        let mut l = host939_core::lease::Lease {
+            epoch: epoch.unwrap_or(cur.epoch + 1), host: if host == "yo" { me.clone() } else { host.to_string() }, host_name: "forjado".into(),
+            state: host939_core::lease::LeaseState::Hosting, since: chrono::Local::now().to_rfc3339(), required: (0, 0), kind: k,
+            issuer: me, prev: Some((cur.epoch, cur.host.clone(), cur.state)), votes: vec![], sig: None,
+        };
+        cert::sign(&key, sid, &mut l);
+        raw(ep, to, "ctrl", &json!({ "t": "lease", "server": sid, "lease": l }).to_string()).await
+    }
+    pub async fn replay(ep: &Endpoint, sid: &str, to: &str, idx: usize) -> Result<Value, String> {
+        let log = host939_core::lease::history(sid);
+        let l = log.get(idx).ok_or("no hay ese permiso en el historial")?;
+        raw(ep, to, "ctrl", &json!({ "t": "lease", "server": sid, "lease": l }).to_string()).await
+    }
+    pub async fn remote_info(ep: &Endpoint, node: &str) -> Result<Value, String> {
+        let id: EndpointId = node.parse().map_err(|_| "id inválido".to_string())?;
+        let info = ep.remote_info(id).await;
+        let addrs: Vec<String> = info.map(|i| i.addrs().map(|a| format!("{:?}", a.addr())).collect()).unwrap_or_default();
+        Ok(json!(addrs))
+    }
 }
 
 fn arg(name: &str) -> Option<String> {
@@ -115,15 +253,24 @@ async fn main() {
     paths::init(root.clone().into()).expect("init");
     if let Some(j) = arg("--java25") {
         let link = paths::runtimes().join("java-25");
+        #[cfg(unix)]
         if !link.exists() { let _ = std::os::unix::fs::symlink(j, link); }
+        #[cfg(not(unix))]
+        let _ = (j, link);
     }
     let node_id = identity::load_or_create_node().expect("identidad");
     let secret = identity::node_secret().unwrap();
-    let local = Arc::new(Local { mgr: Manager::new(Arc::new(NoEvents)), probe: Probe::new(), fake, name: name.clone(), fakes: Default::default(), rt: tokio::runtime::Handle::current() });
-    let timing = if std::env::var("H939_FAST").is_ok() {
-        Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15) }
+    let local = Arc::new(Local { mgr: Manager::new(Arc::new(NoEvents)), probe: Probe::new(), fake, name: name.clone(), fakes: Default::default(), exited: Default::default(), rt: tokio::runtime::Handle::current() });
+    // H939_FAST acelera los tiempos para las pruebas; H939_REAL_TIMING usa los del producto (para
+    // medir consumo en reposo).
+    let timing = if std::env::var("H939_FAST").is_ok() && std::env::var("H939_REAL_TIMING").is_err() {
+        Timing { poll: Duration::from_millis(700), host_dead: Duration::from_secs(7), fence: Duration::from_secs(4), seen_window: Duration::from_secs(60), release_wait: Duration::from_secs(15), request_ttl: Duration::from_secs(std::env::var("H939_REQUEST_TTL").ok().and_then(|v| v.parse().ok()).unwrap_or(120)), ownership_wait: Duration::from_secs(std::env::var("H939_OWNERSHIP_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(20)) }
     } else { Timing::default() };
-    let node = GroupNode::start(secret, &name, host939_p2p::Relays::Disabled, local.clone(), timing).await.expect("nodo");
+    // --relays: igual que la app (conexión directa y relays públicos solo como último recurso).
+    // --private: modo privado (solo relays, sin transporte IP propio).
+    let relays = if std::env::args().any(|a| a == "--private") { host939_p2p::Relays::Private }
+        else if std::env::args().any(|a| a == "--relays") { host939_p2p::Relays::PublicFallback } else { host939_p2p::Relays::Disabled };
+    let node = GroupNode::start(secret, &name, relays, local.clone(), timing).await.expect("nodo");
     assert_eq!(node.id(), node_id.node_id);
     say("##", &format!("listo {}", node.id()));
 
@@ -144,7 +291,7 @@ async fn main() {
                         name: p(1), description: String::new(), mc_version: "26.2".into(), loader: Loader::Vanilla, memory_mb: 1536,
                         difficulty: "normal".into(), gamemode: "creative".into(), max_players: 4, port: p(2).parse().unwrap_or(25700),
                         online_mode: false, whitelist: false, view_distance: 3, simulation_distance: 3, level_seed: "939".into(),
-                        accept_eula: true, import_world_path: None,
+                        accept_eula: true, import_world_path: None, optimize: vec![],
                     };
                     let cfg = instance::create(input, 8192).await.map_err(|e| e.message)?;
                     if fake {
@@ -155,6 +302,12 @@ async fn main() {
                         if !c.installed { return Err(format!("instalación: {:?}", c.install_error)); }
                     }
                     Ok(serde_json::json!(cfg.id))
+                }
+                "onlinemode" => {
+                    let mut c = instance::load(&p(1)).map_err(|e| e.message)?;
+                    c.online_mode = p(2) == "1";
+                    instance::save(&c).map_err(|e| e.message)?;
+                    Ok(serde_json::json!(true))
                 }
                 "setport" => {
                     let mut c = instance::load(&p(1)).map_err(|e| e.message)?;
@@ -180,19 +333,172 @@ async fn main() {
                     std::fs::write(paths::server_run_dir(&p(1)).join("world").join(p(2)), p(3)).map_err(|e| e.to_string())?;
                     Ok(serde_json::json!(true))
                 }
+                // Copia vieja en disco de una PC que no aloja (como la que queda de un traspaso anterior).
+                "writestale" => {
+                    let w = paths::server_run_dir(&p(1)).join("world");
+                    std::fs::create_dir_all(&w).map_err(|e| e.to_string())?;
+                    if !w.join("level.dat").exists() { std::fs::write(w.join("level.dat"), b"viejo").map_err(|e| e.to_string())?; }
+                    std::fs::write(w.join(p(2)), p(3)).map_err(|e| e.to_string())?;
+                    Ok(serde_json::json!(true))
+                }
                 "read" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_run_dir(&p(1)).join("world").join(p(2))).ok())),
                 "snapshot" => { let (l, s) = (local.clone(), p(1)); tokio::task::spawn_blocking(move || l.snapshot(&s, "prueba", "auto")).await.unwrap().map(|i| serde_json::to_value(i).unwrap()) }
+                // Punto «manual» como el botón de la interfaz (en una PC que no aloja queda como copia local).
+                "manualsnap" => { let (l, s) = (local.clone(), p(1)); tokio::task::spawn_blocking(move || l.snapshot(&s, "manual de prueba", "manual")).await.unwrap().map(|i| serde_json::to_value(i).unwrap()) }
+                // Simple Voice Chat simulado en esta PC: un jar con su nombre, su configuración y un eco UDP.
+                "fakevoice" => {
+                    let run = paths::server_run_dir(&p(1));
+                    std::fs::create_dir_all(run.join("mods")).map_err(|e| e.to_string())?;
+                    std::fs::create_dir_all(run.join("config/voicechat")).map_err(|e| e.to_string())?;
+                    std::fs::write(run.join("mods/voicechat-fabric-prueba.jar"), b"jar de prueba").map_err(|e| e.to_string())?;
+                    std::fs::write(run.join("config/voicechat/voicechat-server.properties"), format!("port={}\n", p(2))).map_err(|e| e.to_string())?;
+                    let sock = tokio::net::UdpSocket::bind(("127.0.0.1", p(2).parse::<u16>().unwrap_or(0))).await.map_err(|e| e.to_string())?;
+                    tokio::spawn(async move { let mut b = vec![0u8; 2048]; while let Ok((n, a)) = sock.recv_from(&mut b).await { let mut r = b"eco:".to_vec(); r.extend_from_slice(&b[..n]); let _ = sock.send_to(&r, a).await; } });
+                    Ok(serde_json::json!(true))
+                }
+                "voiceroute" => node.open_voice(&p(1), std::net::SocketAddr::from(([127, 0, 0, 1], p(2).parse::<u16>().unwrap_or(0)))).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "finvite" => node.friend_invite().map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "fadd" => node.friend_add(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
+                "freqs" => Ok(serde_json::to_value(node.friend_requests()).unwrap()),
+                "fanswer" => node.friend_answer(&p(1), p(2) == "si").await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "flist" => Ok(serde_json::to_value(node.friends()).unwrap()),
+                "fsend" => node.friend_send(&p(1), &parts[2..].join(" ")).await.map(|d| serde_json::json!(d)).map_err(|e| e.to_string()),
+                "fchat" => Ok(serde_json::to_value(node.friend_chat(&p(1))).unwrap()),
+                "fblock" => node.friend_remove(&p(1), true).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "gcreate" => node.group_create(&p(1), &parts[2..].iter().map(|x| x.to_string()).collect::<Vec<_>>()).await.map(|i| serde_json::json!(i)).map_err(|e| e.to_string()),
+                "gsend" => node.group_send(&p(1), &parts[2..].join(" ")).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
+                "gchat" => Ok(serde_json::to_value(node.group_chat(&p(1))).unwrap()),
+                "glist" => Ok(serde_json::to_value(node.groups()).unwrap()),
+                "grename" => node.group_rename(&p(1), &parts[2..].join(" ")).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "gleave" => node.group_leave(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "gtype" => { node.typing(&p(1), p(2) == "1").await; Ok(serde_json::json!(true)) }
+                "fpresence" => { node.presence_once().await; Ok(serde_json::json!(true)) }
+                "grantop" => node.grant_mc_op(&p(1), &p(2), &p(3)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "revokeop" => node.revoke_mc_op(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                // Consola de esta PC, como en la app: el comando va al servidor y un op/deop de la
+                // propietaria actualiza la lista firmada.
+                "console" => {
+                    let cmd = parts[2..].join(" ");
+                    local.command(&p(1), &cmd).and_then(|_| match host939_core::players::op_command(&cmd) {
+                        Some((g, n)) => node.local_op_change(&p(1), &n, g).map_err(|e| e.to_string()),
+                        None => Ok(()),
+                    }).map(|_| serde_json::json!(true))
+                }
+                "ops" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_run_dir(&p(1)).join("ops.json")).unwrap_or_default())),
+                "latest" => Ok(serde_json::to_value(snapshots::latest(&p(1))).unwrap()),
                 "snapshots" => Ok(serde_json::to_value(snapshots::list(&p(1))).unwrap()),
                 "handover" => node.handover(&p(1), parts.get(2).map(|s| s.as_str())).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
                 "release" => node.release(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
                 "take" => node.take_here(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
                 "status" => Ok(serde_json::to_value(node.status(&p(1)).await).unwrap()),
+                // Conexión por IP: interruptor de la propietaria, decisión de esta PC y entradas.
+                "external" => node.set_external_access(&p(1), p(2) == "1").map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "consent" => { let mut st = host939_core::settings::load(); st.public_entrance = p(1) == "1"; host939_core::settings::save(&st).map_err(|e| e.message)?; node.sync_entrances().await; Ok(serde_json::json!(true)) }
+                "entport" => host939_core::access::set_entrance_port(&p(1), p(2).parse().unwrap_or(0)).map(|_| serde_json::json!(true)).map_err(|e| e.message),
+                "entrance" => { node.sync_entrances().await; Ok(serde_json::to_value(node.entrance_info(&p(1))).unwrap()) }
+                "entrances" => Ok(serde_json::to_value(node.entrances(&p(1))).unwrap()),
                 "route" => node.open_route(&p(1), p(2).parse().unwrap_or(0)).await.map(|port| serde_json::json!(port)).map_err(|e| e.to_string()),
                 "online" => Ok(serde_json::json!(if fake { local.is_running(&p(1)) } else { local.mgr.runtime(&p(1)).lock().unwrap().status() == RunStatus::Running })),
                 "running" => Ok(serde_json::json!(local.is_running(&p(1)))),
                 "pid" => Ok(serde_json::json!(local.mgr.runtime(&p(1)).lock().unwrap().pid)),
                 "sync" => { node.sync_now(&p(1)).await; Ok(serde_json::json!(true)) }
                 "quit" => Ok(serde_json::json!(node.quit().await)),
+                "rename" => { node.set_identity(&p(1), &p(2)); Ok(serde_json::json!(true)) }
+                "playerop" => node.player_op(&p(1), serde_json::json!({ "kind": p(2), "name": "Steve" })).await.map_err(|e| e.to_string()),
+                "stopremote" => node.stop_on_host(&p(1)).await.map(|t| serde_json::json!(t)).map_err(|e| e.to_string()),
+                "request" => node.request_host(&p(1)).await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
+                "cancelreq" => node.cancel_host_request(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "answer" => node.answer_host_request(&p(1), p(2) == "si").await.map(|n| serde_json::json!(n)).map_err(|e| e.to_string()),
+                // Administración remota de archivos (en la PC anfitriona).
+                "fls" => node.files_list(&p(1), parts.get(2).map(|s| s.as_str()).unwrap_or("")).await.map(|v| serde_json::to_value(v).unwrap()).map_err(|e| e.to_string()),
+                "fmkdir" => node.files_mkdir(&p(1), &p(2)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "frm" => node.files_delete(&p(1), &p(2)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fmv" => node.files_transfer(&p(1), &p(2), &p(3), true, parts.get(4).map(|s| s == "reemplazar").unwrap_or(false)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fcp" => node.files_transfer(&p(1), &p(2), &p(3), false, parts.get(4).map(|s| s == "reemplazar").unwrap_or(false)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fget" => node.files_download(&p(1), &p(2), std::path::Path::new(&p(3)), |_, _| true).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fput" => node.files_upload(&p(1), std::path::Path::new(&p(2)), &p(3), parts.get(4).map(|s| s == "reemplazar").unwrap_or(false), |_, _| true).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "fputcancel" => node.files_upload(&p(1), std::path::Path::new(&p(2)), &p(3), false, |sent, _| sent < 1024 * 1024).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "exists" => Ok(serde_json::json!(paths::server_run_dir(&p(1)).join(p(2)).exists())),
+                "sha1" => Ok(serde_json::json!(host939_core::net::sha1_file(&paths::server_run_dir(&p(1)).join(p(2))).ok())),
+                "lsdir" => Ok(serde_json::json!(std::fs::read_dir(paths::server_run_dir(&p(1)).join(p(2))).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>()).unwrap_or_default())),
+                "logo" => {
+                    // PNG mínimos válidos (cabecera + IHDR + IEND) de 256×256 y 64×64.
+                    let png = |w: u32| { let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13]; v.extend_from_slice(b"IHDR"); v.extend_from_slice(&w.to_be_bytes()); v.extend_from_slice(&w.to_be_bytes()); v.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]); v.extend_from_slice(&[0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]); v };
+                    host939_core::logo::set(&p(1), "preset:3", &png(256), &png(64)).map_err(|e| e.message).and_then(|_| node.refresh_card(&p(1)).map(|b| serde_json::json!(b)).map_err(|e| e.to_string()))
+                }
+                "card" => Ok(host939_core::network::load_share(&p(1)).card.unwrap_or_default()),
+                "invitefor" => node.invite_for(&p(1), &p(2), "prueba", p(3).parse().unwrap_or(24)).map(|t| serde_json::json!(t)).map_err(|e| e.to_string()),
+                "revoke" => node.revoke_invite(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "invites" => Ok(serde_json::to_value(host939_core::network::load_share(&p(1)).invites).unwrap()),
+                "expireinvites" => {
+                    // Solo pruebas: adelanta el vencimiento de todas las invitaciones de este nodo.
+                    let mut sh = host939_core::network::load_share(&p(1));
+                    for i in sh.invites.iter_mut() { i.expires_at = Some((chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339()); }
+                    host939_core::network::save_share(&p(1), &sh).map_err(|e| e.message)?;
+                    Ok(serde_json::json!(true))
+                }
+                "share_json" => Ok(serde_json::to_value(host939_core::network::load_share(&p(1))).unwrap()),
+                "remove" => node.remove_member(&p(1), &p(2)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "setrole" => {
+                    // La propietaria cambia el rol de una PC (firma una revisión nueva).
+                    let mut sh = host939_core::network::load_share(&p(1));
+                    for m in sh.members.iter_mut() { if m.node_id == p(2) { m.role = p(3); } }
+                    node.commit_share(&p(1), &mut sh).map(|_| serde_json::json!(true)).map_err(|e| e.to_string())
+                }
+                "transfer" => node.transfer_ownership(&p(1), &p(2)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "ownanswer" => node.answer_ownership(&p(1), p(2) == "si").await.map(|t| serde_json::json!(t)).map_err(|e| e.to_string()),
+                "owncancel" => node.cancel_ownership_offer(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "recoverycode" => node.create_recovery_code(&p(1)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "reccreate" => node.create_recovery_code(&p(1)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "recrotate" => node.rotate_recovery_code(&p(1), &p(2)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "recover" => node.recover_with_code(&p(1), &p(2)).await.map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "resetreq" => node.request_recovery_reset(&p(1)).map(|c| serde_json::json!(c)).map_err(|e| e.to_string()),
+                "resetfinish" => node.finish_recovery_reset(&p(1)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "successor" => node.set_successor(&p(1), parts.get(2).map(|s| s.as_str())).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "succstart" => node.start_succession(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "succcancel" => node.cancel_succession(&p(1)).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "succcomplete" => node.complete_succession(&p(1)).await.map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "succstatus" => Ok(serde_json::json!(node.succession_status(&p(1)))),
+                "lease" => Ok(serde_json::to_value(host939_core::lease::read(&p(1))).unwrap()),
+                "pendingmods" => Ok(serde_json::to_value(node.pending_mods(&p(1))).unwrap()),
+                "approvemods" => node.approve_mods(&p(1), &parts[2..]).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "rejectmods" => node.reject_mods(&p(1), &parts[2..], false).map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "quarantine" => Ok(serde_json::to_value(host939_core::modguard::quarantined(&p(1))).unwrap()),
+                "decisions" => Ok(serde_json::to_value(host939_core::modguard::decisions(&p(1))).unwrap()),
+                "modpolicy" => node.set_mod_policy(&p(1), p(2) == "confiar").map(|_| serde_json::json!(true)).map_err(|e| e.to_string()),
+                "putmod" => {
+                    // Simula instalar un mod en ESTA PC (lo hace su usuario, no llega de otra PC).
+                    let d = paths::server_run_dir(&p(1)).join("mods"); std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+                    std::fs::write(d.join(p(2)), parts[3..].join(" ")).map_err(|e| e.to_string())?; Ok(serde_json::json!(true))
+                }
+                "modsdir" => Ok(serde_json::json!(host939_core::modguard::jars(&paths::server_run_dir(&p(1)).join("mods")).keys().cloned().collect::<Vec<_>>())),
+                "leaselog" => Ok(serde_json::to_value(host939_core::lease::history(&p(1))).unwrap()),
+                "audit" => Ok(serde_json::json!(std::fs::read_to_string(paths::server_dir(&p(1)).join("audit.jsonl")).unwrap_or_default())),
+                "rejected" => Ok(serde_json::json!(node.rejected_count(&p(1)))),
+                /* ── Red team: un nodo malicioso manda mensajes a mano (sin la lógica del grupo) ── */
+                // raw <nodo> <alpn> <json>: un mensaje y su respuesta, tal cual.
+                "raw" => redteam::raw(node.endpoint(), &p(1), &p(2), &parts[3..].join(" ")).await,
+                // rawframes <nodo> <alpn> <json> <n>: mensaje y hasta n respuestas en tramas.
+                "rawframes" => redteam::raw_frames(node.endpoint(), &p(1), &p(2), &parts[3..parts.len() - 1].join(" "), parts.last().and_then(|x| x.parse().ok()).unwrap_or(1)).await,
+                // rawflood <nodo> <alpn> <json> <n>: n pedidos seguidos por una conexión.
+                "rawflood" => redteam::flood(node.endpoint(), &p(1), &p(2), &parts[3..parts.len() - 1].join(" "), parts.last().and_then(|x| x.parse().ok()).unwrap_or(1)).await,
+                // rawbytes <nodo> <alpn> <hex>: bytes arbitrarios (mensajes malformados).
+                "rawbytes" => redteam::raw_bytes(node.endpoint(), &p(1), &p(2), &p(3)).await,
+                // forge <sid> <destino> <tipo> <anfitriona> [época]: permiso firmado por ESTA PC con el
+                // tipo y la anfitriona que se quiera, encadenado al permiso actual, enviado a <destino>.
+                "forge" => redteam::forge(node.endpoint(), &secret, &p(1), &p(2), &p(3), &p(4), parts.get(5).and_then(|x| x.parse().ok())).await,
+                // replay <sid> <destino> <índice>: reenvía un permiso viejo del historial.
+                "replay" => redteam::replay(node.endpoint(), &p(1), &p(2), p(3).parse().unwrap_or(0)).await,
+                // replaylist <sid> <destino> <archivo>: hace circular una lista firmada guardada.
+                "savelist" => { std::fs::write(p(2), serde_json::to_vec(&host939_core::network::load_share(&p(1))).unwrap()).map_err(|e| e.to_string())?; Ok(serde_json::json!(true)) }
+                "remoteinfo" => redteam::remote_info(node.endpoint(), &p(1)).await,
+                "myaddr" => Ok(serde_json::to_value(node.addr()).unwrap()),
+                // knowaddr <json>: el atacante conoce la dirección de otra PC por fuera del protocolo.
+                "knowaddr" => redteam::know(&parts[1..].join(" ")),
+                "ticketinfo" => { let (a, _) = host939_p2p::parse_ticket(&p(1)).map_err(|e| e.to_string())?; Ok(serde_json::json!({ "ips": a.ip_addrs().count(), "relays": a.relay_urls().count() })) }
+                "peersfile" => Ok(serde_json::json!(std::fs::read_to_string(paths::root().join("peers.json")).unwrap_or_default())),
+                // cierres: avisos del último cierre no normal (como los ve la interfaz al abrir).
+                "cierres" => Ok(serde_json::to_value(host939_core::guardian::take_records()).unwrap()),
                 "exit" => { node.shutdown().await; say("@@", "{\"ok\":true,\"v\":\"bye\"}"); std::process::exit(0) }
                 other => Err(format!("orden desconocida: {other}")),
             }

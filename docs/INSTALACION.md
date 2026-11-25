@@ -7,7 +7,7 @@ archivos (no hace falta cuenta de GitHub):
 
 | Archivo | Cuándo |
 |---|---|
-| `939Host-<versión>-instalador.exe` | Lo recomendado. Instala para tu usuario, con accesos en Inicio y escritorio |
+| `939Host-<versión>-instalador.exe` | Lo recomendado. Instala para tu usuario, con acceso en Inicio y, opcional, en el escritorio |
 | `939Host-<versión>-portable.zip` | Para usar sin instalar (por ejemplo desde un pendrive). Descomprimí todo y abrí `939Host.exe` |
 
 Requisitos: Windows 10 u 11 de 64 bits, Microsoft Edge WebView2 (incluido en Windows 11 y en

@@ -1,0 +1,750 @@
+name: Pruebas en Windows
+
+# Pruebas reales en Windows Server 2025 (misma base que Windows 11) para la rama de desarrollo.
+# No publica nada: solo compila, prueba y guarda los archivos como artefactos de la ejecución.
+on:
+  push:
+    branches: [rediseno-v3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pruebas-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compilar:
+    name: Compilar instalador y portable
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Herramientas
+        timeout-minutes: 15
+        run: |
+          scripts/ci-apt.sh mingw-w64 nsis zip
+          rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: windows-gnu
+      - run: scripts/compilar-windows.sh
+        env:
+          # Compilación de prueba: habilita el puerto de depuración para la prueba de interfaz.
+          # Los releases se compilan sin esta característica.
+          CARGO_FEATURES: pruebas
+      - name: Interfaz (sintaxis y nombres globales repetidos)
+        run: node scripts/verificar-ui.js
+      - name: Sin secretos en el ejecutable
+        run: scripts/verificar-secretos.sh target/x86_64-pc-windows-gnu/release/939Host.exe
+      - run: scripts/empaquetar.sh "$(scripts/version.sh)"
+      # Distribución de PRUEBA para la actualización automática: raíz y clave generadas acá y
+      # descartadas al terminar (nunca la clave real). Firma el instalador y la portable de esta
+      # compilación como si fueran una release.
+      - name: Distribución de prueba firmada (clave descartable)
+        run: |
+          cargo build --locked -p host939-update --features propietario --bin 939publicar
+          k="$(mktemp -d)"
+          target/debug/939publicar iniciar-ci --carpeta "$k"
+          mkdir -p dist-prueba
+          python3 -c "import json,sys;json.dump({'raiz':json.load(open(sys.argv[1])),'url':'http://127.0.0.1:8939'},open('dist-prueba/distribucion.json','w'))" "$k/raiz-1.json"
+          # Mismo script que el workflow Release (ensayo del camino de publicación).
+          H939_CLAVE_PUBLICACION="$(cat "$k/clave-publicacion.secreta")" PUBLICAR_BIN=target/debug/939publicar \
+            scripts/firmar-actualizacion.sh "$(scripts/version.sh)" dist dist-prueba/distribucion.json "$k/raiz-1.json"
+          mv dist/estable.json dist-prueba/
+          cp "$k/raiz-1.json" dist-prueba/
+          rm -rf "$k"
+          ls -la dist-prueba
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: distribucion-prueba
+          path: dist-prueba
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: 939Host-windows-prueba
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          retention-days: 14
+
+  # Versión de prueba para las PCs del equipo: igual que una release (sin la característica
+  # `pruebas`, revisada con --release), pero solo como artefacto de esta ejecución. No crea
+  # etiquetas ni releases. Queda identificada por rama y commit en VERSION-DE-PRUEBA.txt.
+  version-de-prueba:
+    name: Versión de prueba (compilación de entrega)
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/rediseno-v3'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Herramientas
+        timeout-minutes: 15
+        run: |
+          scripts/ci-apt.sh mingw-w64 nsis zip
+          rustup toolchain install
+      # Sin caché: compilación limpia, como las releases.
+      - run: scripts/compilar-windows.sh
+      - name: Sin secretos, datos personales ni ganchos de prueba
+        run: scripts/verificar-secretos.sh target/x86_64-pc-windows-gnu/release/939Host.exe --release
+      - run: scripts/empaquetar.sh "$(scripts/version.sh)"
+      - name: Identificación
+        run: |
+          v="$(scripts/version.sh)"
+          {
+            echo "939 Host — versión de prueba (no es una release)"
+            echo "Identificador: ${v}+prueba.${GITHUB_SHA::12}"
+            echo "Rama: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Ejecución: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "Firma digital: NO (sin firmar; Smart App Control la bloquea y SmartScreen avisa)"
+            echo "Requisitos: Windows 10 u 11 de 64 bits con WebView2 (incluido en Windows 11). Probada de forma automática solo en Windows Server 2025."
+            echo
+            echo "SHA-256:"
+            cat dist/SHA256SUMS.txt
+          } > dist/VERSION-DE-PRUEBA.txt
+          cat dist/VERSION-DE-PRUEBA.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: 939Host-version-de-prueba
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+            dist/VERSION-DE-PRUEBA.txt
+          retention-days: 30
+
+  # Los archivos de la versión de prueba también en el registro (base64 con su SHA-256), para
+  # poder bajarlos desde donde no se puede descargar el artefacto. No publica nada.
+  version-de-prueba-registro:
+    name: Versión de prueba en el registro
+    runs-on: ubuntu-24.04
+    needs: version-de-prueba
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: 939Host-version-de-prueba
+          path: dist
+      - run: |
+          cd dist && sha256sum *.exe *.zip
+          for f in *.exe *.zip SHA256SUMS.txt; do echo "@@INICIO $f"; base64 -w 120 "$f"; echo "@@FIN $f"; done
+
+  version-de-prueba-windows:
+    name: Versión de prueba instalada en Windows
+    runs-on: windows-2025
+    needs: version-de-prueba
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: 939Host-version-de-prueba
+          path: dist
+      - name: Verificar SHA-256
+        shell: bash
+        run: cd dist && sha256sum -c <(grep -v payload/ SHA256SUMS.txt)
+      - name: Instalar, abrir, comprobar que no hay puerto de depuración y desinstalar
+        shell: pwsh
+        run: |
+          $inst = (Get-ChildItem dist\*-instalador.exe | Select-Object -First 1).FullName
+          Start-Process $inst -ArgumentList '/S' -Wait
+          $dir = "$env:LOCALAPPDATA\Programs\939 Host"
+          $exe = "$dir\939Host.exe"
+          if (!(Test-Path $exe)) { throw "No se instaló en $exe" }
+          # Aunque exista la variable, la compilación de entrega no abre el puerto de depuración.
+          $env:H939_E2E_DEVTOOLS_PORT = "9223"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 25
+          if ($p.HasExited) { throw "La app se cerró sola (código $($p.ExitCode))" }
+          $open = Get-NetTCPConnection -State Listen -LocalPort 9223 -ErrorAction SilentlyContinue
+          if ($open) { throw "La versión de entrega abrió el puerto de depuración" }
+          $listen = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $p.Id }
+          "Puertos TCP en escucha de la app: $(@($listen | ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" }) -join ', ')"
+          foreach ($l in $listen) { if ($l.LocalAddress -notin @('127.0.0.1', '::1')) { throw "La app escucha TCP fuera de esta PC: $($l.LocalAddress):$($l.LocalPort)" } }
+          $sig = Get-AuthenticodeSignature $exe
+          "Firma: $($sig.Status)"
+          Get-Process | Where-Object { $_.Path -like "$dir*" } | Stop-Process -Force
+          Start-Sleep 3
+          Start-Process "$dir\Desinstalar.exe" -ArgumentList '/S' -Wait -ErrorAction SilentlyContinue
+          Start-Sleep 5
+          if (Test-Path $exe) { throw "La desinstalación dejó el ejecutable" }
+          "✔ versión de prueba: instala, abre, sin puerto de depuración, desinstala"
+
+  actualizaciones-windows:
+    name: Actualizaciones y firma del propietario en Windows
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: actualizaciones-windows
+      - name: Verificación, descarga reanudable, herramienta del propietario y clave en CNG
+        run: cargo test --locked -p host939-update --features propietario -- --nocapture
+
+  nucleo-windows:
+    name: Núcleo, P2P y grupo en Windows (servidores reales)
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: windows-msvc
+      - name: Pruebas automáticas (incluye PCs congeladas y recuperación)
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster --features host939-cluster/pruebas -- --test-threads 1
+      - name: Loaders reales (Vanilla, Fabric, Forge, NeoForge)
+        if: ${{ !cancelled() }}
+        # Si Java heredara _JAVA_OPTIONS (se aplica después de la línea de comandos), con 2 MB de
+        # memoria ningún servidor arrancaría: prueba de que 939 Host no la pasa a sus procesos.
+        env:
+          _JAVA_OPTIONS: -Xmx2m
+        run: cargo test --locked -p host939-core --test e2e_real e2e_loaders -- --ignored --nocapture
+      - name: Modrinth real
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_modrinth -- --ignored --nocapture
+      - name: Protección de Mojang contra Log4Shell (descarga y huella reales)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_log4shell_archivos -- --ignored --nocapture
+      - name: Cambio de versión real (actualizar, mods, vuelta atrás)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_cambio_version -- --ignored --nocapture
+      - name: Mods de rendimiento (Fabric y NeoForge reales + Chunky)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_optimizacion -- --ignored --nocapture
+      - name: Mods de rendimiento en Fabric 1.14 (versión vieja, Java 8)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_optimizacion_fabric_vieja -- --ignored --nocapture
+      - name: Servidor desde un modpack (.mrpack real)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_modpack_mrpack -- --ignored --nocapture
+      - name: Administrador de archivos local
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test archivos -- --nocapture
+      - name: Perfil para jugar (.mrpack verificado contra Modrinth)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_perfil_mrpack -- --ignored --nocapture
+      - name: Preparar para jugar (Minecraft de prueba, nunca el real)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_preparar_para_jugar -- --ignored --nocapture
+      - name: Resource packs (servidor real, Modrinth real, obligatorio y opcional)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: cargo test --locked -p host939-core --test e2e_real e2e_resourcepacks -- --ignored --nocapture --exact
+      - name: Ítems de mods reales (nombres e íconos desde Modrinth)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test e2e_real e2e_items_de_mods -- --ignored --nocapture
+      - name: Direcciones .939host (archivo hosts real, nombre, 127.93.x.y)
+        if: ${{ !cancelled() }}
+        env:
+          H939_TEST_HOSTS: "1"
+        run: cargo test --locked -p host939-core --test direcciones -- --nocapture
+      - name: Papelera y copias de servidores
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test papelera --test copia_servidor -- --nocapture
+      - name: Ciclo completo, copias y restauración
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test server_lifecycle full_server_lifecycle -- --ignored --nocapture
+      - name: Jugadores y permisos
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test server_lifecycle players_and_permissions_real_server -- --ignored --nocapture
+      - name: Funciones del diseño v3
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-core --test v3_features -- --ignored --nocapture
+      - name: Modo privado con relays reales (la IP queda oculta para el grupo)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-cluster --features pruebas --test seguridad modo_privado_oculta_la_ip_real -- --ignored --nocapture
+      - name: Traspaso de anfitrión con servidores reales (dos PCs por P2P)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p host939-cluster --features pruebas --test multi_node real_minecraft_handover -- --ignored --nocapture
+      - name: Estado de Windows Defender y Firewall (y detecciones durante las pruebas)
+        if: always()
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $out = @()
+          $st = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if ($st) { $out += "Defender: servicio=$($st.AMServiceEnabled) antivirus=$($st.AntivirusEnabled) tiempo real=$($st.RealTimeProtectionEnabled) descargas=$($st.IoavProtectionEnabled) comportamiento=$($st.BehaviorMonitorEnabled)" } else { $out += "Defender: no disponible en esta máquina" }
+          Get-NetFirewallProfile -ErrorAction SilentlyContinue | ForEach-Object { $out += "Firewall $($_.Name): activo=$($_.Enabled)" }
+          $det = @(Get-MpThreatDetection -ErrorAction SilentlyContinue)
+          if ($det.Count) { $det | ForEach-Object { $out += "Detección: $($_.ThreatID) en $($_.Resources -join ', ')" } } else { $out += "Detecciones de Defender durante la corrida: ninguna" }
+          $out | ForEach-Object { Write-Output $_; Add-Content $env:GITHUB_STEP_SUMMARY "- $_" }
+          if ($det | Where-Object { ($_.Resources -join ' ') -match '939|host939|powershell' }) { throw "Defender detectó algo relacionado con 939 Host" }
+
+  app-windows:
+    name: App instalada en Windows (interfaz real)
+    runs-on: windows-2025
+    needs: compilar
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: 939Host-windows-prueba
+          path: dist
+      - name: Verificar SHA-256
+        shell: bash
+        run: cd dist && sha256sum -c <(grep -v payload/ SHA256SUMS.txt)
+      - name: Instalar la versión publicada (v0.9.0) para probar la actualización desde ella
+        timeout-minutes: 6
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.9.0 --repo "${{ github.repository }}" --pattern "*instalador*.exe" --pattern "SHA256SUMS.txt" --dir v090
+          $old = (Get-ChildItem v090\*.exe | Select-Object -First 1).FullName
+          $want = (Get-Content v090\SHA256SUMS.txt | Where-Object { $_ -match [regex]::Escape((Split-Path $old -Leaf)) }) -split '\s+' | Select-Object -First 1
+          if ((Get-FileHash $old).Hash -ne $want.ToUpper()) { throw "El instalador publicado de v0.9.0 no coincide con su SHA-256" }
+          Start-Process $old -ArgumentList '/S' -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          $root = "$env:LOCALAPPDATA\939Host"
+          # Se espera a que cree su identidad (en un runner lento tarda más de 15 s), hasta 90 s.
+          for ($i = 0; $i -lt 90 -and !(Test-Path "$root\identity\node.key") -and !$p.HasExited; $i++) { Start-Sleep 1 }
+          Start-Sleep 5
+          if ($p.HasExited) { throw "v0.9.0 se cerró al abrir" }
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          if (!(Test-Path "$root\identity\node.key")) { throw "v0.9.0 no creó su identidad" }
+          # Una preferencia elegida por la persona, para ver que la actualización la conserva.
+          $s = if (Test-Path "$root\settings.json") { Get-Content "$root\settings.json" -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
+          $s | Add-Member -NotePropertyName consoleFontSize -NotePropertyValue 15 -Force
+          $s | ConvertTo-Json -Depth 20 | Set-Content "$root\settings.json" -Encoding utf8
+          (Get-FileHash "$root\identity\node.key").Hash | Set-Content v090\identidad.txt
+          Write-Output "v0.9.0 instalada y usada: identidad y preferencias guardadas"
+      # La versión de prueba 1.0.0 (la que tienen instalada las PCs del equipo): se instala encima
+      # de v0.9.0 y se usa, para probar después la actualización desde ella sin perder datos.
+      - name: Instalar la versión de prueba 1.0.0 encima y usarla
+        timeout-minutes: 6
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 44940480301 --repo "${{ github.repository }}" -n 939Host-version-de-prueba -D v100 2>&1 | Out-Null
+          $old = Get-ChildItem v100\939Host-1.0.0-instalador.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$old) { Write-Output "::warning::El artefacto de la versión de prueba 1.0.0 ya no está disponible (vencido); se sigue desde v0.9.0."; exit 0 }
+          $want = ((Get-Content v100\SHA256SUMS.txt | Where-Object { $_ -match '939Host-1.0.0-instalador.exe' }) -split '\s+')[0]
+          if ((Get-FileHash $old.FullName).Hash -ne $want.ToUpper()) { throw "El instalador de 1.0.0 no coincide con su SHA-256" }
+          Start-Process $old.FullName -ArgumentList '/S' -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "1.0.0 se cerró al abrir sobre los datos de v0.9.0" }
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          $v = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\939Host").DisplayVersion
+          if ($v -ne "1.0.0") { throw "Se esperaba 1.0.0 instalada y figura $v" }
+          if ((Get-FileHash "$env:LOCALAPPDATA\939Host\identity\node.key").Hash -ne (Get-Content v090\identidad.txt).Trim()) { throw "1.0.0 cambió la identidad" }
+          Write-Output "✔ 1.0.0 instalada sobre v0.9.0 y usada: identidad intacta"
+      # La 1.1.0 (la versión con actualizaciones automáticas que tienen instalada las PCs del equipo),
+      # tal cual se entregó: se instala encima de 1.0.0, se usa, y después la versión nueva encima.
+      - name: Instalar la versión 1.1.0 entregada encima y usarla
+        timeout-minutes: 6
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 44967631258 --repo "${{ github.repository }}" -n 939Host-version-de-prueba -D v110 2>&1 | Out-Null
+          $old = Get-ChildItem v110\939Host-1.1.0-instalador.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$old) { Write-Output "::warning::El artefacto de la versión 1.1.0 entregada ya no está disponible (vencido)."; exit 0 }
+          if ((Get-FileHash $old.FullName).Hash -ne "CB0BC416E3BC593CCAF7CE824167A6351372A09692A8ED7005C48E0F5ECB4681") { throw "El instalador de 1.1.0 no es el que se entregó" }
+          Start-Process $old.FullName -ArgumentList '/S' -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "1.1.0 se cerró al abrir" }
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          $v = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\939Host").DisplayVersion
+          if ($v -ne "1.1.0") { throw "Se esperaba 1.1.0 instalada y figura $v" }
+          if ((Get-FileHash "$env:LOCALAPPDATA\939Host\identity\node.key").Hash -ne (Get-Content v090\identidad.txt).Trim()) { throw "1.1.0 cambió la identidad" }
+          Write-Output "✔ 1.1.0 entregada, instalada sobre 1.0.0 y usada: identidad intacta"
+      - name: Instalar sin administrador (silencioso)
+        shell: pwsh
+        run: |
+          $inst = Get-ChildItem dist\*-instalador.exe | Select-Object -First 1
+          Start-Process $inst.FullName -ArgumentList '/S' -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          if (!(Test-Path $exe)) { throw "No se instaló en $exe" }
+          Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - run: pip install playwright==1.48.0 pillow psutil
+      - name: Actualización desde v0.9.0, 1.0.0 y 1.1.0 conserva identidad y preferencias
+        shell: pwsh
+        run: |
+          $root = "$env:LOCALAPPDATA\939Host"
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "La versión nueva se cerró al abrir sobre los datos de v0.9.0" }
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          if ((Get-FileHash "$root\identity\node.key").Hash -ne (Get-Content v090\identidad.txt).Trim()) { throw "La actualización cambió la identidad de la PC (se perdería el grupo)" }
+          $s = Get-Content "$root\settings.json" -Raw | ConvertFrom-Json
+          if ($s.consoleFontSize -ne 15) { throw "La actualización perdió una preferencia del usuario" }
+          if (!(Test-Path "$root\version-datos")) { throw "No quedó registrada la versión de los datos" }
+          Write-Output "✔ v0.9.0 → nueva: identidad intacta, preferencia conservada, datos versionados ($(Get-Content $root\version-datos))"
+      - name: Abrir la app y usarla como una persona
+        timeout-minutes: 35
+        shell: pwsh
+        env:
+          H939_E2E_DEVTOOLS_PORT: "9222"
+          OUT: capturas
+        run: |
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep 8
+          if ($p.HasExited) { throw "La app se cerró al abrir (código $($p.ExitCode))" }
+          Get-Process 939Host, msedgewebview2 -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, MainWindowTitle
+          try { (Invoke-WebRequest http://127.0.0.1:9222/json/version -TimeoutSec 5).Content } catch { "Puerto de depuración: $_" }
+          New-Item -ItemType Directory -Force capturas | Out-Null
+          python ci/windows/ui_e2e.py
+          $code = $LASTEXITCODE
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("capturas\escritorio-windows.png")
+          Get-Process java -ErrorAction SilentlyContinue | Format-Table Id, CPU, WS
+          python ci/windows/volcar_capturas.py capturas
+          if ($code -ne 0) { exit $code }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: capturas-windows
+          path: capturas
+          retention-days: 14
+      - name: Registro de la app
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem "$env:LOCALAPPDATA\939Host" -Recurse -Include *.log | ForEach-Object { "== $($_.FullName)"; Get-Content $_ -Tail 60 }
+      - name: Portable abre sin instalar
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process java -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          Expand-Archive (Get-ChildItem dist\*-portable.zip | Select-Object -First 1).FullName portable
+          $p = Start-Process portable\939Host.exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { throw "La portable se cerró (código $($p.ExitCode))" }
+          Stop-Process $p -Force
+      - name: Actualizar, reinstalar e instalación interrumpida
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process java -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          $inst = (Get-ChildItem dist\*-instalador.exe | Select-Object -First 1).FullName
+          $exe = "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe"
+          $lvl = Get-ChildItem "$env:LOCALAPPDATA\939Host\servers\*\server\world\level.dat" | Select-Object -First 1
+          if (!$lvl) { throw "No hay un mundo de la prueba anterior para comprobar que se conserva" }
+          $mundo = (Get-FileHash $lvl.FullName).Hash
+          function Arranca($what) {
+            $p = Start-Process $exe -PassThru
+            Start-Sleep 12
+            if ($p.HasExited) { throw "${what}: 939 Host se cerró al abrir (código $($p.ExitCode))" }
+            Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep 3
+          }
+          function Una-Sola($what) {
+            $lnk = @(Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "939 Host*.lnk")
+            if ($lnk.Count -ne 1) { throw "${what}: hay $($lnk.Count) accesos directos de 939 Host en el menú Inicio" }
+            $keys = @(Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq "939 Host" })
+            if ($keys.Count -ne 1) { throw "${what}: hay $($keys.Count) entradas de 939 Host en Programas instalados" }
+            if ((Get-FileHash $lvl.FullName).Hash -ne $mundo) { throw "${what}: cambió el mundo del usuario" }
+          }
+          # 1) Con 939 Host abierto, el instalador no toca nada (pide salir primero).
+          $app = Start-Process $exe -PassThru
+          Start-Sleep 10
+          $antes = (Get-Item $exe).LastWriteTimeUtc
+          Start-Process $inst -ArgumentList '/S' -Wait
+          if ($app.HasExited) { throw "El instalador cerró 939 Host abierto" }
+          if ((Get-Item $exe).LastWriteTimeUtc -ne $antes) { throw "El instalador reemplazó 939 Host mientras estaba abierto" }
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          Write-Output "1) Con 939 Host abierto, el instalador no reemplazó nada."
+          # 2) Actualizar sobre la instalación existente.
+          Start-Process $inst -ArgumentList '/S' -Wait
+          if (!(Test-Path $exe)) { throw "La actualización dejó la instalación sin el programa" }
+          Una-Sola "actualización"
+          Arranca "actualización"
+          Write-Output "2) Actualización sobre la instalación existente: arranca, un acceso, una entrada, mundo intacto."
+          # 3) Instalación cortada a la mitad y vuelta a ejecutar.
+          $p = Start-Process $inst -ArgumentList '/S' -PassThru
+          Start-Sleep -Milliseconds 400
+          if (!$p.HasExited) { Stop-Process $p -Force }
+          Start-Sleep 2
+          Start-Process $inst -ArgumentList '/S' -Wait
+          if (!(Test-Path $exe)) { throw "Después de una instalación cortada, la siguiente no dejó el programa" }
+          Una-Sola "instalación cortada y repetida"
+          Arranca "instalación cortada y repetida"
+          Write-Output "3) Instalación cortada y repetida: arranca, un acceso, una entrada, mundo intacto."
+          # 4) Actualización desde la app: el instalador espera a que 939 Host se cierre (/ESPERAR),
+          #    instala y lo vuelve a abrir (/REABRIR). Si la app nunca se cierra, no reemplaza nada.
+          $app = Start-Process $exe -PassThru
+          Start-Sleep 10
+          $antes = (Get-Item $exe).LastWriteTimeUtc
+          $p = Start-Process $inst -ArgumentList '/S', '/ESPERAR', '/REABRIR' -PassThru
+          Start-Sleep 8
+          if ($p.HasExited) { throw "Con /ESPERAR el instalador no esperó a que se cerrara 939 Host" }
+          if ((Get-Item $exe).LastWriteTimeUtc -ne $antes) { throw "Con /ESPERAR reemplazó 939 Host mientras seguía abierto" }
+          Stop-Process $app -Force
+          $p.WaitForExit(120000) | Out-Null
+          if (!$p.HasExited) { throw "El instalador no terminó después de cerrar 939 Host" }
+          Start-Sleep 8
+          $re = @(Get-Process 939Host -ErrorAction SilentlyContinue)
+          if ($re.Count -lt 1) { throw "Con /REABRIR no se volvió a abrir 939 Host" }
+          Una-Sola "actualización desde la app"
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          Write-Output "4) Actualización desde la app: esperó al cierre, instaló, volvió a abrir; mundo intacto."
+          # 5) Acceso directo en el escritorio: por defecto sí; se puede desactivar y se recuerda.
+          $desk = [Environment]::GetFolderPath("Desktop") + "\939 Host.lnk"
+          if (!(Test-Path $desk)) { throw "Sin elegir nada debería haber acceso en el escritorio" }
+          Start-Process $inst -ArgumentList '/S', '/ESCRITORIO=0' -Wait
+          if (Test-Path $desk) { throw "Con /ESCRITORIO=0 quedó el acceso del escritorio" }
+          Start-Process $inst -ArgumentList '/S' -Wait
+          if (Test-Path $desk) { throw "La actualización no respetó que no se quería el acceso del escritorio" }
+          Start-Process $inst -ArgumentList '/S', '/ESCRITORIO=1' -Wait
+          if (!(Test-Path $desk)) { throw "Con /ESCRITORIO=1 no se creó el acceso del escritorio" }
+          Una-Sola "acceso del escritorio"
+          Write-Output "5) Escritorio: activado por defecto, se puede quitar y la elección se recuerda."
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        if: ${{ !cancelled() }}
+        with:
+          name: distribucion-prueba
+          path: dist-prueba
+      - name: Actualización automática real (detección, descarga, verificación, instalación, vuelta atrás, portable)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          OUT: capturas-actualizacion
+        run: |
+          Get-Process 939Host, java -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          python ci/windows/actualizacion_e2e.py
+          $code = $LASTEXITCODE
+          if (Test-Path "$env:LOCALAPPDATA\939Host\actualizacion\registro.txt") { Write-Output "== registro del vigía"; Get-Content "$env:LOCALAPPDATA\939Host\actualizacion\registro.txt" -Tail 80 }
+          exit $code
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: capturas-actualizacion
+          path: capturas-actualizacion
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Desinstalar
+        if: always()
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          Get-Process 939Host -ErrorAction SilentlyContinue | Stop-Process -Force
+          # Datos de Minecraft de prueba (en esta máquina de CI): la desinstalación nunca los toca,
+          # tampoco al borrar los datos de 939 Host.
+          $mcd = "$env:APPDATA\.minecraft"
+          New-Item -ItemType Directory -Force "$mcd\saves\Mundo de prueba", "$mcd\939 Host\Perfil de prueba" | Out-Null
+          Set-Content "$mcd\saves\Mundo de prueba\level.dat" "mundo" ; Set-Content "$mcd\options.txt" "lang:es_ar" ; Set-Content "$mcd\939 Host\Perfil de prueba\options.txt" "lang:es_ar"
+          $mcHash = (Get-ChildItem $mcd -Recurse -File | Get-FileHash | ForEach-Object Hash) -join ","
+          $u = "$env:LOCALAPPDATA\Programs\939 Host\Desinstalar 939 Host.exe"
+          if (!(Test-Path $u)) { $u = Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host\*.exe" | Where-Object Name -match 'esinst|uninst' | Select-Object -First 1 -ExpandProperty FullName }
+          if ($u) { Start-Process $u -ArgumentList '/S' -Wait; Start-Sleep 5 }
+          function Check-Clean($what) {
+            if (Test-Path "$env:LOCALAPPDATA\Programs\939 Host\939Host.exe") { throw "${what}: no se quitó el programa" }
+            if (Get-Process 939Host, java -ErrorAction SilentlyContinue) { throw "${what}: quedaron procesos de 939 Host o Java" }
+            if (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "939 Host" -ErrorAction SilentlyContinue) { throw "${what}: quedó el inicio con Windows" }
+            if (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\939Host") { throw "${what}: quedó la entrada de Programas instalados" }
+            if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\939 Host") { throw "${what}: quedó el acceso del menú Inicio" }
+            if (Test-Path ([Environment]::GetFolderPath("Desktop") + "\939 Host.lnk")) { throw "${what}: quedó el acceso del escritorio" }
+            if (Test-Path "$env:LOCALAPPDATA\ar.host939.app") { throw "${what}: quedó la caché de la interfaz" }
+            if (Select-String -Path "$env:WINDIR\System32\drivers\etc\hosts" -Pattern "# >>> 939 Host" -Quiet) { throw "${what}: quedó el bloque de 939 Host en hosts" }
+            if (Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object TaskName -match '939') { throw "${what}: quedó una tarea programada" }
+            if (Get-Service -ErrorAction SilentlyContinue | Where-Object Name -match '939') { throw "${what}: quedó un servicio" }
+            # 939 Host no crea reglas de Firewall. Windows sí puede crear las suyas para 939Host.exe
+            # cuando muestra su aviso de red (y en un equipo sin nadie que lo responda las crea solo);
+            # esas son del sistema, solo se borran con administrador y apuntan al programa ya borrado.
+            # Se muestran, y se falla solo si aparece una regla que no sea de ese aviso.
+            foreach ($r in @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '939' })) {
+              $prog = ($r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program
+              Write-Output "${what}: regla de Firewall «$($r.DisplayName)» ($($r.Direction), $($r.Action), programa: $prog)"
+              if ($prog -notlike '*\939 Host\939Host.exe' -and $prog -notlike '*\939Host.exe') { throw "${what}: quedó una regla de Firewall que no es la del aviso de Windows" }
+            }
+          }
+          Check-Clean "conservando datos"
+          # Los servidores, mundos e identidad del usuario no se borran sin su consentimiento.
+          if (!(Test-Path "$env:LOCALAPPDATA\939Host")) { throw "La desinstalación borró la carpeta de datos del usuario" }
+          $srv = Get-ChildItem "$env:LOCALAPPDATA\939Host\servers" -Directory | Select-Object -First 1
+          if (!$srv -or !(Test-Path (Join-Path $srv.FullName "server\world\level.dat"))) { throw "Conservando datos: no quedó el mundo (level.dat)" }
+          if (!(Get-ChildItem (Join-Path $srv.FullName "backups") -Filter *.zip -ErrorAction SilentlyContinue)) { throw "Conservando datos: no quedaron las copias de seguridad" }
+          if (!(Get-ChildItem (Join-Path $srv.FullName "restore") -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) { throw "Conservando datos: no quedaron los puntos de restauración" }
+          Write-Output "1) Desinstalado conservando datos: programa, procesos, registro, accesos, caché y hosts limpios; mundo, copias y puntos intactos."
+          # 2) Reinstalar y desinstalar pidiendo explícitamente borrar los datos.
+          $inst = Get-ChildItem dist\*-instalador.exe | Select-Object -First 1
+          Start-Process $inst.FullName -ArgumentList '/S' -Wait
+          $u = Get-ChildItem "$env:LOCALAPPDATA\Programs\939 Host\*.exe" | Where-Object Name -match 'esinst|uninst' | Select-Object -First 1 -ExpandProperty FullName
+          Start-Process $u -ArgumentList '/S', '/BORRARDATOS' -Wait; Start-Sleep 5
+          Check-Clean "borrando datos"
+          if (Test-Path "$env:LOCALAPPDATA\939Host") { throw "Con /BORRARDATOS no se borró la carpeta de datos" }
+          Write-Output "2) Desinstalado borrando datos (pedido explícito): no quedó nada de 939 Host."
+          if (((Get-ChildItem $mcd -Recurse -File | Get-FileHash | ForEach-Object Hash) -join ",") -ne $mcHash) { throw "La desinstalación cambió datos de Minecraft" }
+          Write-Output "3) Los datos de Minecraft (mundos, opciones y perfiles de 939 Host en .minecraft) quedaron intactos en las dos desinstalaciones."
+      - name: Estado de Windows Defender y Firewall (y detecciones durante las pruebas)
+        if: always()
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $out = @()
+          $st = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if ($st) { $out += "Defender: servicio=$($st.AMServiceEnabled) antivirus=$($st.AntivirusEnabled) tiempo real=$($st.RealTimeProtectionEnabled) descargas=$($st.IoavProtectionEnabled) comportamiento=$($st.BehaviorMonitorEnabled)" } else { $out += "Defender: no disponible en esta máquina" }
+          Get-NetFirewallProfile -ErrorAction SilentlyContinue | ForEach-Object { $out += "Firewall $($_.Name): activo=$($_.Enabled)" }
+          $det = @(Get-MpThreatDetection -ErrorAction SilentlyContinue)
+          if ($det.Count) { $det | ForEach-Object { $out += "Detección: $($_.ThreatID) en $($_.Resources -join ', ')" } } else { $out += "Detecciones de Defender durante la corrida: ninguna" }
+          $out | ForEach-Object { Write-Output $_; Add-Content $env:GITHUB_STEP_SUMMARY "- $_" }
+          if ($det | Where-Object { ($_.Resources -join ' ') -match '939|host939|powershell' }) { throw "Defender detectó algo relacionado con 939 Host" }
+
+  # Dos máquinas Windows reales y separadas, P2P con relays como la app,
+  # servidores de Minecraft reales, «Solicitar ser anfitrión» y traspaso con el mundo intacto.
+  dos-pcs-windows:
+    name: Dos PCs · Windows (anfitriona)
+    runs-on: windows-2025
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: windows-msvc-node
+      - run: cargo build --locked --release -p host939-cluster --features pruebas --bin 939node
+      - name: Arrancar la PC anfitriona
+        shell: bash
+        run: |
+          mkdir -p sig
+          NODE_BIN="$PWD/target/release/939node.exe" nohup python ci/dos-pcs/pc.py anfitriona sig > anfitriona.log 2>&1 &
+          ci/dos-pcs/esperar_archivo.sh sig/invitacion.txt 600 anfitriona.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with: { name: dos-pcs-invitacion, path: sig/invitacion.txt, retention-days: 1 }
+      - name: Esperar el servidor encendido
+        shell: bash
+        run: ci/dos-pcs/esperar_archivo.sh sig/encendido.txt 1500 anfitriona.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with: { name: dos-pcs-encendido, path: sig/encendido.txt, retention-days: 1 }
+      - name: Esperar el traspaso
+        shell: bash
+        run: ci/dos-pcs/esperar_archivo.sh sig/anfitriona-fin.txt 1500 anfitriona.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with: { name: dos-pcs-anfitriona-fin, path: sig/anfitriona-fin.txt, retention-days: 1 }
+      - name: Esperar a la otra PC y resultado
+        if: always()
+        shell: bash
+        run: |
+          ci/dos-pcs/artefacto.sh dos-pcs-invitada-fin sig 600 anfitriona.log || true
+          for i in $(seq 1 30); do [ -f resultado-anfitriona.json ] && break; sleep 2; done
+          python -c "import json,sys; r=json.load(open('resultado-anfitriona.json',encoding='utf-8')); sys.exit(0 if r and all(x['ok'] for x in r) else 1)"
+
+  dos-pcs-invitada:
+    name: Dos PCs · Windows (invitada, otra máquina)
+    runs-on: windows-2025
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: windows-msvc-node
+      - run: cargo build --locked --release -p host939-cluster --features pruebas --bin 939node
+      - name: Esperar la invitación de la otra PC
+        shell: bash
+        run: ci/dos-pcs/artefacto.sh dos-pcs-invitacion sig 2400
+      - name: Unirse, entrar, pedir ser anfitriona y recibir el servidor
+        shell: bash
+        run: |
+          NODE_BIN="$PWD/target/release/939node.exe" nohup python ci/dos-pcs/pc.py invitada sig > invitada.log 2>&1 &
+          ci/dos-pcs/artefacto.sh dos-pcs-encendido sig 1500 invitada.log
+          ci/dos-pcs/artefacto.sh dos-pcs-anfitriona-fin sig 1500 invitada.log
+          ci/dos-pcs/esperar_archivo.sh sig/invitada-fin.txt 300 invitada.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with: { name: dos-pcs-invitada-fin, path: sig/invitada-fin.txt, retention-days: 1, if-no-files-found: ignore }
+      - name: Resultado
+        if: always()
+        shell: bash
+        run: |
+          for i in $(seq 1 30); do [ -f resultado-invitada.json ] && break; sleep 2; done
+          tail -40 invitada.log
+          python -c "import json,sys; r=json.load(open('resultado-invitada.json',encoding='utf-8')); sys.exit(0 if r and all(x['ok'] for x in r) else 1)"
+
+  # Un cliente oficial de Minecraft (Mojang) entra a servidores creados por 939 Host.
+  cliente-real:
+    name: Cliente real de Minecraft entra al servidor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pantalla virtual y OpenGL por software
+        timeout-minutes: 15
+        run: |
+          scripts/ci-apt.sh xvfb libgl1 libgl1-mesa-dri libglx-mesa0 libegl1 libxrandr2 libxcursor1 libxi6 libxxf86vm1 libxtst6 libasound2t64 libpulse0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "25"
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: linux-cliente
+      - name: Entrar con el cliente real (Vanilla y Fabric)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          CLIENTE_REAL: ${{ github.workspace }}/ci/cliente-real/cliente.py
+          E2E_MC: "26.2"
+        run: |
+          export HOST939_TEST_JAVA25="$JAVA_HOME" JAVA_BIN="$JAVA_HOME/bin/java"
+          xvfb-run -a -s "-screen 0 1280x720x24" cargo test --locked -p host939-core --test e2e_real e2e_cliente_real -- --ignored --nocapture
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Jugador conectado con el cliente real (hambre, vida, inventario, TPS · Fabric 26.3, 26.2 y 1.20.4)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 40
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          # 26.3 usa SDL3: sin EGL no encuentra un modo GLX en el Xvfb.
+          SDL_VIDEO_FORCE_EGL: "1"
+          SDL_VIDEO_X11_FORCE_EGL: "1"
+          CLIENTE_REAL: ${{ github.workspace }}/ci/cliente-real/cliente.py
+          E2E_VERSIONES: "fabric:26.3,26.2,1.20.4"
+        run: |
+          export HOST939_TEST_JAVA25="$JAVA_HOME_25_X64" HOST939_TEST_JAVA17="$JAVA_HOME_17_X64" HOST939_TEST_JAVA21="$JAVA_HOME_25_X64"
+          xvfb-run -a -s "-screen 0 1280x720x24 +extension GLX" cargo test --locked -p host939-core --test e2e_real e2e_jugador_en_vivo -- --ignored --nocapture
+      - name: Resource pack obligatorio y opcional con el cliente real
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          CLIENTE_REAL: ${{ github.workspace }}/ci/cliente-real/cliente.py
+          E2E_MC: "26.2"
+        run: |
+          export HOST939_TEST_JAVA25="$JAVA_HOME_25_X64" JAVA_BIN="$JAVA_HOME_25_X64/bin/java"
+          xvfb-run -a -s "-screen 0 1280x720x24" cargo test --locked -p host939-core --test e2e_real e2e_resourcepacks_cliente_real -- --ignored --nocapture

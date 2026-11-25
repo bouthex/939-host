@@ -57,6 +57,63 @@ pub struct Project {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct GalleryImage {
+    pub url: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub featured: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct License { #[serde(default)] pub id: String, #[serde(default)] pub name: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct ProjectDetail {
+    pub id: String,
+    pub slug: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// Descripción larga en Markdown (la interfaz la muestra como texto, sin HTML).
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default = "unknown")]
+    pub client_side: String,
+    #[serde(default = "unknown")]
+    pub server_side: String,
+    #[serde(default)]
+    pub downloads: u64,
+    #[serde(default)]
+    pub followers: u64,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub updated: String,
+    #[serde(default)]
+    pub license: Option<License>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub issues_url: Option<String>,
+    #[serde(default)]
+    pub wiki_url: Option<String>,
+    #[serde(default)]
+    pub gallery: Vec<GalleryImage>,
+    #[serde(default)]
+    pub team: String,
+    #[serde(default)]
+    pub game_versions: Vec<String>,
+    #[serde(default)]
+    pub loaders: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hashes {
     pub sha1: String,
     #[serde(default)]
@@ -133,6 +190,9 @@ pub trait Source: Sync {
     fn project_versions(&self, project: &str, mc: &str, loader: &str) -> impl Future<Output = AppResult<Vec<Version>>> + Send;
     fn projects(&self, ids: &[String]) -> impl Future<Output = AppResult<Vec<Project>>> + Send;
     fn versions_by_sha1(&self, hashes: &[String]) -> impl Future<Output = AppResult<HashMap<String, Version>>> + Send;
+    /// Mods de la categoría «optimización» que corren en el servidor para esa versión exacta y
+    /// loader, los más descargados primero (ver `optimize`). Sin red: ninguno.
+    fn search_optimization(&self, _mc: &str, _loader: &str) -> impl Future<Output = AppResult<Vec<SearchHit>>> + Send { async { Ok(vec![]) } }
 }
 
 /// Cliente real de Modrinth.
@@ -162,12 +222,75 @@ impl Modrinth {
         net::get_json(&url, "Modrinth").await
     }
 
+    /// Búsqueda para la tienda: categorías opcionales y filtro de lado ("server" | "client" | "both" | "").
+    pub async fn search_filtered(&self, query: &str, mc: &str, loader: &str, categories: &[String], side: &str, sort: &str, offset: u32) -> AppResult<SearchResult> {
+        let mut facets = vec![
+            vec!["project_type:mod".to_string()],
+            vec![format!("categories:{loader}")],
+            vec![format!("versions:{mc}")],
+        ];
+        for c in categories.iter().filter(|c| c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') && !c.is_empty()).take(6) {
+            facets.push(vec![format!("categories:{c}")]);
+        }
+        match side {
+            "server" => { facets.push(vec!["server_side:required".into()]); facets.push(vec!["client_side:unsupported".into(), "client_side:optional".into()]); }
+            "client" => { facets.push(vec!["client_side:required".into()]); facets.push(vec!["server_side:unsupported".into(), "server_side:optional".into()]); }
+            "both" => { facets.push(vec!["server_side:required".into()]); facets.push(vec!["client_side:required".into()]); }
+            _ => facets.push(vec!["server_side:required".into(), "server_side:optional".into()]),
+        }
+        let index = match sort { "downloads" | "follows" | "newest" | "updated" => sort, _ => "relevance" };
+        let facets = serde_json::to_string(&facets)?;
+        let url = format!("{API}/search?query={}&facets={}&limit=20&offset={offset}&index={index}", enc(query), enc(&facets));
+        net::get_json(&url, "Modrinth").await
+    }
+
+    /// Modpacks de Modrinth que se pueden alojar (el servidor está soportado u opcional).
+    pub async fn search_modpacks(&self, query: &str, offset: u32) -> AppResult<SearchResult> {
+        let facets = serde_json::to_string(&vec![vec!["project_type:modpack".to_string()], vec!["server_side:required".into(), "server_side:optional".into()]])?;
+        let url = format!("{API}/search?query={}&facets={}&limit=20&offset={offset}&index=relevance", enc(query), enc(&facets));
+        net::get_json(&url, "Modrinth").await
+    }
+    /// Versiones de un modpack (la más nueva primero).
+    pub async fn modpack_versions(&self, project: &str) -> AppResult<Vec<Version>> {
+        net::get_json(&format!("{API}/project/{}/version", enc(project)), "Modrinth").await
+    }
+
+    /// Nombres de quienes forman el equipo de un proyecto (la persona dueña primero).
+    pub async fn team_names(&self, team: &str) -> AppResult<Vec<String>> {
+        if team.is_empty() || !team.chars().all(|c| c.is_ascii_alphanumeric()) { return Ok(vec![]); }
+        let v: Vec<serde_json::Value> = net::get_json(&format!("{API}/team/{}/members", enc(team)), "Modrinth").await?;
+        let mut out: Vec<(bool, String)> = v.iter().filter_map(|m| {
+            let name = m["user"]["username"].as_str()?.to_string();
+            Some((m["role"].as_str() != Some("Owner"), name))
+        }).collect();
+        out.sort();
+        Ok(out.into_iter().map(|(_, n)| n).take(8).collect())
+    }
+
+    /// Ficha completa de un proyecto para la página de detalle.
+    pub async fn project_detail(&self, id_or_slug: &str) -> AppResult<ProjectDetail> {
+        net::get_json(&format!("{API}/project/{}", enc(id_or_slug)), "Modrinth").await
+    }
+
     pub async fn project(&self, id_or_slug: &str) -> AppResult<Project> {
         net::get_json(&format!("{API}/project/{}", enc(id_or_slug)), "Modrinth").await
     }
 }
 
 impl Source for Modrinth {
+    async fn search_optimization(&self, mc: &str, loader: &str) -> AppResult<Vec<SearchHit>> {
+        // La versión exacta y, en Fabric/Quilt, también el resto de su serie (después se comprueba
+        // en cada mod que acepte la versión exacta).
+        let series = if matches!(loader, "fabric" | "quilt") { crate::mods::mc_series(mc) } else { vec![mc.to_string()] };
+        let facets = serde_json::to_string(&vec![
+            vec!["project_type:mod".to_string()], vec![format!("categories:{loader}")], vec!["categories:optimization".to_string()],
+            series.iter().map(|v| format!("versions:{v}")).collect::<Vec<_>>(),
+            vec!["server_side:required".into(), "server_side:optional".into()],
+        ])?;
+        let url = format!("{API}/search?query=&facets={}&limit=30&offset=0&index=downloads", enc(&facets));
+        let r: SearchResult = net::get_json(&url, "Modrinth").await?;
+        Ok(r.hits)
+    }
     async fn version(&self, id: &str) -> AppResult<Version> {
         net::get_json(&format!("{API}/version/{}", enc(id)), "Modrinth").await
     }

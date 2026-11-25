@@ -135,7 +135,7 @@ pub fn restore(mgr: &Manager, id: &str, file: &str, mc_version: &str) -> AppResu
     let run = paths::server_run_dir(id);
     if run.join("world").join("level.dat").exists() {
         create(mgr, id, "Antes de restaurar", "seguridad", mc_version)?;
-        std::fs::rename(run.join("world"), paths::trash_slot(&format!("{id}-world"))).map_err(|e| AppError::io("No se pudo apartar el mundo actual", e))?;
+        paths::rename_retry(run.join("world"), paths::trash_slot(&format!("{id}-world"))).map_err(|e| AppError::io("No se pudo apartar el mundo actual", e))?;
     }
     crate::java::extract_zip(&zip_path, &run)
 }

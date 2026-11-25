@@ -1,0 +1,845 @@
+//! Comandos del Diseño v3: controles del servidor (pausa, aviso con cuenta regresiva),
+//! perfil de jugadores, skins, imágenes del juego, asistente de reparación y tienda de mods.
+
+use host939_core::error::{AppError, AppResult};
+use host939_core::hardware::{self, Probe};
+use host939_core::instance;
+use host939_core::model::RunStatus;
+use host939_core::modrinth::{Modrinth, ProjectDetail, SearchResult};
+use host939_core::process::Manager;
+use host939_core::{gameassets, mods, playerdata, players, repair, settings, skins};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager as _};
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> AppResult<T> + Send + 'static) -> AppResult<T> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| AppError::new("internal", "Error interno").with_detail(e))?
+}
+
+fn online_players(app: &AppHandle, id: &str) -> usize {
+    instance::load(id).map(|cfg| players::list(&app.state::<Manager>(), &cfg).iter().filter(|p| p.online).count()).unwrap_or(0)
+}
+
+/* ───────── Controles del servidor ───────── */
+
+#[tauri::command]
+pub async fn pause_server(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || { let cfg = instance::load(&id)?; app.state::<Manager>().pause(&cfg) }).await
+}
+
+#[tauri::command]
+pub async fn resume_server(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || app.state::<Manager>().resume(&id)).await
+}
+
+/// Vuelve a comprobar que el servidor recibe jugadores (consulta real de Minecraft).
+#[tauri::command]
+pub async fn server_check_connection(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || { let cfg = instance::load(&id)?; app.state::<Manager>().check_connection(&id, cfg.port) }).await
+}
+
+/// Marca como leído el último problema de entrada.
+#[tauri::command]
+pub async fn server_clear_join_issue(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(move || { app.state::<Manager>().clear_join_issue(&id); Ok(()) }).await
+}
+
+/// Detiene con aviso: `seconds` = 0 detiene ya. Si se cancela la cuenta, devuelve false.
+#[tauri::command]
+pub async fn stop_server_warned(app: AppHandle, id: String, seconds: u32) -> AppResult<bool> {
+    blocking(move || {
+        let mgr = app.state::<Manager>();
+        if seconds > 0 && !mgr.countdown(&id, seconds.min(300), "stop") { return Ok(false); }
+        mgr.stop(&id)?;
+        Ok(true)
+    }).await
+}
+
+/// Reinicia (con aviso opcional): guarda, detiene, espera y vuelve a arrancar.
+#[tauri::command]
+pub async fn restart_server_warned(app: AppHandle, id: String, seconds: u32) -> AppResult<bool> {
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let ok = blocking(move || {
+        let mgr = app2.state::<Manager>();
+        if seconds > 0 && !mgr.countdown(&id2, seconds.min(300), "restart") { return Ok(false); }
+        mgr.set_restarting(&id2, true);
+        if let Err(e) = mgr.stop(&id2) { mgr.set_restarting(&id2, false); return Err(e); }
+        if !mgr.wait_inactive(&id2, Duration::from_secs(100)) {
+            mgr.set_restarting(&id2, false);
+            return Err(AppError::new("timeout", "El servidor tardó demasiado en detenerse."));
+        }
+        Ok(true)
+    }).await?;
+    if !ok { return Ok(false); }
+    let started = async {
+        crate::network::before_start(&app, &id).await?;
+        let a = app.clone();
+        let i = id.clone();
+        blocking(move || { let cfg = instance::load(&i)?; a.state::<Manager>().start(&a.state::<Probe>(), &cfg) }).await
+    }.await;
+    if let Err(e) = started { app.state::<Manager>().set_restarting(&id, false); return Err(e); }
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn cancel_countdown(app: AppHandle, id: String) -> bool { app.state::<Manager>().cancel_countdown(&id) }
+
+#[tauri::command]
+pub fn players_online_count(app: AppHandle, id: String) -> usize { online_players(&app, &id) }
+
+/* ───────── Jugadores ───────── */
+
+/// Dónde se hace una operación sobre jugadores: en esta PC o, si el servidor lo aloja otra PC del
+/// grupo, allá (la anfitriona vuelve a comprobar el permiso).
+enum Route { Local(String), Remote }
+
+/// Ficha del jugador. Si lo aloja otra PC y está encendido, se pide allá (datos en vivo).
+#[tauri::command]
+pub async fn player_detail(app: AppHandle, id: String, name: String) -> AppResult<serde_json::Value> {
+    if hosted_elsewhere(&app, &id).await {
+        let cl = app.state::<crate::network::Cluster>();
+        if let Ok(n) = cl.node().await {
+            match n.player_op(&id, serde_json::json!({ "kind": "detail", "name": name })).await {
+                Ok(v) if v.is_object() => return Ok(v),
+                _ => {}
+            }
+        }
+    }
+    blocking(move || player_op_local(&app, &id, &serde_json::json!({ "kind": "detail", "name": name }), "")).await
+}
+
+pub async fn hosted_elsewhere(app: &AppHandle, id: &str) -> bool {
+    if !host939_core::network::load_share(id).enabled { return false; }
+    let cl = app.state::<crate::network::Cluster>();
+    let Some(n) = cl.try_node() else { return false };
+    let me = n.id();
+    host939_core::lease::read(id).map(|l| l.state == host939_core::lease::LeaseState::Hosting && l.host != me).unwrap_or(false)
+}
+
+/// Ejecuta una operación sobre un jugador en esta PC (la usan los comandos de la interfaz y los
+/// pedidos de la propietaria desde otra PC). `op.kind`: detail | adjust | kill | inventory | edit.
+pub fn player_op_local(app: &AppHandle, id: &str, op: &serde_json::Value, who: &str) -> AppResult<serde_json::Value> {
+    let cfg = instance::load(id)?;
+    let mgr = app.state::<Manager>();
+    if op.get("kind").and_then(|v| v.as_str()) == Some("list") { return serde_json::to_value(players::list(&mgr, &cfg)).map_err(|e| AppError::invalid(e.to_string())); }
+    let name = op.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let list = players::list(&mgr, &cfg);
+    let p = list.iter().find(|p| p.name.eq_ignore_ascii_case(&name)).ok_or_else(|| AppError::not_found("el jugador"))?;
+    let running = mgr.runtime(id).lock().unwrap().status() == RunStatus::Running;
+    let live = p.online && running;
+    let need_running = || if running { Ok(()) } else { Err(AppError::invalid("El servidor no está encendido.")) };
+    let parse = |k: &str| op.get(k).cloned().ok_or_else(|| AppError::invalid("Pedido incompleto."));
+    let text = |r: AppResult<String>| r.map(serde_json::Value::String);
+    match op.get("kind").and_then(|v| v.as_str()).unwrap_or_default() {
+        "detail" => serde_json::to_value(playerdata::detail(&mgr, &cfg, &p.name, &p.uuid, live)?).map_err(|e| AppError::invalid(e.to_string())),
+        "adjust" => {
+            let stat: host939_core::playeredit::Stat = serde_json::from_value(parse("stat")?).map_err(|_| AppError::invalid("Dato inválido."))?;
+            let up = op.get("up").and_then(|v| v.as_bool()).unwrap_or(false);
+            text(host939_core::playeredit::adjust(&mgr, &cfg, &p.name, &p.uuid, live, stat, up, who))
+        }
+        "kill" => { need_running()?; text(host939_core::playeredit::kill(&mgr, &cfg, &p.name, who)) }
+        "inventory" => {
+            need_running()?;
+            let iop: host939_core::playeredit::InvOp = serde_json::from_value(parse("op")?).map_err(|_| AppError::invalid("Operación inválida."))?;
+            text(host939_core::playeredit::inventory(&mgr, &cfg, &p.name, &p.uuid, &iop, who))
+        }
+        "edit" => {
+            let e: host939_core::playeredit::Edit = serde_json::from_value(parse("edit")?).map_err(|_| AppError::invalid("Dato inválido."))?;
+            text(if live { host939_core::playeredit::apply_online(&mgr, &cfg, &p.name, &e, who) } else { host939_core::playeredit::apply_offline(&mgr, &cfg, &p.name, &p.uuid, &e, who) })
+        }
+        _ => Err(AppError::invalid("Operación desconocida.")),
+    }
+}
+
+/// ¿Puede esta PC cambiar datos de jugadores de este servidor? Solo la PC propietaria. Si el
+/// servidor lo aloja otra PC, el cambio se hace allá (y allá se vuelve a comprobar). Se comprueba
+/// acá, en el backend: la interfaz solo esconde lo que no se puede hacer.
+async fn edit_permission(app: &AppHandle, id: &str) -> Result<Route, String> {
+    let share = host939_core::network::load_share(id);
+    if !share.enabled { return Ok(Route::Local("esta PC".into())); }
+    let me = match app.state::<crate::network::Cluster>().node().await { Ok(n) => n.id(), Err(_) => return Err("La red del grupo todavía no está lista.".into()) };
+    if share.member(&me).map(|m| m.role != "propietario").unwrap_or(true) {
+        return Err("Solo la PC propietaria del servidor puede cambiar la vida, el hambre, la experiencia o el inventario de los jugadores.".into());
+    }
+    if let Some(l) = host939_core::lease::read(id) {
+        if l.state == host939_core::lease::LeaseState::Hosting && l.host != me { return Ok(Route::Remote); }
+    }
+    Ok(Route::Local(me))
+}
+
+/// Corre una operación de jugador donde corresponda (esta PC o la anfitriona).
+async fn player_run(app: AppHandle, id: String, op: serde_json::Value) -> AppResult<String> {
+    match edit_permission(&app, &id).await.map_err(|r| AppError::new("forbidden", r))? {
+        Route::Remote => {
+            let cl = app.state::<crate::network::Cluster>();
+            let n = cl.node().await?;
+            let v = n.player_op(&id, op).await.map_err(|e| AppError::invalid(e.to_string()))?;
+            Ok(v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))
+        }
+        Route::Local(who) => blocking(move || player_op_local(&app, &id, &op, &who)).await.map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditAccess { allowed: bool, reason: Option<String>, live_health: bool, live_feed: bool, live_xp: bool }
+
+#[tauri::command]
+pub async fn player_edit_access(app: AppHandle, id: String) -> AppResult<EditAccess> {
+    let cfg = instance::load(&id)?;
+    let (h, f, x) = host939_core::playeredit::online_support(&cfg.mc_version);
+    Ok(match edit_permission(&app, &id).await {
+        Ok(_) => EditAccess { allowed: true, reason: None, live_health: h, live_feed: f, live_xp: x },
+        Err(r) => EditAccess { allowed: false, reason: Some(r), live_health: h, live_feed: f, live_xp: x },
+    })
+}
+
+/// Sube o baja un paso un atributo (botones + y −). Solo la PC propietaria.
+#[tauri::command]
+pub async fn player_adjust(app: AppHandle, id: String, name: String, stat: host939_core::playeredit::Stat, up: bool) -> AppResult<String> {
+    player_run(app, id, serde_json::json!({ "kind": "adjust", "name": name, "stat": stat, "up": up })).await
+}
+
+/// Inventario en vivo (dar, quitar, mover, cambiar cantidad). Solo la PC propietaria.
+#[tauri::command]
+pub async fn player_inventory(app: AppHandle, id: String, name: String, op: host939_core::playeredit::InvOp) -> AppResult<String> {
+    player_run(app, id, serde_json::json!({ "kind": "inventory", "name": name, "op": op })).await
+}
+
+/// Mata al jugador (comando de Minecraft). Solo conectado; solo la PC propietaria.
+#[tauri::command]
+pub async fn player_kill(app: AppHandle, id: String, name: String) -> AppResult<String> {
+    player_run(app, id, serde_json::json!({ "kind": "kill", "name": name })).await
+}
+
+/// Cambia vida, hambre, saturación o nivel. Con el jugador conectado usa comandos; desconectado
+/// edita su archivo (con copia previa). Queda en la auditoría del servidor.
+#[tauri::command]
+pub async fn player_edit(app: AppHandle, id: String, name: String, edit: host939_core::playeredit::Edit) -> AppResult<String> {
+    player_run(app, id, serde_json::json!({ "kind": "edit", "name": name, "edit": edit })).await
+}
+
+/// Skin del jugador como data URL; `None` si están desactivadas o no hay conexión (la interfaz
+/// muestra las iniciales).
+#[tauri::command]
+pub async fn player_skin(name: String) -> AppResult<Option<String>> {
+    if !settings::load().skins_enabled || !players::valid_name(&name) { return Ok(None); }
+    Ok(skins::skin_png(&name).await.ok().map(|b| skins::data_url_png(&b)))
+}
+
+/* ───────── Imágenes originales del juego ───────── */
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetsStatus { pub enabled: bool, pub ready: bool, pub version: String }
+
+#[derive(Serialize, Clone)]
+struct AssetsProgress<'a> { version: &'a str, message: &'a str, fraction: f64 }
+
+fn assets_status(version: String) -> AssetsStatus {
+    // Con el Minecraft de esta versión instalado, las imágenes salen de ahí (sin descargar nada).
+    let ready = gameassets::ready(&version) || gameassets::ensure_local(&version).unwrap_or(false);
+    AssetsStatus { enabled: settings::load().game_assets_enabled || ready, ready, version }
+}
+
+#[tauri::command]
+pub async fn game_assets_status(version: String) -> AppResult<AssetsStatus> {
+    blocking(move || Ok(assets_status(version))).await
+}
+
+/// Descarga (una vez por versión) las imágenes del juego desde Mojang a esta PC.
+#[tauri::command]
+pub async fn game_assets_prepare(app: AppHandle, version: String) -> AppResult<AssetsStatus> {
+    if !settings::load().game_assets_enabled { return blocking(move || Ok(assets_status(version))).await; }
+    let v = version.clone();
+    gameassets::ensure(&version, |m, f| { let _ = app.emit("assets-progress", AssetsProgress { version: &v, message: m, fraction: f }); }).await?;
+    blocking(move || Ok(assets_status(version))).await
+}
+
+/// Imágenes pedidas por clave (`item:diamond_sword`, `hud:heart/full`, `effect:speed`, `slot:helmet`).
+#[tauri::command]
+pub async fn game_sprites(version: String, keys: Vec<String>) -> AppResult<HashMap<String, String>> {
+    if !gameassets::ready(&version) { return Ok(HashMap::new()); }
+    blocking(move || {
+        let mut out = HashMap::new();
+        for k in keys.into_iter().take(400) {
+            if let Some(p) = gameassets::resolve(&version, &k) {
+                if let Ok(b) = std::fs::read(&p) { out.insert(k, skins::data_url_png(&b)); }
+            }
+        }
+        Ok(out)
+    }).await
+}
+
+/// Ítems que no son de Minecraft: nombre, mod e ícono leídos de los mods instalados en el
+/// servidor (archivos locales, sin descargas). `known: false` = el mod no está instalado.
+#[tauri::command]
+pub async fn mod_items(id: String, ids: Vec<String>) -> AppResult<HashMap<String, host939_core::moditems::ItemInfo>> {
+    if !host939_core::paths::valid_server_id(&id) { return Err(AppError::invalid("Servidor inválido.")); }
+    blocking(move || Ok(host939_core::moditems::lookup(&id, &ids))).await
+}
+
+/// Nombres en español de ítems y efectos (del idioma oficial del juego descargado).
+#[tauri::command]
+pub async fn game_names(version: String) -> AppResult<HashMap<String, String>> {
+    blocking(move || Ok(gameassets::names(&version))).await
+}
+
+/// Borra las imágenes descargadas (Configuración → Privacidad).
+#[tauri::command]
+pub async fn game_assets_clear() -> AppResult<()> {
+    blocking(|| {
+        let d = host939_core::paths::cache().join("game-assets");
+        if d.exists() { std::fs::remove_dir_all(&d).map_err(|e| AppError::io("No se pudieron borrar las imágenes", e))?; }
+        Ok(())
+    }).await
+}
+
+/* ───────── Asistente de reparación ───────── */
+
+fn max_memory(app: &AppHandle) -> u32 { hardware::live(&app.state::<Probe>(), 0).ram_total_mb.saturating_sub(1536).max(1024) as u32 }
+
+#[tauri::command]
+pub async fn repair_analyze(app: AppHandle, id: String) -> AppResult<repair::Diagnosis> {
+    let cfg = instance::load(&id)?;
+    let max = max_memory(&app);
+    let mgr = app.state::<Manager>();
+    Ok(repair::analyze(&Modrinth, &mgr, &cfg, max, true).await)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairResult {
+    /// "ok": arrancó y llegó a «Done»; "failed": sigue sin arrancar; "skipped": no se verificó.
+    pub verification: String,
+    pub applied: Vec<String>,
+    pub can_undo: bool,
+    pub remaining: Option<repair::Diagnosis>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct RepairProgress<'a> { id: &'a str, message: &'a str, fraction: f64 }
+
+/// Aplica las reparaciones elegidas (el plan se recalcula acá: no se confía en la interfaz),
+/// y después verifica arrancando el servidor.
+#[tauri::command]
+pub async fn repair_apply(app: AppHandle, id: String, problem_ids: Vec<String>, authorized: bool, verify: bool) -> AppResult<RepairResult> {
+    let cfg = instance::load(&id)?;
+    let max = max_memory(&app);
+    let diag = {
+        let mgr = app.state::<Manager>();
+        repair::analyze(&Modrinth, &mgr, &cfg, max, true).await
+    };
+    let mut actions = vec![];
+    for p in diag.problems.iter().filter(|p| problem_ids.contains(&p.id)) {
+        let Some(fix) = &p.fix else { continue };
+        if fix.needs_authorization && !authorized { return Err(AppError::invalid("Esta reparación necesita tu autorización.")); }
+        for a in &fix.actions { if !actions.contains(a) { actions.push(a.clone()); } }
+    }
+    if actions.is_empty() { return Err(AppError::invalid("Ya no hay nada para reparar con lo elegido. Volvé a analizar.")); }
+    let emit = |m: &str, f: f64| { let _ = app.emit("repair-progress", RepairProgress { id: &id, message: m, fraction: f }); };
+    let rec = {
+        let mgr = app.state::<Manager>();
+        repair::apply(&Modrinth, &mgr, &cfg, &actions, emit).await?
+    };
+    app.state::<Manager>().changed(&id);
+    if !verify { return Ok(RepairResult { verification: "skipped".into(), applied: rec.applied, can_undo: true, remaining: None, error: None }); }
+
+    emit("Arrancando el servidor para comprobar", 0.92);
+    let start = async {
+        crate::network::before_start(&app, &id).await?;
+        let a = app.clone();
+        let i = id.clone();
+        blocking(move || { let cfg = instance::load(&i)?; a.state::<Manager>().start(&a.state::<Probe>(), &cfg) }).await
+    }.await;
+    if let Err(e) = start {
+        return Ok(RepairResult { verification: "failed".into(), applied: rec.applied, can_undo: true, remaining: None, error: Some(e.message.clone()) });
+    }
+    let a = app.clone();
+    let i = id.clone();
+    let status = blocking(move || {
+        let mgr = a.state::<Manager>();
+        let deadline = std::time::Instant::now() + Duration::from_secs(240);
+        loop {
+            let st = mgr.runtime(&i).lock().unwrap().status();
+            if matches!(st, RunStatus::Running | RunStatus::Crashed | RunStatus::Stopped) || std::time::Instant::now() > deadline { return Ok(st); }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }).await?;
+    if status == RunStatus::Running {
+        emit("El servidor arrancó bien", 1.0);
+        return Ok(RepairResult { verification: "ok".into(), applied: rec.applied, can_undo: true, remaining: None, error: None });
+    }
+    let cfg = instance::load(&id)?;
+    let remaining = { let mgr = app.state::<Manager>(); repair::analyze(&Modrinth, &mgr, &cfg, max, true).await };
+    let err = app.state::<Manager>().runtime(&id).lock().unwrap().last_error.clone();
+    Ok(RepairResult { verification: "failed".into(), applied: rec.applied, can_undo: true, remaining: Some(remaining), error: err })
+}
+
+#[tauri::command]
+pub async fn repair_undo(app: AppHandle, id: String) -> AppResult<()> {
+    let a = app.clone();
+    let i = id.clone();
+    blocking(move || repair::undo(&a.state::<Manager>(), &i)).await?;
+    app.state::<Manager>().changed(&id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn repair_last(id: String) -> Option<repair::RepairRecord> { repair::last_record(&id) }
+
+/* ───────── Tienda de mods ───────── */
+
+#[tauri::command]
+pub async fn mods_explore(id: String, query: String, categories: Vec<String>, side: String, sort: String, offset: u32) -> AppResult<SearchResult> {
+    let cfg = instance::load(&id)?;
+    let loader = mods::loader_id(cfg.loader)?;
+    Modrinth.search_filtered(query.trim(), &cfg.mc_version, loader, &categories, &side, &sort, offset).await
+}
+
+#[tauri::command]
+pub async fn mods_project(project: String) -> AppResult<ProjectDetail> {
+    if project.is_empty() || project.len() > 64 || !project.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(AppError::invalid("Proyecto inválido."));
+    }
+    Modrinth.project_detail(&project).await
+}
+
+#[tauri::command]
+pub async fn mods_import_files(app: AppHandle, id: String, paths: Vec<String>) -> AppResult<mods::ImportReport> {
+    let cfg = instance::load(&id)?;
+    if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de importar mods.")); }
+    if !host939_core::snapshots::writes_line(&id) { return Err(AppError::invalid("Este servidor lo aloja otra PC del grupo: los mods se cambian desde la PC anfitriona.")); }
+    let files: Vec<std::path::PathBuf> = paths.into_iter().take(200).map(std::path::PathBuf::from).collect();
+    let op = crate::commands::op(&app, &id, if files.len() == 1 { "Agregando 1 mod" } else { "Agregando mods" }, "Revisando compatibilidad y copiando…");
+    let r = op.finish(blocking(move || mods::import_files(&cfg, &files)).await, "Mods agregados")?;
+    app.state::<Manager>().changed(&id);
+    Ok(r)
+}
+
+#[tauri::command]
+pub async fn mods_link(app: AppHandle, id: String, file_name: String) -> AppResult<mods::InstalledMod> {
+    let cfg = instance::load(&id)?;
+    let r = mods::link_file(&Modrinth, &cfg, &file_name).await?;
+    app.state::<Manager>().changed(&id);
+    Ok(r)
+}
+
+
+/* ───────── Papelera ───────── */
+
+#[tauri::command]
+pub async fn trash_list() -> AppResult<Vec<host939_core::trash::TrashItem>> {
+    blocking(|| Ok(host939_core::trash::list())).await
+}
+
+#[tauri::command]
+pub async fn trash_restore(app: AppHandle, key: String) -> AppResult<String> {
+    let id = blocking(move || host939_core::trash::restore(&key)).await?;
+    let _ = app.emit("servers-changed", ());
+    Ok(id)
+}
+
+#[tauri::command]
+pub async fn trash_purge(key: String) -> AppResult<()> {
+    blocking(move || host939_core::trash::purge(&key)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyResult { pub removed: usize, pub freed_bytes: u64, pub errors: Vec<String> }
+
+#[tauri::command]
+pub async fn trash_empty() -> AppResult<EmptyResult> {
+    blocking(|| { let (removed, freed_bytes, errors) = host939_core::trash::empty(); Ok(EmptyResult { removed, freed_bytes, errors }) }).await
+}
+
+
+/* ───────── Cambio de versión ───────── */
+
+use host939_core::version_change as vc;
+
+#[tauri::command]
+pub async fn version_analyze(id: String, to: String, loader: Option<host939_core::model::Loader>) -> AppResult<vc::Analysis> {
+    let cfg = instance::load(&id)?;
+    vc::analyze(&Modrinth, &cfg, &to, loader).await
+}
+
+#[tauri::command]
+pub async fn version_last_change(id: String) -> AppResult<Option<vc::ChangeRecord>> { Ok(vc::last_change(&id)) }
+
+/// Actualiza en el mismo servidor. Informa el avance con el evento `version-progress`.
+#[tauri::command]
+pub async fn version_update(app: AppHandle, id: String, to: String, loader: Option<host939_core::model::Loader>) -> AppResult<vc::ChangeReport> {
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let r = vc::update_in_place(&app.state::<Manager>(), &Modrinth, &id, &to, loader, move |msg, f| {
+        let _ = app2.emit("version-progress", serde_json::json!({ "id": id2, "message": msg, "fraction": f }));
+    }).await;
+    app.state::<Manager>().changed(&id);
+    r
+}
+
+#[tauri::command]
+pub async fn version_rollback(app: AppHandle, id: String) -> AppResult<()> {
+    let r = vc::rollback(&app.state::<Manager>(), &id).await;
+    app.state::<Manager>().changed(&id);
+    r
+}
+
+/// Copia independiente (opción B). Si `to` viene, la copia queda en esa versión: si trae el mundo,
+/// se actualiza con el mismo procedimiento seguro; si no, se instala directo en la versión nueva.
+#[tauri::command]
+pub async fn server_duplicate(app: AppHandle, id: String, name: String, parts: vc::CopyParts, to: Option<String>) -> AppResult<String> {
+    let total = hardware::live(&app.state::<Probe>(), 0).ram_total_mb;
+    let new_id = vc::duplicate(&id, &name, &parts, total).await?;
+    if let Some(to) = to.filter(|t| !t.is_empty()) {
+        let mut c = instance::load(&new_id)?;
+        if parts.world && paths_has_world(&new_id) {
+            // Primero se instala la versión original y después se actualiza con copia verificada.
+            instance::install(&app.state::<Manager>(), new_id.clone()).await;
+            let app2 = app.clone();
+            let nid = new_id.clone();
+            let r = vc::update_in_place(&app.state::<Manager>(), &Modrinth, &new_id, &to, None, move |msg, f| {
+                let _ = app2.emit("version-progress", serde_json::json!({ "id": nid, "message": msg, "fraction": f }));
+            }).await?;
+            if !r.ok { return Err(AppError::new("version", "La copia se creó, pero no se pudo pasar a la versión nueva.").with_detail(r.error.unwrap_or_default())); }
+        } else {
+            let a = vc::analyze(&Modrinth, &c, &to, None).await?;
+            c.mc_version = to;
+            c.loader_version = a.loader_version;
+            c.installed = false;
+            instance::save(&c)?;
+            let mgr = app.state::<Manager>();
+            instance::install(&mgr, new_id.clone()).await;
+        }
+    } else {
+        instance::install(&app.state::<Manager>(), new_id.clone()).await;
+    }
+    let _ = app.emit("servers-changed", ());
+    Ok(new_id)
+}
+
+fn paths_has_world(id: &str) -> bool { host939_core::paths::server_run_dir(id).join("world").join("level.dat").exists() }
+
+
+/* ───────── Logo del servidor ───────── */
+
+#[tauri::command]
+pub async fn server_logo_set(app: AppHandle, id: String, kind: String, big: Vec<u8>, icon: Vec<u8>) -> AppResult<()> {
+    host939_core::logo::set(&id, &kind, &big, &icon)?;
+    if let Ok(n) = app.state::<crate::network::Cluster>().node().await { let _ = n.refresh_card(&id); }
+    app.state::<Manager>().changed(&id);
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}
+
+/// Lee una imagen de cualquier carpeta (arrastrada a la ventana) para recortarla.
+#[tauri::command]
+pub async fn image_read(path: String) -> AppResult<String> {
+    tauri::async_runtime::spawn_blocking(move || host939_core::logo::read_input_image(std::path::Path::new(&path))).await.map_err(|e| AppError::new("io", e.to_string()))?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhotoView { hash: Option<String>, data_url: Option<String> }
+
+#[tauri::command]
+pub fn profile_photo_get() -> PhotoView {
+    let hash = host939_core::avatar::own_hash();
+    let data_url = hash.as_deref().and_then(host939_core::avatar::data_url);
+    PhotoView { hash, data_url }
+}
+
+/// Guarda la foto de perfil (PNG 128×128 ya recortado en la interfaz). Las demás PCs del grupo
+/// la ven en la próxima consulta (solo viaja la huella; la foto se pide una vez).
+#[tauri::command]
+pub fn profile_photo_set(app: AppHandle, png: Vec<u8>) -> AppResult<PhotoView> {
+    host939_core::avatar::set(&png)?;
+    let _ = app.emit("servers-changed", ());
+    Ok(profile_photo_get())
+}
+
+#[tauri::command]
+pub fn profile_photo_clear(app: AppHandle) -> AppResult<()> {
+    host939_core::avatar::clear()?;
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}
+
+/// Fotos de perfil por huella (propia o de otras PCs ya guardadas).
+#[tauri::command]
+pub fn avatars(hashes: Vec<String>) -> std::collections::HashMap<String, String> {
+    hashes.into_iter().take(200).filter_map(|h| host939_core::avatar::data_url(&h).map(|d| (h, d))).collect()
+}
+
+/// Logo de 939 Host (el mismo que reciben los servidores nuevos).
+#[tauri::command]
+pub async fn server_logo_default(app: AppHandle, id: String) -> AppResult<()> {
+    host939_core::logo::set_default(&id)?;
+    if let Ok(n) = app.state::<crate::network::Cluster>().node().await { let _ = n.refresh_card(&id); }
+    app.state::<Manager>().changed(&id);
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn server_logo_clear(app: AppHandle, id: String) -> AppResult<()> {
+    host939_core::logo::clear(&id)?;
+    if let Ok(n) = app.state::<crate::network::Cluster>().node().await { let _ = n.refresh_card(&id); }
+    app.state::<Manager>().changed(&id);
+    let _ = app.emit("servers-changed", ());
+    Ok(())
+}
+
+/* ───────── Perfil para jugar (.mrpack) ───────── */
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileExport { report: host939_core::profile::ExportReport, launchers: Vec<&'static str> }
+
+/// Genera el perfil en la carpeta Descargas del usuario. No toca ninguna instalación de Minecraft.
+#[tauri::command]
+pub async fn profile_export(id: String, include_manual: bool) -> AppResult<ProfileExport> {
+    let cfg = instance::load(&id)?;
+    let base = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).map(|h| h.join("Downloads")).filter(|d| d.is_dir())
+        .unwrap_or_else(|| host939_core::paths::root().join("Perfiles"));
+    std::fs::create_dir_all(&base).map_err(|e| AppError::io("No se pudo crear la carpeta", e))?;
+    let safe: String = cfg.name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+    let dest = base.join(format!("{} ({} {}).mrpack", safe.trim(), cfg.loader.name(), cfg.mc_version));
+    let report = host939_core::profile::export_mrpack(&Modrinth, &id, &dest, include_manual).await?;
+    Ok(ProfileExport { report, launchers: host939_core::profile::launchers() })
+}
+
+/// Abre el `.mrpack` con el programa asociado (Modrinth App, Prism…) o muestra la carpeta.
+#[tauri::command]
+pub fn profile_open(path: String, reveal: bool) -> AppResult<()> {
+    let p = std::path::PathBuf::from(&path);
+    if p.extension().and_then(|x| x.to_str()) != Some("mrpack") || !p.is_file() { return Err(AppError::invalid("Archivo de perfil inválido.")); }
+    if reveal {
+        #[cfg(windows)]
+        { std::process::Command::new(host939_core::paths::windows_program("explorer.exe")).arg(format!("/select,{}", p.display())).spawn().map_err(|e| AppError::io("No se pudo abrir la carpeta", e))?; return Ok(()); }
+        #[cfg(not(windows))]
+        { return crate::commands::open_path(&p.parent().unwrap().display().to_string()); }
+    }
+    crate::commands::open_path(&path)
+}
+
+/* ───────── Mods de rendimiento ───────── */
+
+use host939_core::optimize;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizeOptions { candidates: Vec<optimize::Candidate>, recommended: Vec<String>, max: Vec<String> }
+
+/// Candidatos para una versión y loader (sirve en el asistente, antes de que exista el servidor).
+#[tauri::command]
+pub async fn optimize_options(mc: String, loader: host939_core::model::Loader, id: Option<String>) -> AppResult<OptimizeOptions> {
+    let installed: Vec<String> = id.map(|i| host939_core::mods::load_manifest(&i).mods.into_iter().map(|m| m.project_id).collect()).unwrap_or_default();
+    let candidates = optimize::candidates(&Modrinth, &mc, loader, &installed).await?;
+    Ok(OptimizeOptions { recommended: optimize::preset(&candidates, "recommended"), max: optimize::preset(&candidates, "max"), candidates })
+}
+
+/// Para el asistente: se instalan cuando termine la instalación del servidor.
+#[tauri::command]
+pub fn optimize_set_pending(id: String, slugs: Vec<String>) -> AppResult<()> { optimize::set_pending(&id, &slugs) }
+
+/// Servidor existente: copia de seguridad (si ya tiene mundo) y después instala.
+#[tauri::command]
+pub async fn optimize_install(app: AppHandle, id: String, slugs: Vec<String>) -> AppResult<optimize::InstallReport> {
+    let cfg = instance::load(&id)?;
+    let mgr = app.state::<Manager>();
+    if mgr.runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor para instalar mods: se cargan al arrancar.")); }
+    if host939_core::paths::server_run_dir(&id).join("world").join("level.dat").exists() {
+        host939_core::backup::create(&mgr, &id, "Antes de instalar mods de rendimiento", "seguridad", &cfg.mc_version)?;
+    }
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let r = optimize::install(&Modrinth, &cfg, &slugs, move |m, f| { let _ = app2.emit("version-progress", serde_json::json!({ "id": id2, "message": m, "fraction": f })); }).await;
+    mgr.changed(&id);
+    r
+}
+
+/* ───────── CurseForge y modpacks ───────── */
+
+use host939_core::{curseforge as cf, modpack};
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfStatus { available: bool, from_build: bool, local: bool }
+
+#[tauri::command]
+pub fn cf_status() -> CfStatus {
+    let local = host939_core::settings::load().curseforge_key.is_some();
+    CfStatus { available: cf::available(), from_build: false, local }
+}
+
+/// Guarda (o borra) la clave en esta PC después de comprobarla contra la API.
+#[tauri::command]
+pub async fn cf_set_key(key: Option<String>) -> AppResult<CfStatus> {
+    let prev = host939_core::settings::load().curseforge_key;
+    let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    host939_core::settings::set_curseforge_key(key.as_deref())?;
+    if key.is_some() {
+        if let Err(e) = cf::search("jei", None, None, cf::CLASS_MODS, 0).await {
+            let mut back = host939_core::settings::load(); back.curseforge_key = prev; host939_core::settings::save(&back)?;
+            return Err(e);
+        }
+    }
+    Ok(cf_status())
+}
+
+#[tauri::command]
+pub async fn cf_search(query: String, mc: Option<String>, loader: Option<host939_core::model::Loader>, kind: String, index: u32) -> AppResult<Vec<cf::CfMod>> {
+    cf::search(&query, mc.as_deref(), loader, if kind == "modpacks" { cf::CLASS_MODPACKS } else { cf::CLASS_MODS }, index).await
+}
+
+#[tauri::command]
+pub async fn cf_plan(id: String, mod_id: u64) -> AppResult<cf::CfPlan> { cf::plan(&instance::load(&id)?, mod_id).await }
+
+#[tauri::command]
+pub async fn cf_install(app: AppHandle, id: String, mod_id: u64) -> AppResult<Vec<String>> {
+    let cfg = instance::load(&id)?;
+    if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor para instalar mods: se cargan al arrancar.")); }
+    let op = crate::commands::op(&app, &id, "Instalando desde CurseForge", "Descargando y verificando…");
+    let p = cf::plan(&cfg, mod_id).await.inspect_err(|e| op.fail(&e.message))?;
+    let r = op.finish(cf::apply(&cfg, &p).await, "Instalado");
+    app.state::<Manager>().changed(&id);
+    r
+}
+
+/// Ficha de un proyecto de CurseForge (necesita la clave de CurseForge de esta PC).
+#[tauri::command]
+pub async fn cf_project(mod_id: u64) -> AppResult<cf::CfMod> { cf::project(mod_id).await }
+
+#[tauri::command]
+pub async fn cf_updates(id: String) -> AppResult<Vec<(String, String)>> { cf::updates(&instance::load(&id)?).await }
+
+#[tauri::command]
+pub async fn modrinth_modpacks(query: String, offset: u32) -> AppResult<host939_core::modrinth::SearchResult> { Modrinth.search_modpacks(&query, offset).await }
+
+/// Descarga el pack (si viene de Modrinth o CurseForge) y dice qué es, sin instalar nada.
+#[tauri::command]
+pub async fn modpack_prepare(path: Option<String>, modrinth_project: Option<String>, cf_mod: Option<u64>, version_id: Option<String>) -> AppResult<(String, modpack::PackInfo)> {
+    let file = if let Some(p) = path { std::path::PathBuf::from(p) }
+    else if let Some(v) = version_id.filter(|v| valid_project(v)) { modpack::download_modrinth(&v).await? }
+    else if let Some(proj) = modrinth_project {
+        let v = Modrinth.modpack_versions(&proj).await?;
+        let first = v.into_iter().find(|v| v.files.iter().any(|f| f.filename.ends_with(".mrpack"))).ok_or_else(|| AppError::invalid("Ese modpack no tiene versiones descargables."))?;
+        modpack::download_modrinth(&first.id).await?
+    } else if let Some(mid) = cf_mod {
+        let p = cf::project(mid).await?;
+        let mut fs: Vec<cf::CfFile> = cf::search_files_any(mid).await?;
+        fs.retain(|f| f.is_server_pack != Some(true));
+        fs.sort_by(|a, b| a.release_type.cmp(&b.release_type).then(b.file_date.cmp(&a.file_date)));
+        let f = fs.into_iter().next().ok_or_else(|| AppError::invalid("Ese modpack no tiene archivos."))?;
+        let url = f.download_url.clone().filter(|_| p.allow_mod_distribution != Some(false)).ok_or_else(|| AppError::new("cf_blocked", "El autor de este modpack no permite descargarlo desde otras apps. Bajalo desde CurseForge y elegí el archivo con «Desde un archivo»."))?;
+        let dst = host939_core::paths::cache().join("modpacks").join(cf::safe_name(&f.file_name)?);
+        host939_core::net::download(&url, &dst, cf::required_sha1(&f)?, |_, _| {}).await?;
+        dst
+    } else { return Err(AppError::invalid("Elegí un modpack.")); };
+    let info = modpack::inspect(&file)?;
+    Ok((file.display().to_string(), info))
+}
+
+fn valid_project(p: &str) -> bool { !p.is_empty() && p.len() <= 64 && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackVersion { id: String, number: String, name: String, game_versions: Vec<String>, loaders: Vec<String>, date: String, kind: String, size: u64 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackDetail { project: host939_core::modrinth::ProjectDetail, authors: Vec<String>, versions: Vec<PackVersion> }
+
+/// Ficha de un modpack de Modrinth para verla dentro de 939 Host (datos de la API oficial; la
+/// descripción se muestra como texto, nunca como HTML).
+#[tauri::command]
+pub async fn modpack_detail(project: String) -> AppResult<PackDetail> {
+    if !valid_project(&project) { return Err(AppError::invalid("Modpack inválido.")); }
+    let p = Modrinth.project_detail(&project).await?;
+    let authors = Modrinth.team_names(&p.team).await.unwrap_or_default();
+    let versions = Modrinth.modpack_versions(&p.id).await.unwrap_or_default().into_iter().take(40).map(|v| PackVersion {
+        size: v.files.iter().find(|f| f.filename.ends_with(".mrpack")).map(|f| f.size).unwrap_or(0),
+        id: v.id, number: v.version_number, name: v.name, game_versions: v.game_versions, loaders: v.loaders, date: v.date_published, kind: v.version_type,
+    }).collect();
+    Ok(PackDetail { project: p, authors, versions })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackContents { mods: Vec<(String, bool, bool)>, other_files: usize }
+
+/// Qué mods incluye una versión de un modpack de Modrinth (descarga el .mrpack verificado y lee
+/// su índice; no instala nada). Los nombres salen de Modrinth por huella cuando se puede.
+#[tauri::command]
+pub async fn modpack_contents(version_id: String) -> AppResult<PackContents> {
+    if !valid_project(&version_id) { return Err(AppError::invalid("Versión inválida.")); }
+    let file = modpack::download_modrinth(&version_id).await?;
+    let files = modpack::contents(&file)?;
+    let (mods_f, other): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| f.path.starts_with("mods/"));
+    let hashes: Vec<String> = mods_f.iter().map(|f| f.sha1.clone()).filter(|h| !h.is_empty()).take(400).collect();
+    use host939_core::modrinth::Source;
+    let by_hash = Modrinth.versions_by_sha1(&hashes).await.unwrap_or_default();
+    let ids: Vec<String> = by_hash.values().map(|v| v.project_id.clone()).collect();
+    let titles: HashMap<String, String> = Modrinth.projects(&ids).await.unwrap_or_default().into_iter().map(|p| (p.id, p.title)).collect();
+    let mut mods: Vec<(String, bool, bool)> = mods_f.iter().map(|f| {
+        let t = by_hash.get(&f.sha1).and_then(|v| titles.get(&v.project_id)).cloned().unwrap_or_else(|| f.path.trim_start_matches("mods/").trim_end_matches(".jar").to_string());
+        (t, f.server, f.client)
+    }).collect();
+    mods.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    Ok(PackContents { mods, other_files: other.len() })
+}
+
+/// Incorpora un modpack a un servidor que ya existe (misma versión de Minecraft y mismo loader).
+/// Antes crea un punto de recuperación. Los mods quedan editables como cualquier otro.
+#[tauri::command]
+pub async fn modpack_apply(app: AppHandle, id: String, path: String) -> AppResult<modpack::PackReport> {
+    let cfg = instance::load(&id)?;
+    let file = std::path::PathBuf::from(&path);
+    let info = modpack::inspect(&file)?;
+    if info.mc_version != cfg.mc_version || info.loader != cfg.loader {
+        return Err(AppError::invalid(format!("Este modpack es para Minecraft {} con {}, y el servidor usa {} con {}. Creá un servidor nuevo con el modpack (o cambiá primero la versión del servidor).",
+            info.mc_version, info.loader.name(), cfg.mc_version, cfg.loader.name())));
+    }
+    if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de incorporar el modpack.")); }
+    if !host939_core::snapshots::writes_line(&id) { return Err(AppError::invalid("Este servidor lo aloja otra PC del grupo: el modpack se incorpora desde la PC anfitriona.")); }
+    let op = crate::commands::op(&app, &id, &format!("Incorporando «{}»", info.name), "Creando un punto de recuperación…");
+    {
+        let (app2, id2, mc, label) = (app.clone(), id.clone(), cfg.mc_version.clone(), format!("Antes de incorporar {}", info.name));
+        blocking(move || {
+            if host939_core::paths::server_run_dir(&id2).join("world").join("level.dat").exists() {
+                host939_core::snapshots::take(&app2.state::<Manager>(), &id2, &label, "manual", &mc)?;
+            }
+            Ok(())
+        }).await.inspect_err(|e| op.fail(&e.message))?;
+    }
+    let r = op.finish(modpack::apply(&id, &file, |m, f| op.stage(m, Some(f))).await, "Modpack incorporado");
+    app.state::<Manager>().changed(&id);
+    r
+}
+
+/// Crea el servidor con la versión y el loader del pack; el contenido se agrega al terminar la instalación.
+#[tauri::command]
+pub async fn modpack_create(app: AppHandle, path: String, name: String, memory_mb: u32, port: u16, accept_eula: bool) -> AppResult<host939_core::model::ServerConfig> {
+    let file = std::path::PathBuf::from(&path);
+    let info = modpack::inspect(&file)?;
+    let total = hardware::live(&app.state::<Probe>(), 0).ram_total_mb;
+    let input = host939_core::model::CreateServerInput {
+        name, description: format!("Modpack {} {}", info.name, info.version), mc_version: info.mc_version.clone(), loader: info.loader, memory_mb,
+        difficulty: "normal".into(), gamemode: "survival".into(), max_players: 8, port, online_mode: true, whitelist: false, view_distance: 10, simulation_distance: 8,
+        level_seed: String::new(), accept_eula, import_world_path: None, optimize: vec![],
+    };
+    let mut cfg = instance::create(input, total).await?;
+    if info.loader_version.is_some() { cfg.loader_version = info.loader_version.clone(); instance::save(&cfg)?; }
+    modpack::set_pending(&cfg.id, &file)?;
+    let mgr_app = app.clone();
+    let id = cfg.id.clone();
+    tauri::async_runtime::spawn(async move { instance::install(&mgr_app.state::<Manager>(), id).await; });
+    let _ = app.emit("servers-changed", ());
+    Ok(cfg)
+}

@@ -2,7 +2,7 @@
 
 ## 1. Instalar
 
-1. Ejecutá `939Host-0.9.0-instalador.exe`. Se instala para tu usuario en `%LOCALAPPDATA%\Programs\939 Host` (no pide permisos de administrador) y crea accesos en el menú Inicio y el escritorio.
+1. Ejecutá `939Host-0.9.0-instalador.exe`. Se instala para tu usuario en `%LOCALAPPDATA%\Programs\939 Host` (no pide permisos de administrador) y crea un acceso en el menú Inicio. Al terminar podés elegir con la casilla «Crear acceso directo en el escritorio» (marcada por defecto); se recuerda en las actualizaciones. Sin ventana: `/S /ESCRITORIO=0` o `/ESCRITORIO=1`.
 2. Si Windows bloquea o advierte sobre el programa, mirá [Instalación → Firma digital](INSTALACION.md#firma-digital-y-smart-app-control).
 3. La primera vez que 939 Host o Java usen la red, el Firewall de Windows pregunta: **permitilo en redes privadas**. Sin eso no hay conexión directa con tus amigos.
 
@@ -81,7 +81,7 @@ Siempre hay una sola PC con **permiso de anfitriona**. Nadie más puede encender
 
 ### Conexión
 
-Orden que se intenta: directa (misma red, IPv6, UPnP) → hole punching entre routers → otra PC del grupo como puente → relay público gratuito solo para los datos si nada funciona. Sin relays públicos (se desactivan en **Este equipo**) solo queda directa o por otra PC. En **Grupo y anfitriona** cada PC muestra si está conectada «directa» o «por relay» y la latencia.
+Orden que se intenta: directa (misma red, IPv6, puertos que ya estén abiertos; 939 Host no abre puertos en el router) → hole punching entre routers → otra PC del grupo como puente → relay público gratuito solo para los datos si nada funciona. Sin relays públicos (se desactivan en **Este equipo**) solo queda directa o por otra PC. En **Grupo y anfitriona** cada PC muestra si está conectada «directa» o «por relay» y la latencia.
 
 ## 5. Este equipo y configuración
 
@@ -101,6 +101,95 @@ Ensayado con copias (ver `docs/PRUEBAS.md`):
 
 Detalle importante: el mod Zombie Horde (1.3.1) hace fallar a un servidor dedicado si el mundo **no** tiene su archivo `zombie_horde.properties`. Un mundo donde ya se jugó con ese mod lo tiene y se copia con el mundo; en un mundo nuevo con ese mod, el servidor no arranca (es un error del mod).
 
-## 7. Problemas comunes
+## 7. Próxima versión (rama `rediseno-v3`, en pruebas)
+
+Estas funciones todavía no están en una versión publicada.
+
+### Cambiar la versión de Minecraft
+**Ajustes → Versión de Minecraft → Cambiar versión.** 939 Host revisa qué implica el cambio para ese
+servidor (Java, loader, cada mod y el mundo) y ofrece tres caminos:
+
+- **Actualizar este servidor:** copia completa y verificada, mods actualizados, arranque de prueba y
+  opción de volver atrás.
+- **Crear una copia con la versión nueva:** el original no se toca.
+- **Empezar de cero.**
+
+Volver a una versión anterior con el mismo mundo no se hace sobre el servidor original, porque
+Minecraft no convierte mundos hacia atrás.
+
+### Archivos
+Pestaña **Archivos** de cada servidor: explorar, crear carpetas, copiar, cortar y pegar, renombrar,
+borrar, importar (también arrastrando desde Windows), exportar y buscar. Si el servidor lo aloja otra
+PC del grupo, los archivos se administran allá por la conexión cifrada (solo la propietaria y las
+coanfitrionas). Con el servidor encendido, el mundo se puede ver pero no modificar ni descargar. Lo
+borrado o reemplazado va a la Papelera.
+
+### Papelera
+Los servidores y archivos borrados se guardan 30 días desde el borrado. Se restauran completos; si ya
+hay algo con el mismo nombre, vuelven como «(restaurado)» sin pisar nada.
+
+### Mods de rendimiento y Chunky
+Al crear un servidor con mods, o desde **Mods → Rendimiento**, 939 Host propone mods de optimización
+que existan para esa versión exacta (Recomendado, Máximo rendimiento o Personalizado). Con Chunky
+instalado, **Mundo → Pregenerar** genera el terreno por adelantado; nunca empieza solo.
+
+### Modpacks
+**Servidores → Desde un modpack:** elegí uno de Modrinth, de CurseForge o un archivo (`.mrpack` o el
+`.zip` de CurseForge). Se crea el servidor con la versión y el loader del pack y se instala solo lo que
+el servidor necesita.
+
+### Perfil para jugar
+**Resumen → Preparar perfil de mods** genera un `.mrpack` en Descargas. Se abre con Modrinth App,
+Prism Launcher o ATLauncher y crea un perfil aparte, sin tocar tu Minecraft de siempre.
+
+### Direcciones `.939host`
+**Resumen → Dirección propia:** una dirección como `supervivencia.939host`, sin puerto. Windows pide
+permiso de administrador una vez para agregarla. Es **interna**: funciona en las PCs con 939 Host que la
+crean, no es una dirección pública de Internet.
+
+### Jugadores sin 939 Host (conexión por IP)
+
+En el resumen del servidor, fila **Sin 939 Host → Configurar**:
+
+1. La PC propietaria activa **Permitir conexiones sin 939 Host**. Necesita «Verificar cuentas
+   con Mojang» encendido. Solo controla quién entra a **jugar**: quien entra por IP no puede
+   alojar, administrar ni tomar el control. Apagado, solo se entra con 939 Host.
+2. Al menos una PC del grupo activa **Recibir jugadores de Internet en esta PC** (también en
+   Configuración → Privacidad y conexiones). Esa PC es la «entrada»: abre el puerto del router
+   sola (UPnP, NAT-PMP o PCP) y lleva a los jugadores a la PC que aloja en ese momento. Quien
+   entra por ahí ve la IP pública de esa PC.
+3. La dirección para compartir aparece en la fila (con botón para copiar). «Funciona» quiere
+   decir que otra PC del grupo entró desde su conexión. Si dice CGNAT o «No se llega desde
+   Internet», esa PC no sirve de entrada: probá con otra PC del grupo o abrí el puerto a mano
+   (la app dice cuál y hacia qué IP).
+
+La dirección no cambia cuando cambia la PC que aloja, pero sí si cambia la IP pública de la
+entrada. Para una dirección fija podés guardar un **nombre propio** (dominio o DNS dinámico tuyo).
+Recomendado: lista blanca encendida. Más detalles en [DIRECCIONES-PUBLICAS.md](DIRECCIONES-PUBLICAS.md).
+
+### Jugadores: datos, historial y cambios
+
+En **Jugadores** cada persona aparece una sola vez aunque haya cambiado de nombre. La ficha
+muestra vida, hambre, experiencia, inventario (con nombres e íconos de los ítems de mods, leídos
+de los mods instalados; los de mods que ya no están se marcan) y las sesiones que 939 Host vio
+en la consola. La PC propietaria puede cambiar vida, hambre, saturación y nivel: con el jugador
+desconectado, valores exactos (se guarda una copia del archivo antes); conectado, lo que
+Minecraft permite con comandos (vida exacta desde 1.19.4, llenar el hambre, nivel).
+
+### CurseForge
+CurseForge exige una clave de su API oficial para que otras apps busquen y descarguen.
+
+1. Entrá a [console.curseforge.com](https://console.curseforge.com/) (CurseForge for Studios), creá una
+   cuenta y completá el formulario para una clave de API, aceptando sus términos para terceros.
+2. CurseForge revisa el pedido y avisa por correo cuando la aprueba.
+3. Para usarla en tu PC: **Mods → CurseForge → Pegar la clave**. Se guarda protegida con DPAPI solo
+   en esa PC y nunca se muestra ni se registra.
+
+939 Host no incluye ninguna clave en el ejecutable ni en el instalador (sería extraíble por cualquiera).
+Sin clave, podés descargar el modpack desde la web de CurseForge y crear el servidor con **Desde un
+archivo**. La clave es personal: no la compartas ni la subas al repositorio. Si el autor de un mod no permite
+descargarlo desde otras apps, 939 Host no lo descarga y te ofrece abrir su página.
+
+## 8. Problemas comunes
 
 Ver [Solución de problemas](PROBLEMAS.md).

@@ -42,7 +42,7 @@ pub struct SnapshotInfo {
     pub id: String,
     pub created_at: String,
     pub label: String,
-    /// auto | manual | seguridad
+    /// auto | manual | seguridad | local (ver [`counts_for_sync`])
     pub kind: String,
     pub mc_version: String,
     pub file_count: usize,
@@ -64,6 +64,28 @@ pub struct SnapshotInfo {
 impl SnapshotInfo {
     /// Clave de "frescura": primero la época, después el orden.
     pub fn freshness(&self) -> (u64, u64) { (self.epoch, self.seq) }
+    /// ¿Forma parte de la línea del servidor (lo que se sincroniza y se levanta al alojar)?
+    pub fn counts_for_sync(&self) -> bool { counts_for_sync(&self.kind) }
+}
+
+/// Los puntos «seguridad» (antes de restaurar, copia apartada) y «local» (tomados en una PC que
+/// no era la anfitriona de un servidor compartido) quedan solo en esta PC: nunca pasan por
+/// «el estado más reciente». Si contaran, una PC con su copia vieja podía tomar un punto propio
+/// con la época actual y un número de orden mayor que el último de la anfitriona, y al alojar
+/// levantaba esa copia vieja (se perdían los bloques y el inventario recientes).
+pub fn counts_for_sync(kind: &str) -> bool { kind != "seguridad" && kind != "local" }
+
+/// ¿Esta PC escribe la línea del servidor? Sí si no está compartido, si todavía no hay permiso o
+/// si esta PC tiene el permiso de anfitriona. Si otra PC lo tiene (o lo soltó otra PC), lo que
+/// hay en disco acá puede ser viejo.
+pub fn writes_line(id: &str) -> bool {
+    let share = crate::network::load_share(id);
+    if !share.enabled { return true; }
+    match (crate::lease::read(id), crate::lease::local_node()) {
+        (None, _) => true,
+        (Some(l), Some(me)) => l.held_by(&me),
+        (Some(_), None) => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,14 +125,36 @@ fn read_snapshot(id: &str, snap: &str) -> AppResult<Snapshot> {
     Ok(serde_json::from_slice(&json)?)
 }
 
+/// Datos de cada índice ya leído, por ruta, tamaño y fecha de modificación. `list` se llama en cada
+/// vuelta del grupo (cada pocos segundos, por cada PC): sin esto se descomprimía el índice completo
+/// de todos los puntos cada vez, que en un mundo grande son muchos megabytes. Los índices se
+/// escriben de forma atómica (archivo nuevo + renombrar), así que cualquier cambio cambia la fecha
+/// y el tamaño y se vuelve a leer.
+static INFO_CACHE: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, (u64, i64, SnapshotInfo)>>> = std::sync::Mutex::new(None);
+
 pub fn list(id: &str) -> Vec<SnapshotInfo> {
-    let mut out: Vec<SnapshotInfo> = std::fs::read_dir(snaps_dir(id))
+    let dir = snaps_dir(id);
+    let mut seen: Vec<PathBuf> = vec![];
+    let mut out: Vec<SnapshotInfo> = std::fs::read_dir(&dir)
         .map(|rd| rd.flatten().filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             let snap = name.strip_suffix(".json.gz")?;
-            read_snapshot(id, snap).ok().map(|s| s.info)
+            let path = e.path();
+            let meta = e.metadata().ok()?;
+            let (len, mt) = (meta.len(), mtime_ms(&meta));
+            seen.push(path.clone());
+            if let Some((l, m, info)) = INFO_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.get(&path)) {
+                if *l == len && *m == mt { return Some(info.clone()); }
+            }
+            let info = read_snapshot(id, snap).ok()?.info;
+            INFO_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(path, (len, mt, info.clone()));
+            Some(info)
         }).collect())
         .unwrap_or_default();
+    // Lo borrado de esta carpeta deja de ocupar la caché.
+    if let Some(c) = INFO_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        c.retain(|p, _| p.parent() != Some(dir.as_path()) || seen.contains(p));
+    }
     out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     out
 }
@@ -146,6 +190,8 @@ pub(crate) fn capture(id: &str, label: &str, kind: &str, mc_version: &str) -> Ap
     if !run.join("world").join("level.dat").exists() {
         return Err(AppError::invalid("Todavía no hay mundo: iniciá el servidor una vez para que se genere."));
     }
+    // Un punto «auto» o «manual» de una PC que no es la anfitriona queda como copia local.
+    let kind = if counts_for_sync(kind) && !writes_line(id) { "local" } else { kind };
     let started = Instant::now();
     // Índice del último punto para no releer archivos sin cambios.
     let previous: HashMap<String, FileEntry> = list(id).first()
@@ -187,7 +233,7 @@ pub(crate) fn capture(id: &str, label: &str, kind: &str, mc_version: &str) -> Ap
         files.push(FileEntry { path: rel, size, mtime_ms: mt, blocks });
     }
     let now = chrono::Local::now();
-    let seq = list(id).iter().filter(|s| s.kind != "seguridad").map(|s| s.seq).max().unwrap_or(0) + 1;
+    let seq = list(id).iter().filter(|s| s.counts_for_sync()).map(|s| s.seq).max().unwrap_or(0).saturating_add(1);
     let info = SnapshotInfo {
         epoch: crate::lease::read(id).map(|l| l.epoch).unwrap_or(0),
         seq,
@@ -207,7 +253,7 @@ pub(crate) fn capture(id: &str, label: &str, kind: &str, mc_version: &str) -> Ap
 }
 
 fn default_label(kind: &str) -> &'static str {
-    match kind { "auto" => "Automático", "seguridad" => "Antes de restaurar", _ => "Manual" }
+    match kind { "auto" => "Automático", "seguridad" => "Antes de restaurar", "local" => "Copia local (esta PC no era la anfitriona)", _ => "Manual" }
 }
 
 fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -237,7 +283,10 @@ pub fn take(mgr: &Manager, id: &str, label: &str, kind: &str, mc_version: &str) 
             let _ = mgr.send_command(id, "save-on");
             r
         } else {
-            capture(id, label, kind, mc_version)
+            let r = capture(id, label, kind, mc_version);
+            // Lo que dejó en disco la última detención ya quedó en un punto.
+            if r.is_ok() { rt.lock().unwrap().exited_unsaved = false; }
+            r
         }
     })();
     rt.lock().unwrap().busy = None;
@@ -286,6 +335,11 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
         w.sync_all().ok();
     }
     std::fs::create_dir_all(&run).ok();
+    // Lo que viene de un punto creado en otra PC cuenta como recibido (ver `modguard`).
+    let foreign = crate::lease::local_node().map(|me| !snap.info.origin.is_empty() && snap.info.origin != me).unwrap_or(false);
+    // Colocar las carpetas y registrar los mods recibidos va junto, sin que la aprobación
+    // automática de la propietaria pueda mirar en el medio (`modguard::foreign_write`).
+    let place = || -> AppResult<()> {
     for d in STATE_DIRS {
         let cur = run.join(d);
         let st = staging.join(d);
@@ -293,7 +347,7 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
         let snapshot_has_dir = snap.files.iter().any(|f| f.path.starts_with(&format!("{d}/")));
         if *d != "world" && !snapshot_has_dir && !snap_covers_dirs(&snap) { continue; }
         if cur.exists() {
-            std::fs::rename(&cur, paths::trash_slot(&format!("{id}-{d}"))).map_err(|e| AppError::io("No se pudo apartar la carpeta actual", e))?;
+            paths::rename_retry(&cur, paths::trash_slot(&format!("{id}-{d}"))).map_err(|e| AppError::io("No se pudo apartar la carpeta actual", e))?;
         }
         if st.exists() {
             std::fs::rename(&st, &cur).map_err(|e| AppError::io("No se pudo colocar la carpeta restaurada", e))?;
@@ -305,8 +359,11 @@ pub fn materialize(id: &str, snap_id: &str, mc_version: &str) -> AppResult<()> {
         let p = staging.join(f);
         if p.exists() { let _ = std::fs::rename(&p, run.join(f)); }
     }
-    let _ = std::fs::remove_dir_all(&staging);
     Ok(())
+    };
+    let placed = if foreign { crate::modguard::foreign_write(id, &snap.info.origin, place).map(|_| ()) } else { place() };
+    let _ = std::fs::remove_dir_all(&staging);
+    placed
 }
 
 /// Los puntos desde v0.3 (con `seq`) incluyen siempre mods/ y config/ aunque estén vacíos.
@@ -338,7 +395,15 @@ fn same_as_disk(run: &Path, snap: &Snapshot) -> bool {
 
 /// El punto más reciente del servidor lógico (ignora los de seguridad, que son locales).
 pub fn latest(id: &str) -> Option<SnapshotInfo> {
-    list(id).into_iter().filter(|s| s.kind != "seguridad").max_by(|a, b| a.freshness().cmp(&b.freshness()).then(a.created_at.cmp(&b.created_at)))
+    // Puntos creados en esta PC con versiones anteriores, en una época en la que la anfitriona
+    // era otra PC: son copias locales viejas aunque digan «auto» o «manual» (ver `counts_for_sync`).
+    let me = crate::lease::local_node();
+    let hist = crate::lease::history(id);
+    let foreign_epoch = |s: &SnapshotInfo| match &me {
+        Some(me) if s.origin == *me => hist.iter().rev().find(|l| l.epoch == s.epoch).map(|l| l.host != *me).unwrap_or(false),
+        _ => false,
+    };
+    list(id).into_iter().filter(|s| s.counts_for_sync() && !foreign_epoch(s)).max_by(|a, b| a.freshness().cmp(&b.freshness()).then(a.created_at.cmp(&b.created_at)))
 }
 
 /// Índice comprimido tal como está guardado, para enviarlo.
@@ -350,11 +415,12 @@ pub fn manifest_bytes(id: &str, snap_id: &str) -> AppResult<Vec<u8>> {
 fn decode_manifest(bytes: &[u8]) -> AppResult<Snapshot> {
     if bytes.len() > 64 * 1024 * 1024 { return Err(AppError::invalid("Índice demasiado grande.")); }
     let mut json = vec![];
-    flate2::read::GzDecoder::new(bytes).take(512 * 1024 * 1024).read_to_end(&mut json).map_err(|e| AppError::io("Índice recibido dañado", e))?;
+    flate2::read::GzDecoder::new(bytes).take(128 * 1024 * 1024).read_to_end(&mut json).map_err(|e| AppError::io("Índice recibido dañado", e))?;
     let s: Snapshot = serde_json::from_slice(&json)?;
     if s.info.id.contains(['/', '\\', '.']) || s.info.id.is_empty() { return Err(AppError::invalid("Identificador de punto inválido.")); }
     for f in &s.files {
         let ok_path = !f.path.is_empty() && !f.path.starts_with('/') && !f.path.contains('\\') && !f.path.split('/').any(|c| c == ".." || c.is_empty())
+            && crate::files::clean(&f.path).is_ok()
             && (STATE_DIRS.iter().any(|d| f.path.starts_with(&format!("{d}/"))) || EXTRA_FILES.contains(&f.path.as_str()));
         if !ok_path { return Err(AppError::invalid(format!("Ruta no permitida en el índice: {}", f.path))); }
         if f.blocks.iter().any(|h| h.len() != 64 || !h.bytes().all(|c| c.is_ascii_hexdigit())) {
@@ -398,9 +464,14 @@ pub fn put_blob(id: &str, hash: &str, data: &[u8]) -> AppResult<()> {
     Ok(())
 }
 
-/// Registra un índice recibido. Solo si ya están todos sus bloques.
-pub fn import_manifest(id: &str, bytes: &[u8]) -> AppResult<SnapshotInfo> {
-    let s = decode_manifest(bytes)?;
+/// Registra un índice recibido de la PC `sender` (identidad autenticada por la conexión). Solo
+/// si ya están todos sus bloques. El origen que figura en el índice lo escribe quien lo manda y
+/// no tiene firma: se reemplaza por `sender`, así un índice ajeno nunca se hace pasar por uno
+/// creado en esta PC (y sus mods cuentan como recibidos, ver `modguard`).
+pub fn import_manifest(id: &str, bytes: &[u8], sender: &str) -> AppResult<SnapshotInfo> {
+    let mut s = decode_manifest(bytes)?;
+    if sender.is_empty() { return Err(AppError::invalid("Índice recibido sin PC de origen.")); }
+    s.info.origin = sender.to_string();
     for f in &s.files {
         for h in &f.blocks {
             if !blob_path(id, h).exists() { return Err(AppError::new("integrity", "Faltan bloques; el punto no se registró.")); }
@@ -417,6 +488,21 @@ pub fn delete(id: &str, snap_id: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Verifica un punto: que estén todos sus bloques y que cada uno coincida con su SHA-256.
+/// Devuelve (archivos, bytes).
+pub fn verify(id: &str, snap_id: &str) -> AppResult<(usize, u64)> {
+    let s = read_snapshot(id, snap_id)?;
+    let mut bytes = 0u64;
+    for f in &s.files {
+        for h in &f.blocks {
+            let data = std::fs::read(blob_path(id, h)).map_err(|_| AppError::new("integrity", format!("Falta un bloque de «{}»: este punto no se puede restaurar.", f.path)))?;
+            if hex::encode(Sha256::digest(&data)) != *h { return Err(AppError::new("integrity", format!("Un bloque de «{}» está dañado.", f.path))); }
+            bytes += data.len() as u64;
+        }
+    }
+    Ok((s.files.len(), bytes))
+}
+
 /// Retención: todos los automáticos de las últimas 6 h, uno por hora durante 2 días,
 /// uno por día durante 14 días y uno por semana durante 8 semanas. Los manuales y de
 /// seguridad no se borran solos. Después libera los bloques que ya nadie usa.
@@ -426,6 +512,9 @@ pub fn prune(id: &str) -> usize {
     let mut removed = 0;
     let mut autos: Vec<SnapshotInfo> = list(id).into_iter().filter(|s| s.kind == "auto").collect();
     autos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    // El automático más reciente nunca se borra por antigüedad: un servidor que no se usó en más de
+    // 8 semanas no puede quedarse sin su último punto (es también la base de la sincronización).
+    let newest = autos.first().map(|s| s.id.clone());
     for s in autos {
         let Ok(t) = chrono::DateTime::parse_from_rfc3339(&s.created_at) else { continue };
         let age = now.signed_duration_since(t);
@@ -434,7 +523,8 @@ pub fn prune(id: &str) -> usize {
             else if age < chrono::Duration::days(14) { Some(format!("d{}", t.format("%Y%m%d"))) }
             else if age < chrono::Duration::weeks(8) { Some(format!("w{}", t.format("%G%V"))) }
             else { Some("drop".into()) };
-        let keep = match bucket { None => true, Some(b) if b == "drop" => false, Some(b) => keep_buckets.insert(b) };
+        let protected = crate::storage::protected(id).contains(&format!("snap:{}", s.id));
+        let keep = protected || Some(&s.id) == newest.as_ref() || match bucket { None => true, Some(b) if b == "drop" => false, Some(b) => keep_buckets.insert(b) };
         if !keep && std::fs::remove_file(snap_path(id, &s.id)).is_ok() { removed += 1; }
     }
     if removed > 0 { gc(id); }
@@ -507,6 +597,22 @@ mod tests {
     }
 
     #[test]
+    fn un_servidor_sin_usar_conserva_su_ultimo_punto() {
+        let id = setup();
+        let mut ids = vec![];
+        for weeks in [20i64, 12, 10] {
+            let mut snap = read_snapshot(&id, &capture(&id, "", "auto", "26.2").unwrap().id).unwrap();
+            snap.info.created_at = (chrono::Local::now() - chrono::Duration::weeks(weeks)).to_rfc3339();
+            write_snapshot(&id, &snap).unwrap();
+            ids.push(snap.info.id.clone());
+        }
+        prune(&id);
+        let left: Vec<String> = list(&id).into_iter().map(|s| s.id).collect();
+        assert_eq!(left, vec![ids[2].clone()], "queda solo el más reciente, aunque tenga 10 semanas");
+        assert!(verify(&id, &ids[2]).is_ok(), "y sus bloques siguen ahí");
+    }
+
+    #[test]
     fn dedup_restore_and_retention() {
         let id = setup();
         let run = paths::server_run_dir(&id);
@@ -575,7 +681,7 @@ mod tests {
         let missing = missing_blobs(&b, &man).unwrap();
         assert!(!missing.is_empty());
         // Sin todos los bloques el índice no se registra.
-        assert!(import_manifest(&b, &man).is_err());
+        assert!(import_manifest(&b, &man, "otra-pc").is_err());
         assert!(!has_snapshot(&b, &s1.id));
         // Un bloque adulterado se rechaza.
         let mut bad = read_blob(&a, &missing[0]).unwrap();
@@ -583,7 +689,7 @@ mod tests {
         assert!(put_blob(&b, &missing[0], &bad).is_err());
         for h in &missing { put_blob(&b, h, &read_blob(&a, h).unwrap()).unwrap(); }
         assert!(missing_blobs(&b, &man).unwrap().is_empty());
-        let info = import_manifest(&b, &man).unwrap();
+        let info = import_manifest(&b, &man, "otra-pc").unwrap();
         assert_eq!(latest(&b).unwrap().id, s1.id);
         assert_eq!(info.seq, s1.seq);
         materialize(&b, &s1.id, "26.2").unwrap();
@@ -603,7 +709,7 @@ mod tests {
         let miss2 = missing_blobs(&b, &man2).unwrap();
         assert_eq!(miss2.len(), 1, "solo el level.dat nuevo");
         for h in &miss2 { put_blob(&b, h, &read_blob(&a, h).unwrap()).unwrap(); }
-        import_manifest(&b, &man2).unwrap();
+        import_manifest(&b, &man2, "otra-pc").unwrap();
         // En B alguien había tocado el mundo (copia huérfana): se aparta como seguridad, no se pierde.
         std::fs::write(run_b.join("world/level.dat"), b"huerfano").unwrap();
         materialize(&b, &s2.id, "26.2").unwrap();
@@ -617,6 +723,134 @@ mod tests {
         let json = serde_json::to_vec(&evil).unwrap();
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         enc.write_all(&json).unwrap();
-        assert!(import_manifest(&b, &enc.finish().unwrap()).is_err());
+        assert!(import_manifest(&b, &enc.finish().unwrap(), "otra-pc").is_err());
+    }
+    /// Red team: una PC del grupo manda un punto cuyo índice dice que lo creó la PC que lo
+    /// recibe (o sin origen). Antes, sus mods no contaban como recibidos y cargaban sin la
+    /// aprobación de la propietaria. Ahora el origen es la PC que lo mandó.
+    #[test]
+    fn indice_ajeno_no_se_hace_pasar_por_local() {
+        crate::lease::set_local_node("pc-que-recibe");
+        let me = crate::lease::local_node().unwrap();
+        let a = setup();
+        let run_a = paths::server_run_dir(&a);
+        std::fs::create_dir_all(run_a.join("mods")).unwrap();
+        std::fs::write(run_a.join("mods/troyano.jar"), b"codigo de la otra pc").unwrap();
+        let s1 = capture(&a, "", "manual", "26.2").unwrap();
+        // El atacante reescribe el origen del índice con la identidad de la víctima.
+        let mut forged = read_snapshot(&a, &s1.id).unwrap();
+        forged.info.origin = me.clone();
+        let json = serde_json::to_vec(&forged).unwrap();
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&json).unwrap();
+        let man = enc.finish().unwrap();
+        let b = setup();
+        let run_b = paths::server_run_dir(&b);
+        let _ = std::fs::remove_dir_all(&run_b);
+        for h in missing_blobs(&b, &man).unwrap() { put_blob(&b, &h, &read_blob(&a, &h).unwrap()).unwrap(); }
+        assert!(import_manifest(&b, &man, "").is_err(), "sin PC de origen no se registra");
+        let info = import_manifest(&b, &man, "pc-atacante").unwrap();
+        assert_eq!(info.origin, "pc-atacante", "el origen lo fija quien recibe, no el índice");
+        materialize(&b, &s1.id, "26.2").unwrap();
+        let h = crate::modguard::sha256_file(&run_b.join("mods/troyano.jar")).unwrap();
+        assert!(crate::modguard::received(&b).contains(&h), "el mod llegado de otra PC queda marcado como recibido");
+    }
+
+    /// Regresión del bloque de tierra: en una PC que no aloja un servidor compartido, un punto
+    /// «manual» o «auto» queda como copia local y no pasa por «lo más reciente». También se
+    /// descartan los puntos que versiones anteriores crearon en esa situación.
+    #[test]
+    fn punto_de_pc_que_no_aloja_no_compite() {
+        crate::lease::set_local_node("pc-que-recibe");
+        let me = crate::lease::local_node().unwrap();
+        let id = setup();
+        let host = capture(&id, "", "auto", "26.2").unwrap();
+        assert!(host.counts_for_sync());
+        // Se comparte y la anfitriona pasa a ser otra PC (época 3).
+        crate::network::save_share(&id, &crate::network::ShareConfig { enabled: true, ..Default::default() }).unwrap();
+        let l = crate::lease::Lease { epoch: 3, host: "otra-pc".into(), host_name: "Otra".into(), state: crate::lease::LeaseState::Hosting, since: String::new(), required: (0, 0), kind: crate::lease::LeaseKind::Claim, issuer: "otra-pc".into(), prev: None, votes: vec![], sig: None };
+        crate::lease::store(&id, &l).unwrap();
+        assert!(!writes_line(&id));
+        std::fs::write(paths::server_run_dir(&id).join("world/level.dat"), b"copia-vieja").unwrap();
+        let mine = capture(&id, "", "manual", "26.2").unwrap();
+        assert_eq!(mine.kind, "local");
+        assert_eq!(latest(&id).unwrap().id, host.id, "la copia local no reemplaza a lo último de la anfitriona");
+        // Punto heredado: dice «manual», lo creó esta PC y es de la época de otra anfitriona.
+        let mut legacy = read_snapshot(&id, &mine.id).unwrap();
+        legacy.info.id = format!("{}-viejo", legacy.info.id);
+        legacy.info.kind = "manual".into();
+        legacy.info.epoch = 3;
+        legacy.info.seq = 99;
+        legacy.info.origin = me.clone();
+        write_snapshot(&id, &legacy).unwrap();
+        assert_eq!(latest(&id).unwrap().id, host.id, "un punto viejo de una época ajena no gana por número de orden");
+        // El mismo punto, si lo hubiera tomado la anfitriona de esa época, sí cuenta.
+        legacy.info.origin = "otra-pc".into();
+        write_snapshot(&id, &legacy).unwrap();
+        assert_eq!(latest(&id).unwrap().id, legacy.info.id);
+    }
+
+    /// Red team (vuelta 2): un índice comprimido chico que al descomprimirse ocupa cientos de MB
+    /// (bomba de compresión) mandado por otra PC. Se corta en 128 MB y se rechaza.
+    #[test]
+    fn bomba_de_compresion_en_el_indice_se_rechaza() {
+        use std::io::Write;
+        // Un índice válido, rellenado con 200 MB de espacios (JSON válido): sin el límite se
+        // aceptaría; comprimido ocupa unos cientos de KB.
+        let a = setup();
+        let s1 = capture(&a, "", "manual", "26.2").unwrap();
+        let json = serde_json::to_vec(&read_snapshot(&a, &s1.id).unwrap()).unwrap();
+        let pack = |pad_mb: usize| {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            enc.write_all(&json[..1]).unwrap();
+            let chunk = vec![b' '; 1024 * 1024];
+            for _ in 0..pad_mb { enc.write_all(&chunk).unwrap(); }
+            enc.write_all(&json[1..]).unwrap();
+            enc.finish().unwrap()
+        };
+        assert!(manifest_info(&pack(1)).is_ok(), "control: el mismo índice con poco relleno es válido");
+        let bomb = pack(200);
+        assert!(bomb.len() < 2 * 1024 * 1024, "la bomba tiene que ser chica: {}", bomb.len());
+        assert!(manifest_info(&bomb).is_err(), "un índice de 200 MB descomprimidos tenía que rechazarse");
+        // Más grande que el límite de 64 MB comprimidos: ni se intenta descomprimir.
+        assert!(manifest_info(&vec![0u8; 64 * 1024 * 1024 + 1]).is_err());
+    }
+
+    #[test]
+    fn secuencia_enorme_no_desborda() {
+        let a = setup();
+        let s1 = capture(&a, "", "manual", "26.2").unwrap();
+        let mut big = read_snapshot(&a, &s1.id).unwrap();
+        big.info.seq = u64::MAX;
+        big.info.id = "20990101-000000-000-m".into();
+        write_snapshot(&a, &big).unwrap();
+        let s2 = capture(&a, "", "manual", "26.2").unwrap();
+        assert_eq!(s2.seq, u64::MAX);
+    }
+
+    #[test]
+    fn la_lista_de_puntos_usa_cache_y_sigue_los_cambios() {
+        let id = setup();
+        let run = paths::server_run_dir(&id);
+        let a = capture(&id, "uno", "auto", "26.2").unwrap();
+        assert_eq!(list(&id).len(), 1);
+        // Un punto nuevo aparece.
+        std::fs::write(run.join("world/level.dat"), b"level-2").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let b = capture(&id, "dos", "auto", "26.2").unwrap();
+        assert_eq!(list(&id).len(), 2);
+        // Un índice que cambia (otra etiqueta) se vuelve a leer.
+        std::thread::sleep(Duration::from_millis(20));
+        let mut snap = read_snapshot(&id, &a.id).unwrap();
+        snap.info.label = "cambiado".into();
+        write_snapshot(&id, &snap).unwrap();
+        assert_eq!(list(&id).iter().find(|s| s.id == a.id).unwrap().label, "cambiado");
+        // Uno borrado desaparece.
+        std::fs::remove_file(snap_path(&id, &b.id)).unwrap();
+        assert_eq!(list(&id).iter().map(|s| s.id.clone()).collect::<Vec<_>>(), vec![a.id.clone()]);
+        // Con la caché, muchas vueltas seguidas no vuelven a descomprimir los índices.
+        let t = std::time::Instant::now();
+        for _ in 0..200 { let _ = list(&id); }
+        assert!(t.elapsed() < Duration::from_secs(2), "200 listas en {:?}", t.elapsed());
     }
 }

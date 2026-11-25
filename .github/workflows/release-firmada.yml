@@ -23,7 +23,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.tag }}
       - name: Verificar etiqueta y versión
@@ -35,17 +35,19 @@ jobs:
           [ "v$v" = "$TAG" ] || { echo "::error::La etiqueta $TAG no coincide con la versión $v"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Herramientas
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64 nsis zip
+          scripts/ci-apt.sh mingw-w64 nsis zip
           rustup toolchain install
       - name: Pruebas
-        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster
+        run: cargo test --locked -p host939-core -p host939-p2p -p host939-cluster --features host939-cluster/pruebas
       - name: Compilar
         run: scripts/compilar-windows.sh
+      - name: Sin secretos ni ganchos de prueba en el ejecutable
+        run: scripts/verificar-secretos.sh target/x86_64-pc-windows-gnu/release/939Host.exe --release
       - name: Preparar archivos de la app
         run: scripts/empaquetar.sh "${{ steps.version.outputs.version }}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: payload
           path: dist/payload/
@@ -62,10 +64,10 @@ jobs:
       VERSION: ${{ needs.compilar.outputs.version }}
       NSIS: C:\Program Files (x86)\NSIS\makensis.exe
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.tag }}
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: payload
           path: payload
@@ -81,12 +83,12 @@ jobs:
           Copy-Item payload\939Host.exe para-firmar\
           Copy-Item "$env:TEMP\939host-uninst\Desinstalar.exe" para-firmar\
       - id: subir-binarios
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: binarios-sin-firmar
           path: para-firmar/
       - name: Firmar 939Host.exe y Desinstalar.exe
-        uses: signpath/github-action-submit-signing-request@v3
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -108,12 +110,12 @@ jobs:
           New-Item -ItemType Directory -Force instalador | Out-Null
           Move-Item installer\939Host-$env:VERSION-instalador.exe instalador\
       - id: subir-instalador
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: instalador-sin-firmar
           path: instalador/
       - name: Firmar el instalador
-        uses: signpath/github-action-submit-signing-request@v3
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -143,7 +145,7 @@ jobs:
           Get-ChildItem -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } | Set-Content SHA256SUMS.txt
           Pop-Location
           Get-Content entrega\SHA256SUMS.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: entrega-firmada
           path: entrega/
@@ -157,14 +159,14 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.tag }}
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: entrega-firmada
           path: dist
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
             dist/*.exe

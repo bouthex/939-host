@@ -1,6 +1,6 @@
 # Política de privacidad de 939 Host
 
-Última revisión: 14 de noviembre de 2026 (versión 0.9.0).
+Última revisión: 15 de noviembre de 2026 (rama de Diseño v3, todavía sin publicar).
 
 939 Host **no tiene telemetría, analíticas, publicidad ni cuentas**, y no envía datos a servidores del
 proyecto (no existen). Todo lo que guarda queda en tu PC, en `%LOCALAPPDATA%\939Host`.
@@ -13,15 +13,20 @@ de publicar la versión.
 | Destino | Cuándo | Qué se envía |
 |---|---|---|
 | Mojang: `piston-meta.mojang.com`, `piston-data.mojang.com` | Al crear un servidor o descargar una versión | Pedido de la lista de versiones y del `server.jar` |
+| Mojang: `api.mojang.com`, `sessionserver.mojang.com`, `textures.minecraft.net` | Al mostrar jugadores, solo si **Skins reales de los jugadores** está activado (viene activado) | El nombre del jugador, para obtener su skin. Se guarda 24 h en tu PC |
+| Mojang: `piston-meta.mojang.com`, `piston-data.mojang.com`, `resources.download.minecraft.net` | La primera vez que abrís Jugadores en una versión, solo si **Imágenes originales del juego** está activado (viene activado) | Pedido del cliente oficial de esa versión (se verifica su SHA-1) y del idioma español. Se extraen solo los íconos de ítems, corazones, efectos y casilleros; el resto se borra. No se comparte con nadie |
 | Mojang: `api.mojang.com` | Al agregar a la lista blanca, operar o banear a un jugador que el servidor todavía no conoce, **solo con el servidor en modo online** | El nombre de ese jugador, para obtener su UUID |
 | Adoptium: `api.adoptium.net` y su CDN | Si no hay un Java compatible instalado | Versión de Java y sistema operativo pedidos |
 | Fabric: `meta.fabricmc.net`, `maven.fabricmc.net` | Al crear un servidor Fabric | Pedidos de descarga |
 | Forge: `files.minecraftforge.net`, `maven.minecraftforge.net` | Al crear un servidor Forge | Pedidos de descarga |
 | NeoForge: `maven.neoforged.net` | Al crear un servidor NeoForge | Pedidos de descarga |
-| Modrinth: `api.modrinth.com`, `cdn.modrinth.com` | Al buscar, instalar o actualizar mods, al mostrar íconos de mods y al activar la reconexión automática del cliente | Texto de búsqueda, versión de Minecraft y loader, hashes de los mods instalados |
-| Tu router (UPnP / NAT-PMP, red local) | Mientras compartís o estás unido a un servidor | Pedido de abrir un puerto UDP para la conexión directa |
+| Modrinth: `api.modrinth.com` | Al buscar, instalar, actualizar o vincular mods, al analizar un servidor con el asistente de reparación y al activar la reconexión automática del cliente | Texto de búsqueda y categorías, versión de Minecraft y loader, hashes de los mods instalados |
+| Modrinth: `cdn.modrinth.com` | Al mostrar íconos y capturas de mods, solo si **Íconos y capturas de los mods** está activado (viene activado) | Pedido de cada imagen |
 | PCs de tu grupo (iroh / QUIC, cifrado de extremo a extremo) | Mientras compartís un servidor o estás unido a uno | Mundo, mods y configuración del servidor compartido; estado del grupo; nombre de la PC; tráfico de Minecraft. Solo con las PCs que aceptaron una invitación |
-| Relays y descubrimiento públicos de iroh (number 0) | Solo si **Permitir relays públicos gratuitos** está activado (viene activado) | La clave pública del nodo y sus direcciones de red, para que el grupo se encuentre; si no hay conexión directa, paquetes **cifrados** que el relay no puede leer |
+| Relays y descubrimiento públicos de iroh (number 0) | Si **Relays públicos gratuitos** o el **Modo privado** están activados (los relays vienen activados) | La clave pública del nodo y la dirección del relay que usa (939 Host no publica tus IPs); el relay ve tu IP, cuándo te conectás y cuánto tráfico pasa, y reenvía paquetes **cifrados** que no puede leer. En modo privado, todo pasa por el relay y ninguna PC del grupo ve tu IP |
+| Jugadores sin 939 Host y tu router (entrada pública) | Solo si en esta PC activás **Recibir jugadores de Internet en esta PC** (viene apagado) y la propietaria permite las conexiones sin 939 Host en ese servidor | Quien se conecte a la entrada ve la **IP pública de esta PC**, y las PCs del grupo ven esa dirección (es la que se comparte), también en modo privado. Al router de tu casa se le pide abrir un puerto (UPnP, NAT-PMP o PCP) con el nombre «939 Host»; se cierra al apagar la entrada. Otra PC del grupo prueba la entrada con un ping de estado de Minecraft |
+| Entrega local de resource packs (`127.0.0.1:39393`) | Solo dentro de esta PC: atiende al Minecraft de esta PC cuando un servidor tiene un pack propio obligatorio | Nada sale de la PC; el pack se trae de la PC anfitriona por la conexión cifrada del grupo |
+| Releases oficiales del proyecto en GitHub (`github.com/bouthex/939-host/releases`) | Desde la 1.1.0: al abrir y cada 6 horas | Pedido de archivos públicos (metadatos firmados e instalador). Sin identificadores, cuentas ni datos de la PC; el servidor ve tu IP como en cualquier descarga |
 
 Las descargas de Mojang, Adoptium, loaders y Modrinth también exponen tu dirección IP a esos servicios,
 como cualquier descarga.
@@ -38,11 +43,25 @@ como cualquier descarga.
 
 ## Cómo desactivar lo que no quieras
 
-- **Relays públicos:** Configuración → desmarcá **Permitir relays públicos gratuitos** (se aplica al
+- **Skins, imágenes del juego e imágenes de mods:** Configuración → Privacidad y conexiones. Apagadas,
+  se muestran iniciales, nombres y formas simples. **Borrar imágenes descargadas** elimina la caché.
+- **Relays públicos:** Configuración → Privacidad y conexiones → desmarcá **Permitir relays públicos gratuitos** (se aplica al
   reiniciar). Sin relays solo queda la conexión directa o por otra PC del grupo.
 - **Compartir:** dejá de compartir el servidor o salí del grupo; la app deja de conectarse con otras PCs.
-- **Puente:** Configuración → desmarcá **Puede hacer de puente para otras PCs del grupo**.
+- **Puente:** Configuración → Red → desmarcá **Puede hacer de puente para otras PCs del grupo**.
 - Las descargas solo ocurren cuando creás un servidor, instalás o actualizás algo.
+
+## Datos de jugadores
+
+El perfil de un jugador muestra solo lo que guarda el propio servidor: con el jugador conectado, 939 Host
+le pide los datos al servidor por consola (cada 4 s, solo mientras el perfil está abierto y la ventana
+visible; la consulta no aparece en la consola); desconectado, lee el último guardado de Minecraft.
+Nada de esto sale de tu PC.
+
+## Asistente de reparación
+
+Funciona con reglas locales (sin IA ni servicios externos, salvo Modrinth para buscar versiones
+compatibles). Antes de cambiar algo crea un punto de restauración en tu PC.
 
 ## Informes de diagnóstico
 

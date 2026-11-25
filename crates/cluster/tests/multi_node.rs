@@ -58,13 +58,45 @@ impl Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        // En Linux los procesos hijos (Java) no mueren con el padre: se cierran antes.
-        let _ = Command::new("pkill").arg("-CONT").arg("-P").arg(self.child.id().to_string()).status();
-        let _ = Command::new("kill").arg("-CONT").arg(self.child.id().to_string()).status();
-        let _ = Command::new("pkill").arg("-KILL").arg("-P").arg(self.child.id().to_string()).status();
+        // En Linux los procesos hijos (Java) no mueren con el padre: se cierran antes. Si el nodo
+        // ya terminó solo (orden «exit»), no hay nada que limpiar: antes esto imprimía
+        // «kill: No such process», que era ruido de limpieza y no un error.
+        #[cfg(unix)]
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let id = self.child.id().to_string();
+            let quiet = |c: &mut Command| { let _ = c.stdout(Stdio::null()).stderr(Stdio::null()).status(); };
+            quiet(Command::new("pkill").args(["-CONT", "-P", &id]));
+            quiet(Command::new("kill").args(["-CONT", &id]));
+            quiet(Command::new("pkill").args(["-KILL", "-P", &id]));
+        }
+        #[cfg(windows)]
+        {
+            let id = self.child.id();
+            let _ = std::panic::catch_unwind(|| signal(id, "CONT"));
+            let _ = Command::new("taskkill").args(["/T", "/F", "/PID", &id.to_string()]).output();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Puertos para una prueba: libres de verdad (TCP y UDP en 127.0.0.1) y distintos de los de las
+/// demás pruebas, que corren en paralelo en este mismo binario. Antes cada prueba tenía puertos
+/// fijos y varias repetían los mismos (25821, 25831, 41931…): la que arrancaba segunda encontraba
+/// el puerto ocupado. Se eligen fuera del rango efímero de Linux (32768–60999) y de Windows
+/// (49152–65535), donde el sistema puede dárselos a cualquier conexión saliente.
+fn ports<const N: usize>() -> [u16; N] {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    // Punto de partida distinto en cada ejecución (por si otra ejecución quedó viva).
+    let _ = NEXT.compare_exchange(0, 20000 + (std::process::id() % 400) as u16 * 20, Ordering::SeqCst, Ordering::SeqCst);
+    std::array::from_fn(|_| loop {
+        let p = NEXT.fetch_add(1, Ordering::SeqCst);
+        assert!(p < 32000, "sin puertos libres para las pruebas");
+        let tcp = std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() && std::net::TcpListener::bind(("0.0.0.0", p)).is_ok();
+        let udp = std::net::UdpSocket::bind(("127.0.0.1", p)).is_ok();
+        if tcp && udp { break p; }
+    })
 }
 
 fn wait(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
@@ -80,30 +112,49 @@ fn slp(port: u16) -> String {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let c = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(10), host939_cluster::moving::status(c)).await.unwrap().unwrap_or_default()
+        match tokio::time::timeout(Duration::from_secs(10), host939_cluster::moving::status(c)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => format!("(error: {e})"),
+            Err(_) => "(sin respuesta en 10 s)".into(),
+        }
     })
 }
 
+/// Congela (STOP), reanuda (CONT) o mata (KILL) una "PC": simula una PC colgada o sin red.
+#[cfg(unix)]
 fn signal(pid: u32, sig: &str) { assert!(Command::new("kill").arg(format!("-{sig}")).arg(pid.to_string()).status().unwrap().success()); }
+#[cfg(windows)]
+fn signal(pid: u32, sig: &str) {
+    let script = match sig {
+        "KILL" => format!("Stop-Process -Id {pid} -Force"),
+        "STOP" | "CONT" => {
+            let f = if sig == "STOP" { "NtSuspendProcess" } else { "NtResumeProcess" };
+            format!("Add-Type -Name N -Namespace W -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int {f}(IntPtr h);'; $p = Get-Process -Id {pid}; if ([W.N]::{f}($p.Handle) -ne 0) {{ exit 1 }}")
+        }
+        other => panic!("señal {other}"),
+    };
+    assert!(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).status().unwrap().success(), "señal {sig} a {pid}");
+}
 
 fn fresh(v: &Value) -> (u64, u64) { (v["epoch"].as_u64().unwrap_or(0), v["seq"].as_u64().unwrap_or(0)) }
 
 #[test]
 fn group_protocol_fake_servers() {
+    let [p25801, p25802, p25803, p41901, p41902] = ports::<5>();
     let tmp = tempfile::tempdir().unwrap();
     println!("▶ tres PCs simuladas: A (propietaria), B y C (coanfitrionas)");
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_SCORE", "100")]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_SCORE", "150")]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[("H939_SCORE", "200")]);
 
-    let sid = a.ok("create Zombies 25801").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Zombies {p25801}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t1 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     let t2 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     assert_eq!(b.ok(&format!("join {t1}")).as_str().unwrap(), sid);
     assert_eq!(c.ok(&format!("join {t2}")).as_str().unwrap(), sid);
-    b.ok(&format!("setport {sid} 25802"));
-    c.ok(&format!("setport {sid} 25803"));
+    b.ok(&format!("setport {sid} {p25802}"));
+    c.ok(&format!("setport {sid} {p25803}"));
     // Una invitación usada no sirve dos veces.
     let mut d = Node::spawn("D", &tmp.path().join("d"), true, &[]);
     assert!(d.err(&format!("join {t1}")).contains("no es válida"));
@@ -115,9 +166,10 @@ fn group_protocol_fake_servers() {
         [&mut a, &mut b, &mut c].iter_mut().all(|n| n.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 3)
     });
 
-    // B no puede encender: el permiso es de A.
-    assert!(b.err(&format!("start {sid}")).contains("hosteando"));
+    // B no puede encender en paralelo: A lo tiene encendido. (Con A apagada se lo pasaría sola:
+    // ver `tierra_e_inventario_no_retroceden`.)
     a.ok(&format!("start {sid}"));
+    assert!(b.err(&format!("start {sid}")).contains("encendido en la PC"));
     a.ok(&format!("write {sid} marca.txt m1"));
     let s1 = a.ok(&format!("snapshot {sid}"));
     println!("✔ A es anfitriona; B no puede encender en paralelo (un solo escritor)");
@@ -128,8 +180,8 @@ fn group_protocol_fake_servers() {
     println!("✔ sincronización incremental verificada: B y C tienen el último punto");
 
     // Misma dirección para jugar desde C: 127.0.0.1:41901 → A.
-    let port_c = c.ok(&format!("route {sid} 41901")).as_u64().unwrap() as u16;
-    let port_b = b.ok(&format!("route {sid} 41902")).as_u64().unwrap() as u16;
+    let port_c = c.ok(&format!("route {sid} {p41901}")).as_u64().unwrap() as u16;
+    let port_b = b.ok(&format!("route {sid} {p41902}")).as_u64().unwrap() as u16;
     assert!(slp(port_c).contains("hosteado por A"), "{}", slp(port_c));
     println!("✔ C entra por 127.0.0.1:{port_c} y llega al servidor de A");
 
@@ -143,7 +195,13 @@ fn group_protocol_fake_servers() {
     assert!(slp(port_b).contains("hosteado por B"));
     let lb = b.status(&sid)["lease"].clone();
     println!("✔ traspaso A→B: B encendió con el mundo de A (marca m1), época {}; la misma dirección ahora lleva a B", lb["epoch"]);
-    assert!(a.err(&format!("start {sid}")).contains("hosteando"));
+    assert!(a.err(&format!("start {sid}")).contains("encendido en la PC"));
+    // Administración de jugadores con el servidor en otra PC: la anfitriona (B) decide el permiso.
+    // (El nodo de prueba no tiene Minecraft: «no puede administrar» significa que el permiso pasó.)
+    assert!(a.err(&format!("playerop {sid} adjust")).contains("no puede administrar"), "la propietaria llega a la anfitriona");
+    assert!(c.err(&format!("playerop {sid} adjust")).contains("Solo la PC propietaria"), "una integrante no puede cambiar jugadores");
+    assert!(c.err(&format!("playerop {sid} detail")).contains("no puede administrar"), "pero sí puede ver la ficha");
+    println!("✔ jugadores: la propietaria administra desde su PC y las demás solo ven");
 
     // B juega y guarda; A y C copian.
     b.ok(&format!("write {sid} marca.txt m2"));
@@ -168,9 +226,9 @@ fn group_protocol_fake_servers() {
     // ── B vuelve: ve la época mayor, se aísla y aparta su copia ──
     signal(pid_b, "CONT");
     wait("B se detiene sola", Duration::from_secs(30), || !b.ok(&format!("running {sid}")).as_bool().unwrap());
-    let snaps = b.ok(&format!("snapshots {sid}"));
-    assert!(snaps.as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"), "B debe apartar su copia: {snaps}");
-    assert!(b.err(&format!("start {sid}")).contains("hosteando"));
+    // La copia de seguridad se toma justo después de apagar: se espera a que aparezca.
+    wait("B aparta su copia", Duration::from_secs(20), || b.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
+    assert!(b.err(&format!("start {sid}")).contains("encendido en la PC"));
     println!("✔ B volvió, detectó que C tomó el servidor, se detuvo y apartó su copia (no se mezclan mundos)");
 
     // ── Soltar ordenadamente: C apaga y suelta; A lo enciende con el último estado ──
@@ -196,14 +254,16 @@ fn group_protocol_fake_servers() {
 /// "se cortó la red"); "Recuperar aquí" es manual. Y nadie puede encender con un estado viejo.
 #[test]
 fn two_pcs_manual_recovery_and_no_stale_start() {
+    let [p25821, p25822] = ports::<2>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
-    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
-    let sid = a.ok("create Duo 25821").as_str().unwrap().to_string();
+    // B sin internet (como una PC que se quedó sin conexión): no tiene que levantar el servidor sola.
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_PRUEBA_SIN_INTERNET", "1")]);
+    let sid = a.ok(&format!("create Duo {p25821}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25822"));
+    b.ok(&format!("setport {sid} {p25822}"));
     a.ok(&format!("start {sid}"));
     a.ok(&format!("write {sid} marca.txt d1"));
     let s1 = a.ok(&format!("snapshot {sid}"));
@@ -212,17 +272,17 @@ fn two_pcs_manual_recovery_and_no_stale_start() {
     // A se congela: B NO debe tomar el servidor sola (sin mayoría posible).
     let pid_a = a.pid();
     signal(pid_a, "STOP");
-    std::thread::sleep(Duration::from_secs(14));
-    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "con dos PCs no hay toma automática");
+    std::thread::sleep(Duration::from_secs(22));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "sin internet B no toma el servidor");
     assert!(b.err(&format!("start {sid}")).contains("no responde"));
-    println!("✔ dos PCs: sin mayoría, B no tomó el servidor sola; ofrece «Recuperar aquí»");
+    println!("✔ dos PCs: B sin internet no tomó el servidor sola; ofrece «Recuperar aquí»");
     b.ok(&format!("take {sid}"));
     assert!(b.ok(&format!("running {sid}")).as_bool().unwrap());
     assert_eq!(b.ok(&format!("read {sid} marca.txt")).as_str(), Some("d1"));
     println!("✔ «Recuperar aquí» en B: encendió con el último estado sincronizado (d1)");
     signal(pid_a, "CONT");
     wait("A se aísla al volver", Duration::from_secs(30), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
-    assert!(a.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
+    wait("A aparta su copia", Duration::from_secs(20), || a.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
     println!("✔ A volvió, vio la época nueva, se detuvo y apartó su copia");
 
     // B escribe y suelta mientras A está desconectada → A no puede encender con su versión vieja.
@@ -249,19 +309,51 @@ fn two_pcs_manual_recovery_and_no_stale_start() {
     println!("✔ el permiso soltado exige el último punto: A encendió recién al tenerlo (d2)");
 }
 
+/// Dos PCs con internet: si la anfitriona deja de responder (se apagó de golpe), la otra levanta el
+/// servidor sola con el último estado; cuando la anfitriona vuelve, se detiene y aparta su copia.
+#[test]
+fn two_pcs_automatic_recovery() {
+    let [p25831, p25832] = ports::<2>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok(&format!("create Duo2 {p25831}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} {p25832}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} marca.txt e1"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    let pid_a = a.pid();
+    signal(pid_a, "STOP");
+    let t0 = Instant::now();
+    wait("B levanta el servidor sola", Duration::from_secs(60), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(t0.elapsed() >= Duration::from_secs(13), "no antes del doble del tiempo normal");
+    assert_eq!(b.ok(&format!("read {sid} marca.txt")).as_str(), Some("e1"));
+    println!("✔ dos PCs: B levantó el servidor sola a los {:.0} s con el último estado (e1)", t0.elapsed().as_secs_f32());
+    signal(pid_a, "CONT");
+    wait("A se detiene al volver", Duration::from_secs(30), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("A aparta su copia", Duration::from_secs(20), || a.ok(&format!("snapshots {sid}")).as_array().unwrap().iter().any(|s| s["kind"] == "seguridad"));
+    assert!(b.ok(&format!("running {sid}")).as_bool().unwrap(), "B sigue alojando");
+    println!("✔ A volvió, se detuvo y apartó su copia: nunca dos servidores a la vez después de reconectar");
+}
+
 /// Una PC con copia vieja no puede encender aunque el permiso esté libre: tiene que tener
 /// el último punto que dejó quien lo soltó. (C solo juega: retransmite el permiso pero no tiene datos.)
 #[test]
 fn stale_copy_cannot_start_after_release() {
+    let [p25831, p25832, p41931] = ports::<3>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
-    let sid = a.ok("create Viejo 25831").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Viejo {p25831}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25832"));
+    b.ok(&format!("setport {sid} {p25832}"));
     let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
     c.ok(&format!("join {t}"));
     a.ok(&format!("start {sid}"));
@@ -280,7 +372,7 @@ fn stale_copy_cannot_start_after_release() {
     assert!(e.contains("última versión"), "{e}");
     println!("✔ B con copia vieja no puede encender: «{e}»");
     // C, que solo juega, ve un aviso claro en su dirección fija.
-    let port = c.ok(&format!("route {sid} 41931")).as_u64().unwrap() as u16;
+    let port = c.ok(&format!("route {sid} {p41931}")).as_u64().unwrap() as u16;
     assert!(slp(port).contains("Nadie lo está hosteando"));
     println!("✔ el jugador ve «Nadie lo está hosteando» en la lista de servidores");
     // Si igual se quiere seguir con lo que hay, es explícito.
@@ -294,30 +386,39 @@ fn stale_copy_cannot_start_after_release() {
 #[test]
 #[ignore]
 fn real_minecraft_handover() {
-    let jar = std::path::Path::new("/tmp/mctest/server.jar");
-    assert!(jar.exists(), "falta /tmp/mctest/server.jar");
-    std::env::var("HOST939_TEST_JAVA25").expect("definí HOST939_TEST_JAVA25");
+    let [p25811, p25812, p41911] = ports::<3>();
     let tmp = tempfile::tempdir().unwrap();
-    // Precargar el jar oficial en la caché de cada "PC" (se verifica por SHA-1 igual).
-    let sha1 = String::from_utf8(Command::new("sha1sum").arg(jar).output().unwrap().stdout).unwrap().split_whitespace().next().unwrap().to_string();
-    for n in ["a", "b"] {
-        let d = tmp.path().join(n).join("cache/jars");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::copy(jar, d.join(format!("{sha1}.jar"))).unwrap();
+    // Sin internet (entorno de desarrollo): se precarga el jar oficial en la caché de cada "PC"
+    // (se verifica por SHA-1 igual). Con internet (CI en Windows) cada PC lo descarga de Mojang.
+    let jar = std::path::Path::new("/tmp/mctest/server.jar");
+    if jar.exists() {
+        let sha1 = host939_core::net::sha1_file(jar).unwrap();
+        for n in ["a", "b"] {
+            let d = tmp.path().join(n).join("cache/jars");
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::copy(jar, d.join(format!("{sha1}.jar"))).unwrap();
+        }
     }
     let mut a = Node::spawn("A", &tmp.path().join("a"), false, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), false, &[]);
-    let sid = a.ok("create Real939 25811").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Real939 {p25811}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25812"));
-    let route = b.ok(&format!("route {sid} 41911")).as_u64().unwrap() as u16;
+    b.ok(&format!("setport {sid} {p25812}"));
+    let route = b.ok(&format!("route {sid} {p41911}")).as_u64().unwrap() as u16;
     a.ok(&format!("start {sid}"));
     println!("✔ A encendió un servidor 26.2 real");
     a.ok(&format!("cmd {sid} scoreboard objectives add traspaso dummy"));
     a.ok(&format!("cmd {sid} scoreboard players set marcador traspaso 939"));
-    let st = slp(route);
+    // Como el juego, se reintenta: la primera consulta puede llegar mientras la ruta se arma.
+    let mut st = String::new();
+    for i in 0..10 {
+        st = slp(route);
+        if st.contains("\"protocol\"") { if i > 0 { println!("  (la ruta respondió al intento {})", i + 1); } break; }
+        println!("  intento {}: {st}", i + 1);
+        std::thread::sleep(Duration::from_secs(1));
+    }
     assert!(st.contains("\"protocol\""), "estado por la ruta de B: {st}");
     println!("✔ B ve el servidor de A por 127.0.0.1:{route}");
     let t0 = Instant::now();
@@ -332,4 +433,776 @@ fn real_minecraft_handover() {
     assert!(st.contains("\"name\":\"26.2\""), "la ruta debía llevar al servidor real de B: {st}");
     println!("✔ el mundo sobrevivió al traspaso (marcador = 939) y la misma dirección llega al servidor de B");
     b.ok(&format!("stop {sid}"));
+}
+
+/// Nombres visibles y solicitud manual de anfitrión, sobre el traspaso de siempre:
+/// renombrar no toca la identidad; una solicitud por vez; cancelar; rechazar; aceptar con el
+/// mundo intacto; un traspaso que falla deja todo en la anfitriona; jugadoras no pueden pedir.
+#[test]
+fn host_requests_and_pc_names() {
+    let [p25811, p25812, p25813] = ports::<3>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_SCORE", "200")]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_SCORE", "150"), ("H939_TEST_FAIL_PREFETCH", "1")]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[("H939_SCORE", "60"), ("H939_RAM", "3000")]);
+    let mut d = Node::spawn("D", &tmp.path().join("d"), true, &[]);
+    let sid = a.ok(&format!("create Zombies {p25811}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    for (n, port) in [(&mut b, p25812), (&mut c, p25813)] {
+        let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+        n.ok(&format!("join {t}"));
+        n.ok(&format!("setport {sid} {port}"));
+    }
+    let tj = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    d.ok(&format!("join {tj}"));
+    wait("que se vean los cuatro", Duration::from_secs(20), || a.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 4);
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} marca.txt m1"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B y C copian", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1) && fresh(&c.status(&sid)["myLatest"]) == fresh(&s1));
+
+    // ── Nombre visible: solo visual ──
+    let id_b = b.ok("id");
+    let lease_before = a.status(&sid)["lease"].clone();
+    b.ok("rename Pampa faro");
+    wait("A ve el nombre nuevo de B", Duration::from_secs(15), || {
+        a.status(&sid)["members"].as_array().unwrap().iter().any(|m| m["nodeId"] == id_b && m["name"] == "Pampa" && m["symbol"] == "faro")
+    });
+    assert_eq!(b.ok("id"), id_b, "el nombre no cambia la identidad");
+    assert_eq!(a.status(&sid)["lease"], lease_before, "el nombre no toca el permiso");
+    println!("✔ B se llama «Pampa» (símbolo faro) para todo el grupo; su identidad y el permiso no cambiaron");
+
+    // ── Una jugadora no puede pedir; una coanfitriona sí ──
+    assert!(d.err(&format!("request {sid}")).contains("jugadora"));
+    assert_eq!(c.ok(&format!("request {sid}")).as_str(), Some("A"));
+    let inc = a.status(&sid)["incomingRequest"].clone();
+    assert_eq!(inc["name"], "C");
+    assert!(inc["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("memoria")), "advertencia de memoria: {inc}");
+    assert!(inc["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("procesador")), "advertencia de CPU: {inc}");
+    assert!(c.status(&sid)["outgoingRequest"].is_object());
+    println!("✔ C pidió alojarlo; A ve la solicitud con advertencias: {}", inc["warnings"]);
+
+    // ── Sin duplicados ni simultáneas ──
+    assert!(c.err(&format!("request {sid}")).contains("Ya le pediste"));
+    assert!(b.err(&format!("request {sid}")).contains("Ya hay una solicitud pendiente de C"));
+    println!("✔ solicitudes duplicadas o simultáneas rechazadas con un mensaje claro");
+
+    // ── Cancelar ──
+    c.ok(&format!("cancelreq {sid}"));
+    wait("A ya no ve la solicitud", Duration::from_secs(5), || a.status(&sid)["incomingRequest"].is_null());
+    println!("✔ C canceló su solicitud");
+
+    // ── Rechazar ──
+    b.ok(&format!("request {sid}"));
+    wait("A ve la solicitud de Pampa", Duration::from_secs(5), || a.status(&sid)["incomingRequest"]["name"] == "Pampa");
+    a.ok(&format!("answer {sid} no"));
+    wait("Pampa recibe el rechazo", Duration::from_secs(5), || { let st = b.status(&sid); st["lastAnswer"]["accepted"] == false && st["outgoingRequest"].is_null() });
+    assert!(a.ok(&format!("running {sid}")).as_bool().unwrap());
+    println!("✔ A rechazó; Pampa recibió la respuesta y A siguió alojando");
+
+    // ── Aceptar: traspaso de siempre, mundo intacto, un solo escritor ──
+    c.ok(&format!("request {sid}"));
+    wait("A ve la solicitud de C", Duration::from_secs(5), || a.status(&sid)["incomingRequest"]["name"] == "C");
+    assert_eq!(a.ok(&format!("answer {sid} si")).as_str(), Some("C"));
+    wait("C en línea", Duration::from_secs(30), || c.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos encendidas");
+    assert_eq!(c.ok(&format!("read {sid} marca.txt")).as_str(), Some("m1"));
+    wait("C sin solicitud pendiente", Duration::from_secs(10), || c.status(&sid)["outgoingRequest"].is_null());
+    println!("✔ A aceptó: C es la anfitriona con el mundo de A (m1); A está apagada");
+
+    // ── Traspaso que falla: la anfitriona conserva el control ──
+    c.ok(&format!("write {sid} marca.txt m2"));
+    b.ok(&format!("request {sid}"));
+    wait("C ve la solicitud de Pampa", Duration::from_secs(5), || c.status(&sid)["incomingRequest"]["name"] == "Pampa");
+    let e = c.err(&format!("answer {sid} si"));
+    assert!(e.contains("sigue en esta PC") || e.contains("siguió en esta PC"), "{e}");
+    assert!(c.ok(&format!("running {sid}")).as_bool().unwrap(), "C sigue encendida");
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(c.status(&sid)["iAmHost"].as_bool().unwrap());
+    assert_eq!(c.ok(&format!("read {sid} marca.txt")).as_str(), Some("m2"));
+    wait("Pampa se entera de la falla", Duration::from_secs(5), || b.status(&sid)["lastAnswer"]["accepted"] == false);
+    println!("✔ el traspaso a Pampa falló al copiar: C siguió alojando sin cortar, con el mundo intacto (m2)");
+
+    // ── Anfitriona que no responde: no se puede pedir (actúa la recuperación) ──
+    let pid_c = c.pid();
+    signal(pid_c, "STOP");
+    std::thread::sleep(Duration::from_secs(3));
+    let e = b.err(&format!("request {sid}"));
+    assert!(e.contains("no responde"), "{e}");
+    signal(pid_c, "CONT");
+    println!("✔ con la anfitriona sin responder no se pide: queda la recuperación automática");
+}
+
+/// Traspaso aceptado con una copia lenta: mientras la otra PC copia (fase 1), el servidor sigue
+/// encendido en la anfitriona y los jugadores siguen entrando; nunca hay dos encendidos.
+#[test]
+fn slow_two_phase_handover_keeps_playing() {
+    let [p25821, p25822, p25823, p41931] = ports::<4>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_TEST_SLOW_PREFETCH", "4")]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let sid = a.ok(&format!("create Lento {p25821}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    for (n, port) in [(&mut b, p25822), (&mut c, p25823)] {
+        let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+        n.ok(&format!("join {t}"));
+        n.ok(&format!("setport {sid} {port}"));
+    }
+    wait("que se vean", Duration::from_secs(20), || a.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 3);
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} marca.txt lento"));
+    let port_c = c.ok(&format!("route {sid} {p41931}")).as_u64().unwrap() as u16;
+    wait("C llega a A", Duration::from_secs(15), || slp(port_c).contains("hosteado por A"));
+    b.ok(&format!("request {sid}"));
+    wait("A ve la solicitud", Duration::from_secs(5), || a.status(&sid)["incomingRequest"]["name"] == "B");
+    // A acepta (la orden queda esperando el traspaso); mientras tanto se mira desde C y B.
+    writeln!(a.stdin, "answer {sid} si").unwrap();
+    a.stdin.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(slp(port_c).contains("hosteado por A"), "durante la fase 1 se sigue jugando en A: {}", slp(port_c));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "B no enciende antes de tener el permiso");
+    let line = a.rx.recv_timeout(Duration::from_secs(120)).expect("respuesta de A");
+    let r: Value = serde_json::from_str(&line).unwrap();
+    assert!(r["ok"].as_bool().unwrap(), "traspaso: {r}");
+    wait("B en línea", Duration::from_secs(30), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert_eq!(b.ok(&format!("read {sid} marca.txt")).as_str(), Some("lento"));
+    wait("C llega a B", Duration::from_secs(15), || slp(port_c).contains("hosteado por B"));
+    println!("✔ copia lenta: se siguió jugando en A durante la fase 1; después B tomó el servidor con el mundo intacto y la misma dirección llevó a B");
+}
+
+/// Regresión (CI 15/11/2026): después de un traspaso A→C, B pedía alojar y recibía «C no
+/// responde» aunque C estaba bien. Causa: B consultaba a todas las PCs juntas y solo marcaba la
+/// respuesta de C cuando terminaba también la de A, que respondía lento (ocupada apagando). Acá A
+/// responde siempre con 3,5 s de demora: B tiene que poder pedir a C una y otra vez.
+#[test]
+fn request_reaches_new_host_while_old_host_is_slow() {
+    let [p25881] = ports::<1>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_TEST_SLOW_INFO_MS", "3500")]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let sid = a.ok(&format!("create Lento {p25881}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t1 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    let t2 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t1}"));
+    c.ok(&format!("join {t2}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("snapshot {sid} prueba"));
+    wait("B y C copian", Duration::from_secs(40), || b.status(&sid)["myLatest"].is_object() && c.status(&sid)["myLatest"].is_object());
+    // C pide alojar (se reintenta hasta que C conoce el permiso de A).
+    wait("C pide alojar", Duration::from_secs(30), || c.cmd(&format!("request {sid}"))["ok"] == true);
+    wait("A ve la solicitud de C", Duration::from_secs(15), || a.status(&sid)["incomingRequest"]["name"] == "C");
+    a.ok(&format!("answer {sid} si"));
+    wait("C aloja", Duration::from_secs(60), || c.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("B sabe que C aloja", Duration::from_secs(20), || b.status(&sid)["lease"]["hostName"] == "C");
+    println!("✔ traspaso A→C hecho; A sigue respondiendo con 3,5 s de demora");
+    for i in 1..=6 {
+        let r = b.cmd(&format!("request {sid}"));
+        assert_eq!(r["ok"], true, "intento {i}: B no pudo pedir a C: {r}");
+        b.ok(&format!("cancelreq {sid}"));
+        std::thread::sleep(Duration::from_millis(900));
+    }
+    println!("✔ B pidió alojar a C 6 veces seguidas sin «C no responde», con A lenta");
+    let online = b.status(&sid)["members"].as_array().unwrap().iter().find(|m| m["name"] == "C").map(|m| m["online"] == true).unwrap_or(false);
+    assert!(online, "B debe ver a C conectada");
+}
+
+/// Administración remota de archivos entre PCs del grupo: listar, crear, subir y bajar con
+/// verificación por SHA-1, sin sobrescribir sin pedirlo, mundo protegido con el servidor
+/// encendido, cancelación sin archivos a medias, permisos por rol y que siga a la anfitriona.
+#[test]
+fn remote_files_follow_host_and_protect_world() {
+    let [p25841, p25842] = ports::<2>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let sid = a.ok(&format!("create Archivos {p25841}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} {p25842}"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    c.ok(&format!("join {t}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} marca.txt hola"));
+    wait("B ve a A como anfitriona", Duration::from_secs(20), || b.status(&sid)["lease"]["state"] == "hosting");
+
+    // Listar y crear carpeta desde B: pasa en A.
+    let ls = b.ok(&format!("fls {sid}"));
+    assert!(ls.as_array().unwrap().iter().any(|e| e["name"] == "world" && e["locked"] == true), "{ls}");
+    b.ok(&format!("fmkdir {sid} config/remoto"));
+    assert!(a.ok(&format!("exists {sid} config/remoto")).as_bool().unwrap());
+    println!("✔ B lista y crea carpetas en la anfitriona A; el mundo figura protegido (encendido)");
+
+    // Subir 3 MB y bajarlos: idénticos.
+    let big = tmp.path().join("grande.bin");
+    let mut data = vec![0u8; 3 * 1024 * 1024 + 123];
+    for (i, x) in data.iter_mut().enumerate() { *x = (i * 7 % 251) as u8; }
+    std::fs::write(&big, &data).unwrap();
+    let local = host939_core::net::sha1_file(&big).unwrap();
+    b.ok(&format!("fput {sid} {} config/remoto/grande.bin", big.display()));
+    assert_eq!(a.ok(&format!("sha1 {sid} config/remoto/grande.bin")).as_str().unwrap(), local);
+    let back = tmp.path().join("bajado.bin");
+    b.ok(&format!("fget {sid} config/remoto/grande.bin {}", back.display()));
+    assert_eq!(host939_core::net::sha1_file(&back).unwrap(), local);
+    println!("✔ subida y descarga de 3 MB por P2P con el mismo SHA-1 en las dos puntas");
+
+    // Sin reemplazo explícito no se pisa; con reemplazo sí.
+    let e = b.err(&format!("fput {sid} {} config/remoto/grande.bin", big.display()));
+    assert!(e.contains("exists"), "{e}");
+    b.ok(&format!("fput {sid} {} config/remoto/grande.bin reemplazar", big.display()));
+    println!("✔ no sobrescribe sin pedirlo («{e}»)");
+
+    // Cancelar a mitad de camino: no queda nada a medias.
+    let e = b.err(&format!("fputcancel {sid} {} config/remoto/cortado.bin", big.display()));
+    assert!(e.contains("cancelada"), "{e}");
+    std::thread::sleep(Duration::from_millis(800));
+    let names = a.ok(&format!("lsdir {sid} config/remoto"));
+    assert!(!names.as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("cortado") || n.as_str().unwrap().contains(".939-subida")), "{names}");
+    println!("✔ subida cancelada: ni el archivo ni el temporal quedan en la anfitriona");
+
+    // Mundo protegido mientras está encendido.
+    let e = b.err(&format!("frm {sid} world/marca.txt"));
+    assert!(e.contains("encendido"), "{e}");
+    let e = b.err(&format!("fget {sid} world/marca.txt {}", tmp.path().join("m.txt").display()));
+    assert!(e.contains("encendido"), "{e}");
+    println!("✔ con el servidor encendido el mundo no se modifica ni se descarga");
+
+    // Una PC que solo juega no administra archivos.
+    let e = c.err(&format!("fls {sid}"));
+    assert!(e.contains("propietaria y las coanfitrionas"), "{e}");
+    println!("✔ la PC jugadora no puede administrar archivos");
+
+    // Apagado: ahora sí se puede tocar el mundo (lo borrado va a la Papelera de A).
+    a.ok(&format!("stop {sid}"));
+    wait("A apagado", Duration::from_secs(20), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
+    // Al detener, A guarda el estado final en segundo plano; mientras tanto no acepta otro punto
+    // («Ya hay una operación en curso»). Se espera a que termine (en Windows tarda más).
+    wait("A guarda el estado final", Duration::from_secs(30), || a.ok(&format!("latest {sid}"))["label"] == "Al detener el servidor");
+    b.ok(&format!("frm {sid} world/marca.txt"));
+    assert!(!a.ok(&format!("exists {sid} world/marca.txt")).as_bool().unwrap());
+    println!("✔ apagado: B manda un archivo del mundo a la Papelera de A");
+
+    // Traspaso a B: ahora A administra los archivos de B.
+    a.ok(&format!("start {sid}"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    a.ok(&format!("handover {sid} {}", b.ok("id").as_str().unwrap()));
+    wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("A ve a B como anfitriona", Duration::from_secs(20), || a.status(&sid)["lease"]["host"] == b.ok("id"));
+    a.ok(&format!("fmkdir {sid} config/desde-a"));
+    assert!(b.ok(&format!("exists {sid} config/desde-a")).as_bool().unwrap());
+    println!("✔ tras el traspaso, los archivos se administran en la nueva anfitriona B");
+}
+
+/// El logo del servidor viaja firmado en sus datos públicos: lo ve la PC que solo juega y se
+/// mantiene cuando cambia la anfitriona.
+#[test]
+fn server_logo_reaches_players_and_survives_handover() {
+    let [p25851, p25852] = ports::<2>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let sid = a.ok(&format!("create Logos {p25851}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} {p25852}"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    c.ok(&format!("join {t}"));
+    // Los servidores nuevos traen el logo de 939 Host: también llega a la PC que solo juega.
+    let logo_c = |c: &mut Node| c.ok(&format!("card {sid}"))["logo"].as_str().unwrap_or("").to_string();
+    wait("C recibe el logo de 939 Host", Duration::from_secs(20), || logo_c(&mut c).starts_with("data:image/png;base64,"));
+    let inicial = logo_c(&mut c);
+    assert_eq!(a.ok(&format!("logo {sid}")).as_bool(), Some(true));
+    wait("C recibe el logo nuevo", Duration::from_secs(20), || { let l = logo_c(&mut c); l.starts_with("data:image/png;base64,") && l != inicial });
+    println!("✔ la PC que solo juega recibe el logo firmado por la propietaria");
+    a.ok(&format!("start {sid}"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    a.ok(&format!("handover {sid} {}", b.ok("id").as_str().unwrap()));
+    wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    b.ok(&format!("sync {sid}")); c.ok(&format!("sync {sid}"));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(c.ok(&format!("card {sid}"))["logo"].as_str().unwrap_or("").starts_with("data:image/png"), "el logo se perdió tras el traspaso");
+    assert!(b.ok(&format!("card {sid}"))["logo"].as_str().unwrap_or("").starts_with("data:image/png"));
+    println!("✔ tras pasar el servidor a B, el logo sigue en todas las PCs");
+}
+
+
+/// Regresión del bloque de tierra (prueba entre bout y Archi): una PC colocó tierra, detuvo el
+/// servidor y la otra lo encendió con un estado viejo (la tierra desapareció y volvió al
+/// inventario). Causas que cubre:
+/// 1. Un punto tomado en una PC que NO aloja (botón «Crear punto», copia vieja en disco) recibía la
+///    época actual y un número de orden mayor que el último de la anfitriona: al alojar, esa PC
+///    levantaba su copia vieja.
+/// 2. «Detener» no publicaba el estado final: quedaba solo en la PC anfitriona.
+/// 3. Encender en otra PC con la anfitriona conectada y apagada exigía un traspaso manual.
+#[test]
+fn tierra_e_inventario_no_retroceden() {
+    let [p25841, p25842] = ports::<2>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok(&format!("create Tierra {p25841}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} {p25842}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} bloque.txt pasto"));
+    a.ok(&format!("write {sid} inventario.txt 1-tierra"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia el primer punto", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+
+    // B tiene en disco una copia vieja y alguien crea un punto ahí (como el botón «Crear punto»).
+    b.ok(&format!("writestale {sid} bloque.txt pasto"));
+    b.ok(&format!("writestale {sid} inventario.txt 1-tierra"));
+    let local = b.ok(&format!("manualsnap {sid}"));
+    assert_eq!(local["kind"], "local", "un punto en una PC que no aloja queda como copia local");
+    assert_eq!(fresh(&b.ok(&format!("latest {sid}"))), fresh(&s1), "la copia local no pasa por «lo más reciente»");
+    println!("✔ el punto de una PC que no aloja queda como copia local y no compite con la anfitriona");
+
+    // En A se coloca la tierra (sale del inventario) y se detiene el servidor con «Detener».
+    a.ok(&format!("write {sid} bloque.txt tierra"));
+    a.ok(&format!("write {sid} inventario.txt vacio"));
+    a.ok(&format!("stop {sid}"));
+    wait("B recibe el estado final sin traspaso", Duration::from_secs(25), || fresh(&b.status(&sid)["myLatest"]) > fresh(&s1));
+    println!("✔ «Detener» publicó el estado final y B lo copió");
+
+    // «Iniciar» en B con A conectada y apagada: se enciende en A (iniciar no es pedir ser anfitriona).
+    let e = b.err(&format!("start {sid}"));
+    assert!(e.starts_with("PEDIDO:") && e.contains("Encendiéndose en la PC de A"), "{e}");
+    wait("A enciende a pedido de B", Duration::from_secs(30), || a.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "B no aloja por iniciar");
+    wait("B ve el estado real de A", Duration::from_secs(20), || b.status(&sid)["hostState"]["state"].as_str().map(|s| s != "stopped" && s != "unknown").unwrap_or(false));
+    // «Detener» desde B (coanfitriona): lo apaga A guardando.
+    b.ok(&format!("stopremote {sid}"));
+    wait("A se detiene a pedido de B", Duration::from_secs(30), || !a.ok(&format!("running {sid}")).as_bool().unwrap());
+    println!("✔ B encendió y detuvo el servidor en la PC de A sin pedir ser anfitriona");
+    // Pedir ser anfitriona es otra acción (A decide, aunque esté apagada).
+    let e = b.ok(&format!("request {sid}")).to_string();
+    assert!(!e.is_empty());
+    // La anfitriona decide siempre (aunque tenga el servidor apagado): nunca se acepta sola.
+    wait("A ve la solicitud", Duration::from_secs(10), || a.status(&sid)["incomingRequest"].is_object());
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "no se acepta sola");
+    a.ok(&format!("answer {sid} si"));
+    wait("B queda alojando", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "la tierra sigue colocada");
+    assert_eq!(b.ok(&format!("read {sid} inventario.txt")).as_str(), Some("vacio"), "el inventario no vuelve atrás");
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap());
+    println!("✔ B encendió con la tierra colocada y el inventario correcto");
+
+    // B juega, detiene y su PC se apaga de golpe: A recupera con lo último (publicado al detener).
+    b.ok(&format!("write {sid} bloque.txt piedra"));
+    b.ok(&format!("stop {sid}"));
+    wait("A recibe el estado final de B", Duration::from_secs(25), || a.ok(&format!("latest {sid}"))["origin"].as_str() == Some(&id_of(&mut b)));
+    let pid_b = b.pid();
+    signal(pid_b, "KILL");
+    wait("A puede recuperar (B dejó de responder)", Duration::from_secs(90), || a.cmd(&format!("take {sid}"))["ok"].as_bool().unwrap());
+    assert_eq!(a.ok(&format!("read {sid} bloque.txt")).as_str(), Some("piedra"), "lo hecho antes de detener no se pierde aunque la PC se apague");
+    println!("✔ con la PC anfitriona apagada de golpe después de detener, no se perdió nada");
+}
+
+/// 939 Host muere de golpe con un servidor compartido encendido. En Windows, el guardián le manda
+/// «stop» a Minecraft (que guarda) y deja la marca «pendiente-publicar». Al volver a abrir 939 Host,
+/// esta PC (que sigue con el permiso) publica ese estado final al grupo: nada de lo jugado después
+/// del último punto se pierde ni queda solo en esta PC. Acá se reproduce el efecto del guardián.
+#[test]
+fn tras_un_cierre_inesperado_se_publica_lo_que_guardo_el_guardian() {
+    let [p25861, p25862] = ports::<2>();
+    let tmp = tempfile::tempdir().unwrap();
+    let root_a = tmp.path().join("a");
+    let mut a = Node::spawn("A", &root_a, true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok(&format!("create Guardian {p25861}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} {p25862}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} bloque.txt pasto"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia el punto", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    // Se juega después del último punto y 939 Host muere de golpe.
+    a.ok(&format!("write {sid} bloque.txt tierra"));
+    signal(a.pid(), "KILL");
+    drop(a);
+    // Lo que hace el guardián: Minecraft guardó (el mundo ya está en disco) y queda la marca.
+    let dir = root_a.join("Servers").join(&sid);
+    assert!(dir.join("server/world/bloque.txt").exists(), "el mundo de A está en disco");
+    std::fs::write(dir.join("pendiente-publicar"), b"1").unwrap();
+    let _ = std::fs::remove_file(dir.join("en-marcha"));
+    // Se vuelve a abrir 939 Host en A: publica el estado final sin encender nada.
+    let mut a = Node::spawn("A", &root_a, true, &[]);
+    wait("B recibe el estado que guardó el guardián", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) > fresh(&s1));
+    assert!(!dir.join("pendiente-publicar").exists(), "la marca se usó una vez");
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "no se enciende solo");
+    // B pide alojarlo: tiene lo jugado antes del cierre inesperado.
+    b.ok(&format!("request {sid}"));
+    // La anfitriona decide siempre (aunque tenga el servidor apagado): nunca se acepta sola.
+    wait("A ve la solicitud", Duration::from_secs(10), || a.status(&sid)["incomingRequest"].is_object());
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "no se acepta sola");
+    a.ok(&format!("answer {sid} si"));
+    wait("B queda alojando", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"), "lo jugado antes del cierre inesperado no se pierde");
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos anfitrionas");
+    println!("✔ tras un cierre inesperado, el estado que guardó el guardián llega al grupo y nadie aloja dos veces");
+}
+
+/// Corte de luz (o «Finalizar árbol de procesos»): muere 939 Host y nadie deja la marca del guardián.
+/// Lo que quedó en disco después del último punto no se publica como si fuera seguro; el grupo sigue
+/// desde el último punto, y lo de la PC cortada no se borra: queda como punto apartado.
+#[test]
+fn tras_un_corte_sin_guardian_no_se_publica_lo_no_confirmado() {
+    let [p25871, p25872] = ports::<2>();
+    let tmp = tempfile::tempdir().unwrap();
+    let root_a = tmp.path().join("a");
+    let mut a = Node::spawn("A", &root_a, true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok(&format!("create Corte {p25871}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} {p25872}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("write {sid} bloque.txt pasto"));
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia el punto", Duration::from_secs(20), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    a.ok(&format!("write {sid} bloque.txt tierra"));
+    signal(a.pid(), "KILL");
+    drop(a);
+    let mut a = Node::spawn("A", &root_a, true, &[]);
+    // Al abrir, A avisa una vez que el último cierre no lo vio nadie.
+    let notes = a.ok("cierres").to_string();
+    assert!(notes.contains("cierre-sin-ver") && notes.contains("sin-confirmar"), "sin aviso del cierre sin ver: {notes}");
+    assert_eq!(a.ok("cierres"), serde_json::json!([]), "el aviso se muestra una sola vez");
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(fresh(&b.status(&sid)["myLatest"]), fresh(&s1), "se publicó solo un estado que nadie confirmó como guardado");
+    println!("    tras volver a abrir A: aviso de cierre sin ver y el grupo sigue en el último punto");
+    // B pide alojar: A le pasa lo que quedó en disco (es lo más nuevo), rotulado como sin confirmar,
+    // y el punto anterior sigue disponible para volver.
+    b.ok(&format!("request {sid}"));
+    // La anfitriona decide siempre (aunque tenga el servidor apagado): nunca se acepta sola.
+    wait("A ve la solicitud", Duration::from_secs(10), || a.status(&sid)["incomingRequest"].is_object());
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(!b.ok(&format!("running {sid}")).as_bool().unwrap(), "no se acepta sola");
+    a.ok(&format!("answer {sid} si"));
+    wait("B queda alojando", Duration::from_secs(60), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    assert_eq!(b.ok(&format!("read {sid} bloque.txt")).as_str(), Some("tierra"));
+    let snaps = b.ok(&format!("snapshots {sid}")).to_string();
+    assert!(snaps.contains("tras un cierre sin confirmar"), "el punto del traspaso no está rotulado: {snaps}");
+    assert!(snaps.contains(s1["id"].as_str().expect("id del punto")), "falta el punto anterior para volver: {snaps}");
+    assert!(!a.ok(&format!("running {sid}")).as_bool().unwrap(), "nunca dos anfitrionas");
+    assert_eq!(a.ok("cierres"), serde_json::json!([]), "la marca se usó en el traspaso");
+    println!("✔ corte sin guardián: aviso, nada se publica solo, el traspaso queda rotulado y el punto anterior sigue");
+}
+
+fn id_of(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }
+
+/// Chat de voz (Simple Voice Chat usa UDP en otro puerto): llega a la anfitriona por la conexión
+/// cifrada del grupo y vuelve, sin abrir puertos. Una PC fuera del grupo no puede usarlo.
+#[test]
+fn voz_por_udp_llega_a_la_anfitriona() {
+    let [p25851, p41854, p41855] = ports::<3>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let sid = a.ok(&format!("create Voz {p25851}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    a.ok(&format!("start {sid}"));
+    a.ok(&format!("fakevoice {sid} 24854"));
+    b.ok(&format!("voiceroute {sid} {p41854}"));
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut got = String::new();
+    let end = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < end && got.is_empty() {
+        sock.send_to(b"hola-voz", &format!("127.0.0.1:{p41854}")).unwrap();
+        let mut buf = [0u8; 256];
+        if let Ok((n, _)) = sock.recv_from(&mut buf) { got = String::from_utf8_lossy(&buf[..n]).to_string(); }
+    }
+    assert_eq!(got, "eco:hola-voz", "la voz llega a la anfitriona y vuelve por el túnel");
+    println!("✔ UDP de voz: jugadora → anfitriona → jugadora por la conexión cifrada");
+
+    // Una PC que no es del grupo no puede usar el túnel de voz de A.
+    let mut x = Node::spawn("X", &tmp.path().join("x"), true, &[]);
+    let addr_a = a.ok("myaddr");
+    x.ok(&format!("knowaddr {addr_a}"));
+    // Para X el servidor no existe: no tiene permiso ni sabe quién aloja; no puede abrir la ruta.
+    let r = x.cmd(&format!("voiceroute {sid} {p41855}"));
+    if r["ok"].as_bool().unwrap() {
+        let s2 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s2.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        s2.send_to(b"intruso", &format!("127.0.0.1:{p41855}")).unwrap();
+        let mut buf = [0u8; 64];
+        assert!(s2.recv_from(&mut buf).is_err(), "una PC ajena no recibe respuesta");
+    }
+    println!("✔ una PC fuera del grupo no puede usar la voz");
+}
+
+/// Medición repetible del consumo en reposo de tres PCs (grupo de tres y amigos entre todas), con
+/// los tiempos reales del producto (no los acelerados de las pruebas). Solo Linux (lee /proc).
+/// Se corre a mano: `cargo test -p host939-cluster --features pruebas --test multi_node
+/// consumo_en_reposo -- --ignored --nocapture` (con RUST_BACKTRACE=0: si está activo, cada error
+/// esperable captura un backtrace y la medición sale inflada).
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn consumo_en_reposo() {
+    let [p25971] = ports::<1>();
+    fn cpu_ticks(pid: u32) -> u64 {
+        let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let f: Vec<&str> = s.rsplit(')').next().unwrap().split_whitespace().collect();
+        f[11].parse::<u64>().unwrap() + f[12].parse::<u64>().unwrap()
+    }
+    fn rss_mb(pid: u32) -> u64 {
+        let s = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        s.lines().find(|l| l.starts_with("VmRSS")).unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap() / 1024
+    }
+    // Bytes que el proceso escribió a disco (incluye lo que queda en caché del sistema).
+    fn written(pid: u32) -> u64 {
+        std::fs::read_to_string(format!("/proc/{pid}/io")).ok().and_then(|s| s.lines().find(|l| l.starts_with("wchar:")).and_then(|l| l.split_whitespace().nth(1)?.parse().ok())).unwrap_or(0)
+    }
+    fn medir(nombre: &str, nodos: &[(&str, u32)], segs: u64) {
+        let t0: Vec<u64> = nodos.iter().map(|(_, p)| cpu_ticks(*p)).collect();
+        let w0: Vec<u64> = nodos.iter().map(|(_, p)| written(*p)).collect();
+        std::thread::sleep(Duration::from_secs(segs));
+        for (i, (n, p)) in nodos.iter().enumerate() {
+            let d = cpu_ticks(*p) - t0[i];
+            let w = written(*p).saturating_sub(w0[i]);
+            println!("MEDICION {nombre} {n}: CPU {:.2} % de un núcleo ({d} ticks en {segs} s), RSS {} MB, escrito {:.1} KB/min", d as f64 / segs as f64, rss_mb(*p), w as f64 / 1024.0 / (segs as f64 / 60.0));
+        }
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let env = [("H939_REAL_TIMING", "1")];
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &env);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &env);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &env);
+    let ps = [("A", a.pid()), ("B", b.pid()), ("C", c.pid())];
+    medir("solo", &ps, 60);
+    let sid = a.ok(&format!("create Consumo {p25971}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t1 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    let t2 = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t1}"));
+    c.ok(&format!("join {t2}"));
+    for (x, y) in [(0usize, 1usize), (0, 2), (1, 2)] {
+        let code = [&mut a, &mut b, &mut c][x].ok("finvite").as_str().unwrap().to_string();
+        let _ = [&mut a, &mut b, &mut c][y].cmd(&format!("fadd {code}"));
+    }
+    std::thread::sleep(Duration::from_secs(20));
+    medir("grupo y amigos, apagado", &ps, 120);
+    a.ok(&format!("start {sid}"));
+    std::thread::sleep(Duration::from_secs(10));
+    medir("grupo y amigos, servidor encendido", &ps, 120);
+}
+
+/// ¿Responde algo como Minecraft en ese puerto? (Como la lista de servidores del juego, sin 939 Host.)
+fn ping_externo(port: u16) -> Option<String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let c = tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(("127.0.0.1", port))).await.ok()?.ok()?;
+        tokio::time::timeout(Duration::from_secs(8), host939_cluster::moving::status(c)).await.ok()?.ok()
+    })
+}
+
+/// Conexión por IP para jugadores sin 939 Host: interruptor de la propietaria, entrada pública en
+/// una PC que no aloja, traspaso de anfitriona con la misma dirección, apagado efectivo e intentos
+/// de administración desde afuera. (Simulado en una PC: «Internet» es 127.0.0.1.)
+#[test]
+fn conexion_por_ip_sin_939_host() {
+    let [p25861, p25862, p25871, p41931] = ports::<4>();
+    let tmp = tempfile::tempdir().unwrap();
+    let env = [("H939_ENTRANCE_BIND", "127.0.0.1")];
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &env);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &env);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &env);
+    let sid = a.ok(&format!("create Abierto {p25861}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+    b.ok(&format!("join {t}"));
+    b.ok(&format!("setport {sid} {p25862}"));
+    let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
+    c.ok(&format!("join {t}"));
+    wait("que los tres se vean", Duration::from_secs(20), || [&mut a, &mut b, &mut c].iter_mut().all(|n| n.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 3));
+    a.ok(&format!("start {sid}"));
+    // C (una PC que solo juega) acepta ser entrada pública en su puerto.
+    c.ok(&format!("entport {sid} {p25871}"));
+    c.ok("consent 1");
+    // 3) Interruptor sin encender: nadie sin 939 Host entra.
+    assert!(c.ok(&format!("entrance {sid}")).is_null(), "sin permiso de la propietaria no se abre la entrada");
+    assert!(ping_externo(p25871).is_none());
+    println!("✔ sin el permiso de la propietaria no hay entrada para jugadores sin 939 Host");
+    // 10) Una PC que no es la propietaria no puede encenderlo (ni siendo coanfitriona).
+    assert!(b.err(&format!("external {sid} 1")).contains("propietaria"));
+    assert!(c.err(&format!("external {sid} 1")).contains("propietaria"));
+    // Modo sin conexión: se niega a abrir (cualquiera entraría con el nombre de un operador).
+    assert!(a.err(&format!("external {sid} 1")).contains("modo online"));
+    a.ok(&format!("onlinemode {sid} 1"));
+    a.ok(&format!("external {sid} 1"));
+    println!("✔ solo la propietaria lo enciende, y nunca con el modo sin conexión");
+    // 2) Encendido: un Minecraft sin 939 Host entra por la entrada de C y llega a A.
+    wait("C abre la entrada", Duration::from_secs(20), || !c.ok(&format!("entrance {sid}")).is_null());
+    wait("entrada de C lleva a A", Duration::from_secs(20), || ping_externo(p25871).map(|s| s.contains("hosteado por A")).unwrap_or(false));
+    wait("otra PC comprueba la entrada", Duration::from_secs(30), || c.ok(&format!("entrance {sid}"))["state"] == "comprobada");
+    let e = c.ok(&format!("entrance {sid}"));
+    assert_eq!(e["addr"].as_str(), Some(format!("127.0.0.1:{p25871}").as_str()));
+    println!("✔ entrada pública en C comprobada desde otra PC: {}", e["detail"]);
+    // La propietaria ve la entrada de C (para mostrar la dirección).
+    wait("A ve la entrada de C", Duration::from_secs(20), || a.ok(&format!("entrances {sid}")).as_array().map(|v| v.iter().any(|x| x[3]["addr"].as_str() == Some(format!("127.0.0.1:{p25871}").as_str()))).unwrap_or(false));
+    // 10) Lo que llega por la entrada es solo Minecraft: basura o un pedido «de administración»
+    // termina en el servidor de juego y nada cambia en el grupo.
+    {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", p25871)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let _ = s.write_all(b"{\"t\":\"external\",\"server\":\"x\",\"allow\":false}\n939host/ctrl/1\r\nGET / HTTP/1.1\r\n\r\n");
+        let mut buf = [0u8; 256];
+        let _ = s.read(&mut buf);
+    }
+    assert_eq!(a.ok(&format!("running {sid}")).as_bool(), Some(true));
+    assert!(ping_externo(p25871).unwrap_or_default().contains("hosteado por A"), "la entrada sigue igual");
+    println!("✔ basura y pedidos de administración por la entrada no hacen nada: solo llega Minecraft");
+    // 4) Cambio de anfitriona: la misma dirección ahora lleva a B.
+    let s1 = a.ok(&format!("snapshot {sid}"));
+    wait("B copia", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
+    a.ok(&format!("handover {sid} {}", b.ok("id").as_str().unwrap()));
+    wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
+    wait("la misma dirección lleva a B", Duration::from_secs(20), || ping_externo(p25871).map(|s| s.contains("hosteado por B")).unwrap_or(false));
+    println!("✔ cambio de anfitriona A→B: la dirección pública no cambió");
+    // 5) Reinicio de la anfitriona: mientras está apagado, el juego muestra el motivo; al volver,
+    // la misma dirección funciona sola.
+    b.ok(&format!("stop {sid}"));
+    wait("aviso con el servidor apagado", Duration::from_secs(20), || ping_externo(p25871).map(|s| !s.contains("hosteado por")).unwrap_or(false));
+    b.ok(&format!("start {sid}"));
+    wait("vuelve tras el reinicio", Duration::from_secs(20), || ping_externo(p25871).map(|s| s.contains("hosteado por B")).unwrap_or(false));
+    println!("✔ reinicio de la anfitriona: aviso mientras está apagado y la misma dirección al volver");
+    // 3) La propietaria lo apaga: la entrada se cierra en todas las PCs.
+    a.ok(&format!("external {sid} 0"));
+    wait("C cierra la entrada", Duration::from_secs(30), || c.ok(&format!("entrance {sid}")).is_null() && ping_externo(p25871).is_none());
+    println!("✔ apagado: sin entrada para jugadores sin 939 Host");
+    // 1) Los jugadores con 939 Host siguen entrando como siempre (por el túnel del grupo).
+    let port_c = c.ok(&format!("route {sid} {p41931}")).as_u64().unwrap() as u16;
+    assert!(slp(port_c).contains("hosteado por B"));
+    // Y la PC que dejó de consentir no reabre aunque se vuelva a permitir.
+    c.ok("consent 0");
+    a.ok(&format!("external {sid} 1"));
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(c.ok(&format!("entrance {sid}")).is_null() && ping_externo(p25871).is_none());
+    println!("✔ con 939 Host se sigue entrando; una PC que no acepta ser entrada no la abre");
+}
+
+
+/// Transferencia de propiedad en dos pasos (prueba real entre dos PCs: la anterior la perdía y la
+/// nueva nunca la recibía). Mientras no acepta, nada cambia; rechazar no cambia nada; aceptar deja
+/// una sola propietaria verificada en todas las PCs, también con código de recuperación creado.
+#[test]
+fn transferencia_de_propiedad_confirmada() {
+    let [p25861] = ports::<1>();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+    let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+    let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
+    let (ia, ib) = (id(&mut a), id(&mut b));
+    let sid = a.ok(&format!("create Prop {p25861}")).as_str().unwrap().to_string();
+    a.ok(&format!("share {sid}"));
+    for (n, role) in [(&mut b, "coanfitrion"), (&mut c, "jugador")] {
+        let t = a.ok(&format!("invite {sid} {role}")).as_str().unwrap().to_string();
+        n.ok(&format!("join {t}"));
+    }
+    a.ok(&format!("recoverycode {sid}"));
+    let owner = |n: &mut Node| n.status(&sid)["members"].as_array().unwrap().iter().find(|m| m["role"] == "propietario").map(|m| m["nodeId"].as_str().unwrap().to_string());
+    wait("todas ven a A propietaria", Duration::from_secs(20), || [&mut a, &mut b, &mut c].iter_mut().all(|n| owner(n).as_deref() == Some(ia.as_str())));
+    a.ok(&format!("transfer {sid} {ib}"));
+    wait("B ve la oferta", Duration::from_secs(15), || b.status(&sid)["ownerOfferIn"].is_string());
+    std::thread::sleep(Duration::from_secs(8));
+    assert_eq!(owner(&mut a).as_deref(), Some(ia.as_str()), "mientras B no acepta, A sigue siendo la propietaria");
+    assert_eq!(owner(&mut b).as_deref(), Some(ia.as_str()));
+    b.ok(&format!("ownanswer {sid} no"));
+    wait("A ve el rechazo", Duration::from_secs(10), || a.status(&sid)["ownerResult"]["accepted"] == false);
+    assert_eq!(owner(&mut a).as_deref(), Some(ia.as_str()), "rechazar no cambia nada");
+    println!("✔ la oferta espera la decisión y rechazarla no cambia nada");
+    a.ok(&format!("transfer {sid} {ib}"));
+    wait("B ve la oferta otra vez", Duration::from_secs(15), || b.status(&sid)["ownerOfferIn"].is_string());
+    let m = b.ok(&format!("ownanswer {sid} si"));
+    assert!(m.as_str().unwrap().contains("propietaria"), "{m}");
+    wait("las tres ven a B propietaria", Duration::from_secs(25), || [&mut a, &mut b, &mut c].iter_mut().all(|n| owner(n).as_deref() == Some(ib.as_str())));
+    for n in [&mut a, &mut b, &mut c] {
+        assert_eq!(n.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["role"] == "propietario").count(), 1, "una sola propietaria");
+    }
+    // La nueva propietaria administra el grupo; la anterior ya no.
+    assert!(a.err(&format!("transfer {sid} {ia}")).contains("Solo la PC propietaria"));
+    println!("✔ aceptada: B es la única propietaria en las tres PCs (con código de recuperación creado antes)");
+}
+
+fn id(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }
+
+/// Traspaso de propiedad con mensajes perdidos: (1) la confirmación de la destinataria no llega;
+/// (2) la lista firmada no le llega a la destinataria. En los dos casos termina con una sola
+/// propietaria y la saliente no firma ninguna otra lista mientras tanto (no hay dos versiones).
+#[test]
+fn traspaso_de_propiedad_con_mensajes_perdidos() {
+    let [p1, p2] = ports::<2>();
+    let owner = |n: &mut Node, sid: &str| n.status(sid)["members"].as_array().unwrap().iter().filter(|m| m["role"] == "propietario").map(|m| m["nodeId"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    // (1) Confirmación perdida.
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
+        let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_TEST_DROP_OWNER_CONFIRM", "1")]);
+        let (ia, ib) = (id(&mut a), id(&mut b));
+        let sid = a.ok(&format!("create Conf {p1}")).as_str().unwrap().to_string();
+        a.ok(&format!("share {sid}"));
+        let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+        b.ok(&format!("join {t}"));
+        wait("B en el grupo", Duration::from_secs(20), || owner(&mut b, &sid) == vec![ia.clone()]);
+        a.ok(&format!("transfer {sid} {ib}"));
+        wait("B ve la oferta", Duration::from_secs(15), || b.status(&sid)["ownerOfferIn"].is_string());
+        b.ok(&format!("ownanswer {sid} si"));
+        assert_eq!(owner(&mut b, &sid), vec![ib.clone()], "B adoptó la lista firmada");
+        // B queda congelada (como si se cortara su conexión): A no recibió la confirmación ni
+        // puede ver su informe. Mientras tanto A no firma ninguna otra lista ni retira la oferta.
+        signal(b.pid(), "STOP");
+        if owner(&mut a, &sid) == vec![ia.clone()] {
+            let e = a.err(&format!("recoverycode {sid}"));
+            assert!(e.contains("traspaso"), "A no firma nada mientras el traspaso está en curso: {e}");
+            assert!(a.err(&format!("owncancel {sid}")).contains("no se puede retirar"));
+            println!("✔ con el traspaso firmado y sin confirmar, A no firma otra lista ni lo retira");
+        } else {
+            assert!(a.err(&format!("recoverycode {sid}")).contains("Solo la PC propietaria"));
+        }
+        signal(b.pid(), "CONT");
+        wait("A termina el traspaso al ver el informe de B", Duration::from_secs(30), || owner(&mut a, &sid) == vec![ib.clone()]);
+        assert_eq!(owner(&mut b, &sid), vec![ib.clone()]);
+        println!("✔ confirmación perdida: A lo ve en el informe de B y termina; nunca firmó otra lista");
+    }
+    // (2) Lista firmada perdida (la respuesta llega cuando B ya dejó de esperar).
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_TEST_LOSE_OWNER_REPLY", "1")]);
+        let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
+        let (ia, ib) = (id(&mut a), id(&mut b));
+        let sid = a.ok(&format!("create Perd {p2}")).as_str().unwrap().to_string();
+        a.ok(&format!("share {sid}"));
+        let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
+        b.ok(&format!("join {t}"));
+        wait("B en el grupo", Duration::from_secs(20), || owner(&mut b, &sid) == vec![ia.clone()]);
+        a.ok(&format!("transfer {sid} {ib}"));
+        wait("B ve la oferta", Duration::from_secs(15), || b.status(&sid)["ownerOfferIn"].is_string());
+        let r = b.cmd(&format!("ownanswer {sid} si"));
+        println!("    respuesta de B: {r}");
+        // En cada PC hay siempre exactamente una propietaria (A o B, nunca dos ni ninguna).
+        for n in [&mut a, &mut b] { assert_eq!(owner(n, &sid).len(), 1); }
+        wait("A reenvía el traspaso firmado y termina", Duration::from_secs(40), || owner(&mut a, &sid) == vec![ib.clone()] && owner(&mut b, &sid) == vec![ib.clone()]);
+        println!("✔ lista firmada perdida: A la reenvía, B la adopta y A termina; siempre una sola propietaria");
+    }
 }

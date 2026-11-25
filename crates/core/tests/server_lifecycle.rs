@@ -13,6 +13,18 @@ use host939_core::{backup, instance, paths, snapshots};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Java de prueba: si HOST939_TEST_JAVA25 apunta a un JDK local se usa ese (entornos sin
+/// internet); si no, 939 Host descarga Java como lo haría en la PC de un usuario.
+#[allow(dead_code)]
+fn java_override() {
+    if let Ok(j) = std::env::var("HOST939_TEST_JAVA25") {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&j, host939_core::paths::runtimes().join("java-25")).unwrap();
+        #[cfg(not(unix))]
+        let _ = j;
+    }
+}
+
 #[derive(Default)]
 struct Recorder {
     lines: Mutex<Vec<String>>,
@@ -38,10 +50,9 @@ fn wait_for(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn full_server_lifecycle() {
-    let java25 = std::env::var("HOST939_TEST_JAVA25").expect("definí HOST939_TEST_JAVA25");
     let tmp = tempfile::tempdir().unwrap();
     paths::init(tmp.path().to_path_buf()).unwrap();
-    std::os::unix::fs::symlink(&java25, paths::runtimes().join("java-25")).unwrap();
+    java_override();
 
     let rec = Arc::new(Recorder::default());
     let mgr = Manager::new(rec.clone());
@@ -52,7 +63,7 @@ async fn full_server_lifecycle() {
         name: "Prueba 939".into(), description: "aislada".into(), mc_version: "26.2".into(), loader: Loader::Vanilla,
         memory_mb: 2048, difficulty: "hard".into(), gamemode: "survival".into(), max_players: 4, port: 25611,
         online_mode: true, whitelist: true, view_distance: 4, simulation_distance: 4, level_seed: "939".into(),
-        accept_eula: true, import_world_path: None,
+        accept_eula: true, import_world_path: None, optimize: vec![],
     };
     let cfg = instance::create(input, 8192).await.expect("crear");
     assert!(cfg.identity.access_code.starts_with("PRUEBA-939 · "), "código: {}", cfg.identity.access_code);
@@ -86,8 +97,11 @@ async fn full_server_lifecycle() {
     // 5. Backup en caliente (save-off → save-all flush → copia → save-on)
     let info = backup::create(&mgr, &cfg.id, "en caliente", "manual", &cfg.mc_version).expect("backup");
     let zip = paths::server_backups_dir(&cfg.id).join(&info.file);
-    let mut z = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
-    assert!(z.by_name("world/level.dat").is_ok());
+    {
+        // Se cierra enseguida: en Windows un archivo abierto impide mover la carpeta después.
+        let mut z = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+        assert!(z.by_name("world/level.dat").is_ok());
+    }
     let log = mgr.console(&cfg.id).join("\n");
     assert!(log.contains("> save-off") && log.contains("> save-on") && log.contains("Saved the game"));
     println!("✔ backup en caliente {} ({:.1} MB) con save-off/save-on", info.file, info.size_mb);
@@ -111,12 +125,35 @@ async fn full_server_lifecycle() {
     assert!(!paths::server_run_dir(&cfg.id).join(".939host.lock").exists(), "el lock debe borrarse");
     println!("✔ detenido limpio, lock liberado");
 
-    // 7. Puerto ocupado → error claro
-    let blocker = std::net::TcpListener::bind(("127.0.0.1", 25611)).unwrap();
+    // 7. Puerto ocupado por otro programa que escucha en todas las direcciones (antes la
+    //    comprobación en 127.0.0.1 lo daba por libre, Java fallaba al abrirlo y «Reparar» decía que
+    //    no había problema).
+    let blocker = std::net::TcpListener::bind(("0.0.0.0", 25611)).unwrap();
+    // 7a. Con acceso desde la red local, el número importa: no se cambia solo, se explica.
+    let mut st = host939_core::settings::load();
+    st.lan_access = true;
+    host939_core::settings::save(&st).unwrap();
     let err = mgr.start(&probe, &cfg).unwrap_err();
     assert_eq!(err.code, "port");
+    assert!(err.message.contains("Reparar"), "{}", err.message);
+    println!("✔ con acceso de la red local: no cambia el puerto solo ({})", err.message);
+    // 7b. Predeterminado (solo esta PC): pasa solo a un puerto libre y enciende de verdad.
+    st.lan_access = false;
+    host939_core::settings::save(&st).unwrap();
+    mgr.start(&probe, &cfg).expect("enciende en otro puerto");
+    let moved = instance::load(&cfg.id).unwrap();
+    assert_ne!(moved.port, 25611);
+    assert!(wait_for(Duration::from_secs(400), || rt.lock().unwrap().status() == RunStatus::Running), "no encendió en el puerto nuevo");
+    let props = std::fs::read_to_string(paths::server_run_dir(&cfg.id).join("server.properties")).unwrap();
+    assert!(props.contains(&format!("server-port={}", moved.port)));
+    assert!(mgr.console(&cfg.id).iter().any(|l| l.contains(&format!("pasó al puerto {}", moved.port))), "se explica el cambio");
+    mgr.stop(&cfg.id).unwrap();
+    assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(100)));
     drop(blocker);
-    println!("✔ puerto ocupado detectado: {}", err.message);
+    let mut back = moved.clone();
+    back.port = 25611;
+    instance::save(&back).unwrap();
+    println!("✔ puerto ocupado por otro programa: el servidor pasó solo al {} y encendió", moved.port);
 
     // 8. Restaurar (crea backup de seguridad y aparta el mundo actual)
     backup::restore(&mgr, &cfg.id, &info.file, &cfg.mc_version).expect("restaurar");
@@ -166,10 +203,9 @@ fn mods_metadata_from_real_copies() {
 #[ignore]
 async fn players_and_permissions_real_server() {
     use host939_core::players::{self, PlayerAction};
-    let java25 = std::env::var("HOST939_TEST_JAVA25").expect("definí HOST939_TEST_JAVA25");
     let tmp = tempfile::tempdir().unwrap();
     paths::init(tmp.path().to_path_buf()).unwrap();
-    std::os::unix::fs::symlink(&java25, paths::runtimes().join("java-25")).unwrap();
+    java_override();
     if let Ok(jar) = std::env::var("HOST939_TEST_SERVER_JAR") {
         let sha = String::from_utf8(std::process::Command::new("sha1sum").arg(&jar).output().unwrap().stdout).unwrap().split_whitespace().next().unwrap().to_string();
         std::fs::create_dir_all(paths::cache().join("jars")).unwrap();
@@ -182,7 +218,7 @@ async fn players_and_permissions_real_server() {
         name: "Permisos".into(), description: String::new(), mc_version: "26.2".into(), loader: Loader::Vanilla,
         memory_mb: 1536, difficulty: "easy".into(), gamemode: "survival".into(), max_players: 4, port: 25615,
         online_mode: false, whitelist: true, view_distance: 3, simulation_distance: 3, level_seed: "939".into(),
-        accept_eula: true, import_world_path: None,
+        accept_eula: true, import_world_path: None, optimize: vec![],
     };
     let cfg = instance::create(input, 8192).await.unwrap();
     instance::install(&mgr, cfg.id.clone()).await;
@@ -300,12 +336,11 @@ fn import_mods_from_real_copy() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn migration_rehearsal_with_copies() {
-    let java25 = std::env::var("HOST939_TEST_JAVA25").expect("HOST939_TEST_JAVA25");
     let world = std::env::var("HOST939_TEST_WORLD").expect("HOST939_TEST_WORLD");
     let mods = std::env::var("HOST939_TEST_MODS").expect("HOST939_TEST_MODS");
     let tmp = tempfile::tempdir().unwrap();
     paths::init(tmp.path().to_path_buf()).unwrap();
-    std::os::unix::fs::symlink(&java25, paths::runtimes().join("java-25")).unwrap();
+    java_override();
     if let Ok(jar) = std::env::var("HOST939_TEST_SERVER_JAR") {
         let sha = String::from_utf8(std::process::Command::new("sha1sum").arg(&jar).output().unwrap().stdout).unwrap().split_whitespace().next().unwrap().to_string();
         std::fs::create_dir_all(paths::cache().join("jars")).unwrap();
@@ -318,7 +353,7 @@ async fn migration_rehearsal_with_copies() {
         name: "Modpack prueba".into(), description: "copia".into(), mc_version: "26.2".into(), loader: Loader::Fabric,
         memory_mb: 3072, difficulty: "hard".into(), gamemode: "survival".into(), max_players: 8, port: 25619,
         online_mode: false, whitelist: false, view_distance: 6, simulation_distance: 4, level_seed: String::new(),
-        accept_eula: true, import_world_path: Some(world.clone()),
+        accept_eula: true, import_world_path: Some(world.clone()), optimize: vec![],
     };
     let cfg = instance::create(input, 8192).await.expect("crear");
     println!("✔ creado Fabric {} (loader {:?})", cfg.mc_version, cfg.loader_version);

@@ -17,6 +17,8 @@ pub trait Events: Send + Sync + 'static {
     fn console_line(&self, id: &str, line: &str);
     fn install_progress(&self, progress: &InstallProgress);
     fn mods_progress(&self, _id: &str, _message: &str, _fraction: f64) {}
+    /// El servidor terminó de iniciar y respondió de verdad (una vez por arranque).
+    fn server_ready(&self, _id: &str) {}
 }
 
 /// Implementación vacía (para herramientas y pruebas que no necesitan eventos).

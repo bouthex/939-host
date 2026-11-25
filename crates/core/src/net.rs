@@ -82,6 +82,8 @@ pub async fn download<F: FnMut(u64, Option<u64>)>(url: &str, dest: &Path, hash: 
     Ok(())
 }
 
+pub fn sha1_bytes(b: &[u8]) -> String { use sha1::Digest; hex::encode(sha1::Sha1::digest(b)) }
+
 pub fn sha1_file(path: &Path) -> AppResult<String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).map_err(|e| AppError::io("No se pudo abrir el archivo", e))?;

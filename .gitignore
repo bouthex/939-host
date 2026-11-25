@@ -41,3 +41,7 @@ usercache.json
 whitelist.json
 ops.json
 banned-*.json
+
+# Python compilado
+__pycache__/
+*.pyc

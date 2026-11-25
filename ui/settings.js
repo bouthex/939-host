@@ -1,0 +1,244 @@
+'use strict';
+/* Configuración de 939 Host: General, Apariencia, Esta PC, Red, Privacidad y conexiones,
+   Reconexión, Datos y Acerca de 939 Host. */
+
+const SSECS = [['general', 'General'], ['look', 'Apariencia'], ['pc', 'Esta PC'], ['net', 'Red'], ['privacy', 'Privacidad y conexiones'], ['reconnect', 'Reconexión'], ['data', 'Datos'], ['updates', 'Actualizaciones'], ['about', 'Acerca de 939 Host']];
+const REPO = 'https://github.com/bouthex/939-host';
+let settingsTarget = null;
+function goSettings(sec) { settingsTarget = sec; if (state.route === 'settings') scrollToSection(); else go('settings'); }
+A['settings-section'] = (el) => goSettings(el.dataset.sec);
+function scrollToSection() {
+  if (!settingsTarget) return;
+  const el = document.getElementById(`set-${settingsTarget}`);
+  settingsTarget = null;
+  el?.scrollIntoView({ block: 'start' });
+}
+const sw = (key, title, desc, extra = '') => `<label class="switch"><div class="grow"><b>${title}</b><span class="sm t2">${desc}</span>${extra}</div><input type="checkbox" data-s="${key}" ${state.info.settings[key] !== false && state.info.settings[key] ? 'checked' : ''}></label>`;
+
+routes.settings = async function renderSettings() {
+  const s = state.info.settings;
+  const [hw, runtimes, profiles, upd] = await Promise.all([
+    state.hw ? Promise.resolve(state.hw) : invoke('hardware_snapshot').catch(() => null),
+    invoke('list_runtimes').catch(() => []),
+    invoke('client_profiles').catch(() => []),
+    invoke('update_status').catch(() => null),
+  ]);
+  state.hw = hw; state.clientProfiles = profiles;
+  const a = hw?.assessment;
+  main.innerHTML = `<div class="page">
+    <div class="head"><div><h1>Configuración</h1><p class="sub">Ajustes de 939 Host en esta PC. Cada servidor tiene los suyos en su pestaña Ajustes.</p></div></div>
+    <div class="settings">
+      <nav class="toc" aria-label="Secciones">${SSECS.map(([k, l]) => `<button data-a="set-toc" data-v="${k}">${l}</button>`).join('')}</nav>
+      <div class="stack" style="gap:32px">
+        <section class="section" id="set-general"><h2>General</h2><div class="card">
+          <div class="switch" style="cursor:default;align-items:center"><div class="row" style="gap:14px">${pcAvatar(s.nodeSymbol, 44, 'inv lg', state.photo)}<div class="grow"><b>${esc(s.nodeName)}</b><span class="sm t2" style="display:block">Así te ven tus amigos en el grupo: nombre y foto. Es solo cómo se muestra: no cambia la identidad ni los permisos de esta PC.</span></div></div><div class="btns"><button class="btn" data-a="photo-edit">${icon('user', 16)}${state.photo ? 'Cambiar foto' : 'Foto de perfil'}</button><button class="btn" data-a="identity">${icon('edit', 16)}Nombre</button></div></div>
+          ${sw('startWithWindows', 'Iniciar con Windows', 'Arranca en la bandeja, sin abrir la ventana, para que tus servidores compartidos estén disponibles.')}
+          ${sw('closeToTray', 'Seguir en la bandeja al cerrar la ventana', 'Sin servidores encendidos, cerrar la ventana también puede cerrar 939 Host. Con un servidor encendido, cerrar la ventana nunca lo detiene.')}
+          <div class="switch" style="cursor:default"><div class="grow"><b>Espacio máximo para copias (por servidor)</b><span class="sm t2">Al pasarlo, 939 Host libera las copias automáticas más viejas. Nunca borra copias manuales, protegidas ni el último punto íntegro.</span></div>
+            <select class="input" style="width:auto" data-s="backupCapGb" data-type="int" aria-label="Espacio máximo para copias">${[5, 10, 20, 50, 100, 200].map((g) => `<option value="${g}" ${(s.backupCapGb || 20) === g ? 'selected' : ''}>${g} GB</option>`).join('')}</select></div>
+          ${sw('startSound', 'Sonido al iniciar un servidor', 'Tres notas breves cuando el servidor quedó listo y respondió de verdad. Suena una vez por arranque, nunca si falla.', '<button class="btn s" data-a="sound-test" style="margin-top:8px;align-self:flex-start">Probar sonido</button>')}
+          ${sw('keepAwakeWhileHosting', 'No suspender la PC mientras aloja un servidor', 'Windows puede apagar la pantalla, pero no suspende la PC mientras haya un servidor encendido. Un servidor no puede seguir funcionando en una PC suspendida o apagada.')}
+          <div class="switch" style="cursor:default"><div class="grow"><b>Salir de 939 Host</b><span class="sm t2">Guarda y detiene todos los servidores (los compartidos pasan a otra PC si lo activaste) y deja de participar en el grupo. Para que un servidor siga funcionando, cerrá solo la ventana.</span></div><button class="btn" data-a="quit">${icon('logout', 16)}Salir</button></div>
+          <div class="switch" style="cursor:default"><div class="grow"><b>Liberar espacio de la caché</b><span class="sm t2" id="cache-size">Descargas guardadas (Minecraft, loaders, mods, packs) que se vuelven a bajar solas cuando hagan falta. No toca servidores, mundos, copias, Java ni tu configuración; lo que se está descargando ahora no se borra.</span></div><button class="btn" data-a="cache-clean">Liberar</button></div>
+          <div class="switch" style="cursor:default"><div class="grow"><b>Quitar integraciones del sistema</b><span class="sm t2">Desactiva el inicio con Windows y quita las direcciones .939host del archivo hosts (Windows pide permiso para «Windows PowerShell»). Útil con la versión portable o antes de borrar 939 Host a mano. No borra servidores, mundos ni copias.</span></div><button class="btn" data-a="sys-cleanup">Quitar</button></div>
+        </div></section>
+
+        <section class="section" id="set-look"><h2>Apariencia</h2><div class="card">
+          <div class="switch" style="cursor:default"><div class="grow"><b>Tema</b><span class="sm t2">Se recuerda en esta PC.</span></div>
+            <div class="seg" role="group" aria-label="Tema">${[['light', 'sun', 'Claro'], ['dark', 'moon', 'Oscuro'], ['system', 'monitor', 'Según Windows']].map(([k, ic, l]) => `<button class="${(s.theme || 'system') === k ? 'on' : ''}" data-a="set-theme" data-v="${k}" aria-pressed="${(s.theme || 'system') === k}">${icon(ic, 15)}${l}</button>`).join('')}</div></div>
+          ${sw('reduceMotion', 'Reducir animaciones', 'Quita las transiciones y los indicadores animados. Si Windows tiene desactivadas las animaciones, 939 Host las desactiva siempre.')}
+          <div class="switch" style="cursor:default"><div class="grow"><b>Tamaño de letra de la consola</b><span class="sm t2">Entre 11 y 18 px.</span></div>
+            <div class="row" style="gap:8px"><input type="range" min="11" max="18" step="1" value="${s.consoleFontSize || 13}" data-s="consoleFontSize" data-type="int" style="width:140px" aria-label="Tamaño de letra de la consola"><span class="mono sm" id="cfs">${s.consoleFontSize || 13} px</span></div></div>
+        </div></section>
+
+        <section class="section" id="set-pc"><div class="spread"><h2>Esta PC</h2><button class="btn s" data-a="bench" id="bench-btn">${icon('gauge', 14)}Evaluar ahora (~2 s)</button></div>
+          ${hw ? `<div class="kpis">
+            <div class="card kpi"><span class="l">Uso del procesador</span><span class="v" id="live-cpu">—</span></div>
+            <div class="card kpi"><span class="l">Memoria libre</span><span class="v" id="live-ram">—</span></div>
+            <div class="card kpi"><span class="l">Rendimiento por núcleo</span><span class="v">${hw.benchmark ? hw.benchmark.cpuSingleScore : '—'}<small>${hw.benchmark ? 'puntos' : 'sin medir'}</small></span></div>
+            <div class="card kpi"><span class="l">Escritura en disco</span><span class="v">${hw.benchmark?.diskWriteMbS ?? '—'}<small>MB/s</small></span></div></div>
+          <div class="note ${a.rating.startsWith('Buena') ? '' : 'strong'}">${icon(a.rating.startsWith('Buena') ? 'check' : 'info')}<div class="grow"><b>${esc(a.rating)}</b>${a.reasons.map((r) => `<span class="sm t2">${esc(r)}</span>`).join('')}<span class="sm t3" id="live-reasons"></span></div></div>
+          <div class="card pad"><div class="kv"><span class="k">Procesador</span><span>${esc(hw.cpuModel)}</span></div>
+            <div class="kv"><span class="k">Núcleos</span><span class="mono">${hw.physicalCores ?? '—'} físicos · ${hw.logicalCores} hilos</span></div>
+            <div class="kv"><span class="k">Memoria total</span><span class="mono">${fmtMB(hw.ramTotalMb)}</span></div>
+            <div class="kv"><span class="k">Memoria recomendada por servidor</span><span class="mono">${fmtMB(a.recommendedServerRamMb)} · máximo ${fmtMB(a.maxServerRamMb)}</span></div>
+            <div class="kv"><span class="k">Sistema</span><span>${esc(hw.os)}</span></div>
+            ${hw.disks.map((d) => `<div class="kv"><span class="k">Disco ${esc(d.mount)}${d.isDataDisk ? ' · datos de 939 Host' : ''}</span><span class="mono">${esc(d.kind)} · ${d.freeGb.toFixed(0)} de ${d.totalGb.toFixed(0)} GB libres</span></div>`).join('')}</div>
+          <p class="xs t3" style="margin:0">Las métricas en vivo se leen cada 5 s solo mientras esta pantalla está abierta. La evaluación corre una vez o cuando la pedís; nunca en segundo plano.</p>` : '<div class="card pad sm t2">No se pudo leer el hardware de esta PC.</div>'}
+        </section>
+
+        <section class="section" id="set-net"><h2>Red</h2><div class="card">
+          ${sw('allowHosting', 'Esta PC puede ser anfitriona', 'Si lo desactivás, nunca recibe un servidor por traspaso ni por recuperación automática (igual podés jugar).')}
+          ${sw('allowRelay', 'Puente para otras PCs del grupo', 'Si un amigo no llega directo al anfitrión pero sí a esta PC, el tráfico pasa por acá.')}
+          ${sw('lanAccess', 'Permitir conexiones de mi red local', 'Apagado (recomendado), el servidor de Minecraft escucha solo en esta PC y se entra a través de 939 Host. Encendido, cualquier equipo de tu red Wi-Fi o cableada puede conectarse directo al puerto del servidor sin pasar por 939 Host, salvo en los servidores que bloquean las conexiones sin 939 Host. Se aplica al próximo encendido.')}
+          ${sw('publicEntrance', 'Recibir jugadores de Internet en esta PC', 'Para los servidores que permiten conexiones sin 939 Host: esta PC recibe a esos jugadores y los lleva a la PC que aloja, aunque cambie. Quien se conecte por acá ve la IP pública de esta PC. Solo reenvía al juego: no da acceso a 939 Host ni a otras partes de tu PC.')}
+          ${sw('publicEntranceMapping', 'Abrir el puerto en el router automáticamente', 'Usa UPnP, NAT-PMP o PCP para que el router deje pasar a esos jugadores, y lo cierra al apagar la entrada. Si lo desactivás, tenés que abrir el puerto a mano.')}
+          <div class="switch" style="cursor:default"><div class="grow"><b>Las invitaciones vencen en</b><span class="sm t2">Entre 1 y 720 horas. Cada invitación sirve para una sola PC.</span></div><div class="row" style="gap:8px"><input class="input" type="number" min="1" max="720" value="${s.inviteHours || 24}" data-s="inviteHours" data-type="int" style="width:90px" aria-label="Horas hasta que vence una invitación"><span class="sm t2">horas</span></div></div>
+          </div><div class="card pad stack"><b>Orden de conexión</b><ol class="sm t2" style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px">
+            <li>Directa: misma red, IPv6 o puertos que ya estén abiertos (939 Host no abre puertos en tu router).</li><li>Atravesando los routers (el relay público solo coordina el primer contacto).</li><li>Otra PC del grupo como puente.</li><li>Relay público gratuito para los datos, solo si nada de lo anterior funciona (se configura en Privacidad).</li></ol></div></section>
+
+        <section class="section" id="set-privacy"><h2>Privacidad y conexiones</h2>
+          <p class="sm t2" style="margin:0">939 Host no tiene cuentas, publicidad ni telemetría. Estas son las únicas conexiones opcionales que hace, y podés apagar cada una.</p><div class="card">
+          ${sw('skinsEnabled', 'Skins reales de los jugadores', 'Consulta a Mojang (api.mojang.com, sessionserver.mojang.com y textures.minecraft.net) solo el nombre del jugador. Se guardan 24 h en esta PC. Apagado: se muestran las iniciales.')}
+          ${sw('gameAssetsEnabled', 'Imágenes originales del juego', 'Descarga desde Mojang (piston-data.mojang.com) el cliente oficial de la versión del servidor, verifica su firma SHA-1, extrae solo los íconos de ítems, corazones y efectos, y borra el resto. Quedan en esta PC; no se comparten. Apagado: se muestran nombres y formas simples.', `<span><button class="btn s ghost" data-a="assets-clear" style="margin-top:6px">${icon('trash', 14)}Borrar imágenes descargadas</button></span>`)}
+          ${sw('modImagesEnabled', 'Íconos y capturas de los mods', 'Carga las imágenes de cdn.modrinth.com en la tienda de mods. Apagado: se muestra la inicial de cada mod.')}
+          ${sw('allowPublicRelays', 'Relays públicos gratuitos', 'Servidores de iroh que ayudan a conectar PCs detrás de routers difíciles. Los datos van cifrados de punta a punta. Se aplica al reiniciar 939 Host.')}
+          ${sw('privateMode', 'Modo privado: ocultar mi IP al grupo', 'Esta PC se conecta solo a través de relays: ninguna otra PC del grupo puede ver su IP pública ni local. El relay (servidores gratuitos de n0) sí ve tu IP, cuándo te conectás y cuánto tráfico pasa, pero no el contenido, que va cifrado de punta a punta. Si el relay no responde, 939 Host espera y reintenta: nunca cambia a conexión directa por su cuenta. Puede sumar latencia. Afecta solo a esta PC. Se aplica al reiniciar 939 Host.')}
+          </div><button class="link sm" data-a="link" data-url="${REPO}/blob/main/PRIVACY.md" style="align-self:flex-start">Leer la política de privacidad</button></section>
+
+        <section class="section" id="set-reconnect"><h2>Reconexión automática al jugar</h2>
+          <p class="sm t2" style="margin:0">Cuando el servidor cambia de PC, los jugadores se desconectan unos segundos. Con esto activado, tu Minecraft vuelve a entrar solo: 939 Host agrega el mod AutoReconnect al perfil que elijas. Solo agrega archivos; nunca borra ni reemplaza los tuyos.</p>
+          <div class="card">${profiles.length ? `<div class="list">${profiles.map((p, i) => `<div class="li"><div class="grow"><b>${esc(p.name)}</b><div class="sm t3 mono">${esc(loaderName(p.loader))} ${esc(p.mcVersion)}</div></div>
+            ${p.enabled ? `<span class="chip">Activada</span><button class="btn s ghost" data-a="reconnect-off" data-i="${i}">Desactivar</button>` : `<button class="btn s" data-a="reconnect-on" data-i="${i}">Activar</button>`}</div>`).join('')}</div>`
+            : '<div class="pad sm t2">No se encontraron perfiles Fabric o NeoForge en el launcher oficial de esta PC.</div>'}</div></section>
+
+        <section class="section" id="set-data"><h2>Datos</h2><div class="card pad stack">
+          <div class="kv"><span class="k">Carpeta de datos</span><span class="mono xs" style="overflow-wrap:anywhere">${esc(state.info.dataDir)}</span></div>
+          <div class="btns"><button class="btn s" data-a="folder" data-global="1" data-which="data">${icon('folder', 14)}Abrir carpeta de datos</button><button class="btn s" data-a="folder" data-global="1" data-which="trash">${icon('trash', 14)}Abrir Papelera</button><button class="btn s ghost" data-a="folder" data-global="1" data-which="applogs">Registros de 939 Host</button></div>
+          <div><div class="sec" style="margin:8px 0 4px">Java instalado por 939 Host</div>${runtimes.length ? runtimes.map((r) => `<div class="kv"><span class="k">Java ${r.major}</span><span class="mono sm">${esc(r.version)} · ${fmtMB(r.sizeMb)}</span></div>`).join('') : '<span class="sm t3">Todavía ninguno. Se descarga solo al crear el primer servidor.</span>'}</div>
+          <p class="xs t3" style="margin:0">939 Host no modifica tu instalación de Minecraft: los mundos importados se copian. La única excepción es la reconexión automática, y solo en el perfil que actives.</p></div></section>
+
+        <section class="section" id="set-updates"><h2>Actualizaciones</h2><div class="card pad stack" id="upd-card">${updatesCard(upd)}</div></section>
+
+        <section class="section" id="set-about"><h2>Acerca de 939 Host</h2><div class="card about">
+          <div class="about-head"><span class="about-mark">${CINTA(58)}</span>
+            <div class="about-id"><span class="about-name">939 Host</span><span class="about-tag">Advanced hosting. Simplified.</span><span class="about-ver">Versión ${esc(state.info.version)} · Licencia MIT</span></div></div>
+          <div class="about-foot"><span class="sm">Creado por <b>Archimak</b> y <b>Bout</b></span>
+            <span class="xs t3">939 Host no es un producto oficial de Minecraft. No está aprobado por Mojang ni Microsoft, ni asociado con ellos. Minecraft es una marca de Mojang AB.</span></div></div>
+          <div class="card list">${[['Versiones publicadas', 'Página de versiones en GitHub', `${REPO}/releases`], ['Código fuente', 'GitHub', REPO], ['Licencias de terceros', '', `${REPO}/blob/main/THIRD_PARTY_LICENSES.html`], ['Política de privacidad', '', `${REPO}/blob/main/PRIVACY.md`], ['Política de firma de código', '', `${REPO}/blob/main/CODE_SIGNING_POLICY.md`]]
+            .map(([t, d, u]) => `<button class="li" data-a="link" data-url="${u}"><span class="grow">${t}</span><span class="sm t3">${d}</span>${icon('external', 15)}</button>`).join('')}</div></section>
+      </div></div></div>`;
+  scrollToSection();
+  cacheSize();
+  scrollSpy('.settings .toc', 'set');
+  const tick = async () => {
+    if (state.route !== 'settings' || !a) return;
+    try {
+      const l = await invoke('hardware_live', { needMb: a.recommendedServerRamMb });
+      $('#live-cpu').innerHTML = `${l.cpuUsage.toFixed(0)}<small>%</small>`;
+      $('#live-ram').innerHTML = `${fmtMB(l.ramAvailableMb)}<small>de ${fmtMB(l.ramTotalMb)}</small>`;
+      $('#live-reasons').textContent = l.hostReady ? 'Ahora mismo: disponible para hostear.' : `Ahora mismo: ${l.reasons.join(' ')}`;
+    } catch { /* ignorar */ }
+  };
+  setTimeout(tick, 300);
+  every(5000, tick);
+};
+A['set-toc'] = (el) => { el.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === el)); document.getElementById(`set-${el.dataset.v}`)?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }); };
+A['set-theme'] = async (el) => {
+  el.parentElement.querySelectorAll('button').forEach((b) => { b.classList.toggle('on', b === el); b.setAttribute('aria-pressed', b === el); });
+  await saveSetting({ theme: el.dataset.v }, null);
+};
+main.addEventListener('change', (e) => {
+  const el = e.target;
+  if (!el.dataset.s || state.route !== 'settings') return;
+  const val = el.type === 'checkbox' ? el.checked : el.dataset.type === 'int' ? parseInt(el.value, 10) || 0 : el.value;
+  if (el.dataset.s === 'nodeName' && !String(val).trim()) { toast('El nombre no puede quedar vacío.', 'error'); el.value = state.info.settings.nodeName; return; }
+  saveSetting({ [el.dataset.s]: val }, el.dataset.s === 'consoleFontSize' ? null : 'Ajuste guardado').then((ok) => {
+    if (!ok && el.type === 'checkbox') el.checked = !val;
+    if (el.dataset.s === 'skinsEnabled') { media.skins = {}; }
+    if (el.dataset.s === 'gameAssetsEnabled') { media.assets = null; media.requested.clear(); media.sprites = {}; }
+  });
+});
+main.addEventListener('input', (e) => { if (e.target.dataset.s === 'consoleFontSize') { $('#cfs').textContent = `${e.target.value} px`; document.documentElement.style.setProperty('--console-size', `${e.target.value}px`); } });
+A.bench = async (el) => {
+  el.disabled = true; el.textContent = 'Evaluando…';
+  try { await invoke('run_benchmark'); toast('Evaluación completada'); } catch (e) { fail(e); }
+  state.hw = null; settingsTarget = 'pc'; routes.settings();
+};
+A['assets-clear'] = async (el) => {
+  el.disabled = true;
+  try { await invoke('game_assets_clear'); media.sprites = {}; media.requested.clear(); media.assets = null; toast('Imágenes del juego borradas'); } catch (e) { fail(e); }
+  el.disabled = false;
+};
+A['reconnect-on'] = async (el) => {
+  const p = state.clientProfiles[+el.dataset.i]; if (!p) return;
+  el.disabled = true; toast('Preparando la reconexión automática…');
+  try { const { name, gameDir, mcVersion, loader } = p; const r = await invoke('client_reconnect_enable', { profile: { name, gameDir, mcVersion, loader } }); toast(r.message); } catch (e) { fail(e); }
+  settingsTarget = 'reconnect'; routes.settings();
+};
+A['reconnect-off'] = async (el) => {
+  const p = state.clientProfiles[+el.dataset.i]; if (!p) return;
+  if (!(await dialog({ title: 'Desactivar la reconexión automática', body: '<p>Se quitan solo los archivos que agregó 939 Host (van a la Papelera de 939 Host). Lo demás de tu perfil no se toca.</p>', confirm: 'Desactivar' }))) return;
+  try { const { name, gameDir, mcVersion, loader } = p; await invoke('client_reconnect_disable', { profile: { name, gameDir, mcVersion, loader } }); toast('Reconexión automática desactivada'); } catch (e) { fail(e); }
+  settingsTarget = 'reconnect'; routes.settings();
+};
+A.quit = async () => {
+  const running = (await invoke('list_servers').catch(() => [])).filter(isActive);
+  if (running.length && !(await dialog({ title: 'Salir de 939 Host', body: `<p>${running.length === 1 ? 'Hay un servidor encendido' : `Hay ${running.length} servidores encendidos`}. Los compartidos pasan a otra PC del grupo que esté conectada (si está activado); si no hay ninguna, se guardan, se copian a quien se pueda y se detienen. Los demás se guardan y se detienen.</p>`, confirm: 'Salir' }))) return;
+  invoke('quit_app');
+};
+
+/* ── Foto de perfil ── */
+A['photo-edit'] = async () => {
+  let up = null;
+  const r = await dialog({ title: 'Foto de perfil', wide: true,
+    body: `<p class="t2" style="margin:0">La ven las PCs de tus grupos junto a tu nombre. Se guarda en esta PC y viaja solo por la conexión cifrada del grupo; nunca se sube a internet.</p>
+      <div class="logo-ed"><div>${uploadBlock('pf', { round: true })}</div>
+        <div class="logo-prev"><span class="xs t3">Vista previa</span><div class="row" style="gap:16px;align-items:flex-end">
+          <span id="pf-big" class="pcav lg" style="width:96px;height:96px;border-radius:50%"></span><span id="pf-small" class="pcav" style="width:32px;height:32px;border-radius:50%"></span></div>
+          <span class="xs t3">Así se ve en Configuración y en la lista del grupo.</span></div></div>`,
+    buttons: [...(state.photo ? [{ label: 'Volver a la imagen predeterminada', value: 'clear' }] : []), { label: 'Guardar foto', value: 'save', kind: 'pri' }],
+    onMount: async (d) => {
+      const cur = state.photo ? await invoke('avatars', { hashes: [state.photo] }).then((m) => m[state.photo]).catch(() => null) : null;
+      const paint = () => {
+        const src = up?.cropper.has() ? scaledCanvas(up.cropper.canvas, 128).toDataURL('image/png') : cur;
+        for (const sel of ['#pf-big', '#pf-small']) { const el = d.querySelector(sel); el.classList.toggle('photo', !!src); el.innerHTML = src ? `<img src="${src}" alt="">` : icon(PC_SYMBOLS.includes(state.info.settings.nodeSymbol) ? `sym-${state.info.settings.nodeSymbol}` : 'pc', sel === '#pf-big' ? 44 : 18); }
+      };
+      up = await wireUpload(d, 'pf', paint, paint);
+      paint();
+    } });
+  up?.stop?.();
+  try {
+    if (r === 'clear') { await invoke('profile_photo_clear'); state.photo = null; toast('Se volvió a la imagen predeterminada'); }
+    else if (r === 'save') {
+      if (!up?.cropper.has()) { toast('Elegí una imagen primero.', 'error'); return; }
+      const v = await invoke('profile_photo_set', { png: await squarePNG(up.cropper.canvas, 128) });
+      state.photo = v.hash; if (v.hash && v.dataUrl) AVATARS[v.hash] = v.dataUrl;
+      toast('Foto guardada');
+    } else return;
+  } catch (e) { fail(e); return; }
+  paintFoot?.();
+  if (state.route === 'settings') routes.settings();
+};
+
+A['sound-test'] = (el, ev) => { ev?.preventDefault?.(); invoke('play_start_sound').catch(fail); };
+
+A['cache-clean'] = async (el) => {
+  el.disabled = true;
+  try { const [n, b] = await invoke('cache_clean'); toast(n ? `Se liberaron ${fmtMB(b / 1048576)} (${n} archivos).` : 'No había nada para liberar.'); } catch (e) { fail(e); }
+  el.disabled = false; cacheSize();
+};
+function cacheSize() {
+  invoke('cache_usage').then((u) => { const el = document.getElementById('cache-size'); if (el && !el.dataset.done) { el.dataset.done = '1'; el.insertAdjacentHTML('beforeend', ` <b class="nowrap" id="cache-n"></b>`); } const n = document.getElementById('cache-n'); if (n) n.textContent = `Ahora: ${fmtMB(u.bytes / 1048576)}, se pueden liberar ${fmtMB(u.removableBytes / 1048576)}.`; }).catch(() => {});
+}
+A['sys-cleanup'] = async () => {
+  if (!(await dialog({ title: 'Quitar integraciones del sistema', body: '<p>Se desactiva el inicio con Windows y se quitan las direcciones .939host (las podés volver a crear). Tus servidores, mundos y copias no se tocan.</p>', confirm: 'Quitar' }))) return;
+  try { const r = await invoke('system_cleanup'); toast(r.join(' · ')); } catch (e) { fail(e); }
+  routes.settings();
+};
+
+/* Actualizaciones: automáticas desde las releases oficiales del proyecto. Al abrir, si hay una
+   versión nueva, se descarga, se verifica y se instala sola; con la app en uso se instala cuando la
+   persona toca «Actualizar ahora». Nunca con servidores encendidos ni operaciones en curso. */
+function updatesCard(u) {
+  if (!u) return '<span class="sm t3">No se pudo leer el estado de las actualizaciones.</span>';
+  const ver = `<div class="kv"><span class="k">Versión instalada</span><span class="mono sm">${esc(u.current)}${u.mode === 'portable' ? ' · portable' : ''}</span></div>`;
+  if (!u.enabled) return `${ver}<p class="sm t2" style="margin:0">${esc(u.message || 'Las actualizaciones automáticas no están configuradas en esta compilación.')}</p>`;
+  const pct = u.progress != null && ['descargando', 'verificando'].includes(u.status) ? ` (${Math.round(u.progress * 100)} %)` : '';
+  const failed = u.failed && u.failed === u.available
+    ? `<p class="sm" style="margin:0;color:var(--danger)">La actualización a ${esc(u.failed)} no se pudo completar y se volvió a la versión anterior (tus datos están intactos).</p>` : '';
+  const ready = u.status === 'lista';
+  return `${ver}
+    <div class="kv"><span class="k">Estado</span><span class="sm">${esc(u.message || '—')}${pct}</span></div>
+    ${u.lastCheck ? `<div class="kv"><span class="k">Última comprobación</span><span class="sm t3">${esc(new Date(u.lastCheck).toLocaleString())}</span></div>` : ''}
+    ${failed}
+    <div class="btns"><button class="btn s" data-a="upd-check" ${u.status === 'buscando' ? 'disabled' : ''}>Buscar actualizaciones</button>${ready ? `<button class="btn s pri" data-a="upd-now">${u.failed === u.available ? 'Reintentar la actualización' : 'Actualizar ahora'}</button>` : ''}</div>
+    <p class="xs t3" style="margin:0">Solo se ofrecen las versiones oficiales publicadas por el proyecto en GitHub, firmadas y verificadas (SHA-256) antes de instalarlas. Se actualiza solo el programa: servidores, mundos, perfil y configuración no se tocan. Si la versión nueva no abriera, se vuelve sola a la anterior.${u.mode === 'portable' ? ' En la portable se reemplazan sus archivos en su propia carpeta.' : ''}</p>`;
+}
+function refreshUpdatesCard(u) { const c = document.getElementById('upd-card'); if (c) c.innerHTML = updatesCard(u); }
+A['upd-check'] = async () => {
+  const b = document.querySelector('[data-a="upd-check"]');
+  if (b) { b.disabled = true; b.textContent = 'Buscando…'; }
+  try { refreshUpdatesCard(await invoke('update_check')); } catch (e) { fail(e); }
+};
+

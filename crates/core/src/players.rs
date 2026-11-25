@@ -26,11 +26,22 @@ pub struct PlayerView {
     pub banned: bool,
     pub ban_reason: Option<String>,
     pub last_seen: Option<String>,
+    /// Hora de entrada de la sesión actual (solo si está conectado).
+    pub online_since: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlayerAction { WhitelistAdd, WhitelistRemove, Op, Deop, Ban, Pardon, Kick }
+
+/// Si `cmd` es un `op <nombre>` o `deop <nombre>` de consola (con o sin `/`), devuelve
+/// (dio OP, nombre).
+pub fn op_command(cmd: &str) -> Option<(bool, String)> {
+    let mut it = cmd.trim().trim_start_matches('/').split_whitespace();
+    let granted = match it.next()?.to_ascii_lowercase().as_str() { "op" => true, "deop" => false, _ => return None };
+    let name = it.next()?;
+    (it.next().is_none() && valid_name(name)).then(|| (granted, name.to_string()))
+}
 
 fn file(cfg: &ServerConfig, name: &str) -> PathBuf { paths::server_run_dir(&cfg.id).join(name) }
 
@@ -77,35 +88,58 @@ async fn resolve(cfg: &ServerConfig, name: &str) -> AppResult<(String, String)> 
     Ok((dashed(&p.id), p.name))
 }
 
+/// Última entrada según `usercache.json`: Minecraft guarda ahí «vence en» = entrada + 1 mes.
+fn last_login_from_cache(expires: &str) -> Option<String> {
+    let t = chrono::DateTime::parse_from_str(expires, "%Y-%m-%d %H:%M:%S %z").ok()?;
+    t.checked_sub_months(chrono::Months::new(1)).map(|t| t.with_timezone(&chrono::Local).to_rfc3339())
+}
+
 pub fn list(mgr: &Manager, cfg: &ServerConfig) -> Vec<PlayerView> {
+    // Una entrada por persona: por UUID cuando se conoce (un cambio de nombre no la duplica),
+    // si no por nombre. `usercache.json` tiene el nombre más reciente de cada UUID.
     let mut map: BTreeMap<String, PlayerView> = BTreeMap::new();
-    let key = |n: &str| n.to_ascii_lowercase();
-    let mut touch = |name: &str, uuid: &str| -> String {
-        let k = key(name);
-        let e = map.entry(k.clone()).or_insert_with(|| PlayerView { name: name.into(), ..Default::default() });
+    let mut by_name: std::collections::HashMap<String, String> = Default::default();
+    let mut touch = |map: &mut BTreeMap<String, PlayerView>, name: &str, uuid: &str| -> String {
+        let u = uuid.to_ascii_lowercase();
+        let nk = name.to_ascii_lowercase();
+        let key = if !u.is_empty() && map.contains_key(&u) { u.clone() }
+            else if let Some(k) = by_name.get(&nk).cloned() {
+                // Visto antes sin UUID: se le asigna ahora.
+                if !u.is_empty() && !k.contains('-') { if let Some(mut v) = map.remove(&k) { v.uuid = uuid.into(); map.insert(u.clone(), v); } u.clone() } else { k }
+            }
+            else if !u.is_empty() { u.clone() } else { format!("nombre:{nk}") };
+        let e = map.entry(key.clone()).or_insert_with(|| PlayerView { name: name.into(), uuid: uuid.into(), ..Default::default() });
         if e.uuid.is_empty() { e.uuid = uuid.into(); }
-        k
+        by_name.insert(nk, key.clone());
+        key
     };
-    let mut seen = vec![];
+    let mut cache_seen = vec![];
     for e in read_list(cfg, "usercache.json") {
         if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) {
-            let k = touch(n, u);
-            seen.push((k, e["expiresOn"].as_str().map(String::from)));
+            let k = touch(&mut map, n, u);
+            if let Some(v) = map.get_mut(&k) { v.name = n.to_string(); }
+            cache_seen.push((k, e["expiresOn"].as_str().and_then(last_login_from_cache)));
         }
     }
-    let mut wl = vec![];
-    for e in read_list(cfg, "whitelist.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { wl.push(touch(n, u)); } }
-    let mut ops = vec![];
-    for e in read_list(cfg, "ops.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { ops.push((touch(n, u), e["level"].as_u64().unwrap_or(4) as u8)); } }
-    let mut bans = vec![];
-    for e in read_list(cfg, "banned-players.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { bans.push((touch(n, u), e["reason"].as_str().map(String::from))); } }
-    let online: Vec<String> = mgr.runtime(&cfg.id).lock().unwrap().players.iter().cloned().collect();
-    for n in &online { touch(n, ""); }
-    for (k, exp) in seen { if let Some(p) = map.get_mut(&k) { p.last_seen = exp; } }
-    for k in wl { if let Some(p) = map.get_mut(&k) { p.whitelisted = true; } }
-    for (k, l) in ops { if let Some(p) = map.get_mut(&k) { p.op_level = Some(l); } }
-    for (k, r) in bans { if let Some(p) = map.get_mut(&k) { p.banned = true; p.ban_reason = r; } }
-    for n in &online { if let Some(p) = map.get_mut(&key(n)) { p.online = true; } }
+    for e in read_list(cfg, "whitelist.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); map.get_mut(&k).unwrap().whitelisted = true; } }
+    for e in read_list(cfg, "ops.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); map.get_mut(&k).unwrap().op_level = Some(e["level"].as_u64().unwrap_or(4) as u8); } }
+    for e in read_list(cfg, "banned-players.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); let v = map.get_mut(&k).unwrap(); v.banned = true; v.ban_reason = e["reason"].as_str().map(String::from); } }
+    // Conectados: el UUID real lo dio el servidor (`list uuids`); así un jugador se identifica por
+    // UUID aunque cambie de nombre o no esté todavía en usercache.json.
+    let online: Vec<(String, String, Option<String>)> = {
+        let r = mgr.runtime(&cfg.id); let r = r.lock().unwrap();
+        r.players.iter().map(|n| (n.clone(), r.player_uuids.get(n).cloned().unwrap_or_default(), r.open_sessions.since(n).map(|t| t.to_rfc3339()))).collect()
+    };
+    for (n, u, s) in &online { let k = touch(&mut map, n, u); let v = map.get_mut(&k).unwrap(); v.online = true; v.name = n.clone(); v.online_since = s.clone(); if !u.is_empty() { v.uuid = u.clone(); } }
+    // Última vez visto: la salida registrada por 939 Host; si no hay, la última entrada que
+    // anotó Minecraft.
+    let sessions = crate::sessions::last_seen_map(&cfg.id);
+    for (k, login) in cache_seen { if let Some(p) = map.get_mut(&k) { p.last_seen = login; } }
+    for p in map.values_mut() {
+        if let Some(l) = sessions.get(&p.name.to_ascii_lowercase()) {
+            if p.last_seen.as_ref().map(|c| l > c).unwrap_or(true) { p.last_seen = Some(l.clone()); }
+        }
+    }
     let mut v: Vec<PlayerView> = map.into_values().collect();
     v.sort_by(|a, b| b.online.cmp(&a.online).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
     v
@@ -186,5 +220,17 @@ mod tests {
         assert!(!valid_name("a b"));
         assert!(!valid_name("ab"));
         assert!(!valid_name("x; stop"));
+    }
+}
+
+#[cfg(test)]
+mod op_command_tests {
+    #[test]
+    fn reconoce_op_de_consola() {
+        assert_eq!(super::op_command("op Archi"), Some((true, "Archi".into())));
+        assert_eq!(super::op_command(" /DEOP kaki_1 "), Some((false, "kaki_1".into())));
+        assert_eq!(super::op_command("op @a"), None);
+        assert_eq!(super::op_command("op a b"), None);
+        assert_eq!(super::op_command("opx Archi"), None);
     }
 }

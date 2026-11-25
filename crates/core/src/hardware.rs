@@ -188,6 +188,16 @@ pub fn process_memory_mb(probe: &Probe, pid: u32) -> Option<u64> {
     sys.process(pid).map(|p| p.memory() / 1_048_576)
 }
 
+/// Memoria (MB) y CPU del proceso en % del total de la PC (la CPU es el promedio desde la
+/// consulta anterior: la primera vez da 0).
+pub fn process_usage(probe: &Probe, pid: u32) -> Option<(u64, f32)> {
+    let mut sys = probe.0.lock().unwrap();
+    let pid = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_memory().with_cpu());
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f32;
+    sys.process(pid).map(|p| (p.memory() / 1_048_576, (p.cpu_usage() / cores).clamp(0.0, 100.0)))
+}
+
 pub fn process_alive(probe: &Probe, pid: u32) -> bool {
     let mut sys = probe.0.lock().unwrap();
     let pid = Pid::from_u32(pid);
@@ -245,4 +255,16 @@ pub fn host_score(probe: &Probe) -> u32 {
     let cpu = saved_benchmark().map(|b| b.cpu_single_score).unwrap_or(1000);
     // RAM libre hasta 16 GB (más no suma para un servidor de amigos) y CPU por núcleo.
     (cpu / 10) + (avail_gb.min(16) as u32) * 12
+}
+
+/// Pide a Windows que no suspenda la PC (la pantalla se puede apagar igual). El pedido vale para
+/// el hilo que lo hace mientras siga vivo: lo usa un hilo dedicado de la app.
+pub fn keep_awake(on: bool) {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Power::*;
+        SetThreadExecutionState(if on { ES_CONTINUOUS | ES_SYSTEM_REQUIRED } else { ES_CONTINUOUS });
+    }
+    #[cfg(not(windows))]
+    let _ = on;
 }

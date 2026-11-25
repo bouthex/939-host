@@ -32,15 +32,20 @@ pub struct AppInfo {
 
 #[tauri::command]
 pub fn app_info(node: State<'_, NodeIdentity>) -> AppInfo {
-    let mut s = settings::load();
-    if s.node_name.is_empty() { s.node_name = sysinfo::System::host_name().unwrap_or_else(|| "Esta PC".into()); }
-    AppInfo { version: env!("CARGO_PKG_VERSION").into(), data_dir: paths::root().display().to_string(), node: node.inner().clone(), settings: s }
+    let s = settings::ensure_pc_identity();
+    AppInfo { version: env!("CARGO_PKG_VERSION").into(), data_dir: paths::root().display().to_string(), node: node.inner().clone(), settings: settings::for_ui(s) }
 }
 
 #[tauri::command]
 pub fn save_settings(settings: AppSettings) -> AppResult<AppSettings> {
     let mut s = settings;
-    s.node_name = s.node_name.trim().chars().take(40).collect();
+    // El nombre y el símbolo de la PC se cambian con `pc_identity_set` (actualiza también el grupo).
+    let saved = settings::load();
+    s.node_name = saved.node_name;
+    s.node_symbol = saved.node_symbol;
+    // La clave de CurseForge se cambia solo con su comando (la interfaz nunca la tiene).
+    s.curseforge_key = saved.curseforge_key.clone();
+    s.invite_hours = s.invite_hours.clamp(1, 720);
     s.contribute_cpu_percent = s.contribute_cpu_percent.clamp(10, 100);
     // Los perfiles de reconexión se manejan con sus propios comandos.
     s.reconnect_profiles = settings::load().reconnect_profiles;
@@ -48,7 +53,7 @@ pub fn save_settings(settings: AppSettings) -> AppResult<AppSettings> {
         settings::apply_autostart(s.start_with_windows)?;
     }
     settings::save(&s)?;
-    Ok(s)
+    Ok(settings::for_ui(s))
 }
 
 #[tauri::command]
@@ -122,8 +127,15 @@ pub async fn update_server(app: AppHandle, config: ServerConfig) -> AppResult<Se
     blocking(move || {
         let total = total_ram(&app.state::<Probe>());
         let mgr = app.state::<Manager>();
+        let before = instance::load(&config.id)?.java_choice;
         let cfg = instance::update(&mgr, config, total)?;
         mgr.changed(&cfg.id);
+        // Cambió el Java elegido: se prepara ya (descarga verificada) para el próximo encendido.
+        if before != cfg.java_choice && cfg.installed {
+            let app2 = app.clone();
+            let id = cfg.id.clone();
+            tauri::async_runtime::spawn(async move { instance::install(&app2.state::<Manager>(), id).await; });
+        }
         Ok(cfg)
     }).await
 }
@@ -136,8 +148,18 @@ pub async fn server_properties_extra(id: String) -> AppResult<std::collections::
 
 #[tauri::command]
 pub async fn delete_server(app: AppHandle, id: String, confirm_name: String) -> AppResult<()> {
-    blocking(move || instance::delete(&app.state::<Manager>(), &id, &confirm_name)).await
+    let a = app.clone();
+    blocking(move || {
+        let op = op(&a, &id, "Eliminando el servidor", "Deteniendo y moviendo a la Papelera de 939 Host…");
+        op.finish(instance::delete(&a.state::<Manager>(), &id, &confirm_name), "Servidor movido a la Papelera")
+    }).await?;
+    // Deja de atender su dirección `.939host` (queda libre para otro servidor).
+    crate::aliases::sync(&app).await;
+    Ok(())
 }
+
+/// Operación larga visible en la interfaz (ver `ops`).
+pub fn op(app: &AppHandle, server: &str, title: &str, stage: &str) -> crate::ops::Op { app.state::<crate::ops::Ops>().begin(app, server, title, stage, false) }
 
 #[tauri::command]
 pub async fn start_server(app: AppHandle, id: String) -> AppResult<()> {
@@ -163,7 +185,8 @@ pub async fn restart_server(app: AppHandle, id: String) -> AppResult<()> {
     blocking(move || {
         let mgr = app.state::<Manager>();
         mgr.stop(&id)?;
-        if !mgr.wait_inactive(&id, Duration::from_secs(100)) {
+        // Misma espera que la detención (no se corta un guardado que avanza).
+        if !mgr.wait_inactive(&id, Duration::from_secs(620)) {
             return Err(AppError::new("timeout", "El servidor tardó demasiado en detenerse."));
         }
         let cfg = instance::load(&id)?;
@@ -172,8 +195,20 @@ pub async fn restart_server(app: AppHandle, id: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn send_command(id: String, command: String, mgr: State<'_, Manager>) -> AppResult<()> {
-    mgr.send_command(&id, &command)
+pub fn send_command(app: AppHandle, id: String, command: String, mgr: State<'_, Manager>) -> AppResult<()> {
+    mgr.send_command(&id, &command)?;
+    // `op`/`deop` desde la consola de la propietaria actualiza la lista firmada de OP autorizados.
+    if let Some((granted, name)) = host939_core::players::op_command(&command) { note_op_change(&app, &id, &name, granted); }
+    Ok(())
+}
+
+/// La persona de esta PC cambió el OP de alguien desde 939 Host: si es la propietaria de un
+/// servidor compartido, queda en la lista firmada (ver `GroupNode::local_op_change`).
+fn note_op_change(app: &AppHandle, id: &str, name: &str, granted: bool) {
+    let (app, id, name) = (app.clone(), id.to_string(), name.to_string());
+    tauri::async_runtime::spawn(async move {
+        if let Some(n) = app.state::<crate::network::Cluster>().try_node() { let _ = n.local_op_change(&id, &name, granted); }
+    });
 }
 
 #[tauri::command]
@@ -191,7 +226,9 @@ pub async fn create_backup(app: AppHandle, id: String, label: String) -> AppResu
     blocking(move || {
         let cfg = instance::load(&id)?;
         let mgr = app.state::<Manager>();
-        let r = backup::create(&mgr, &id, &label, "manual", &cfg.mc_version);
+        let op = op(&app, &id, "Creando una copia de seguridad", "Guardando el mundo y comprimiendo…");
+        let r = op.finish(backup::create(&mgr, &id, &label, "manual", &cfg.mc_version), "Copia de seguridad creada");
+        if r.is_ok() { host939_core::storage::enforce_cap(&id, host939_core::storage::cap_bytes()); }
         mgr.changed(&id);
         r
     }).await
@@ -201,7 +238,8 @@ pub async fn create_backup(app: AppHandle, id: String, label: String) -> AppResu
 pub async fn restore_backup(app: AppHandle, id: String, file: String) -> AppResult<()> {
     blocking(move || {
         let cfg = instance::load(&id)?;
-        backup::restore(&app.state::<Manager>(), &id, &file, &cfg.mc_version)?;
+        let op = op(&app, &id, "Restaurando una copia de seguridad", "Guardando el estado actual y colocando la copia…");
+        op.finish(backup::restore(&app.state::<Manager>(), &id, &file, &cfg.mc_version), "Copia restaurada")?;
         // La configuración de la app manda sobre la que traía el backup.
         host939_core::properties::write_for(&cfg)
     }).await
@@ -215,7 +253,8 @@ pub async fn delete_backup(id: String, file: String) -> AppResult<()> {
 #[tauri::command]
 pub async fn import_world(app: AppHandle, id: String, path: String) -> AppResult<f64> {
     blocking(move || {
-        let bytes = instance::import_world(&app.state::<Manager>(), &id, std::path::Path::new(&path))?;
+        let op = op(&app, &id, "Cargando un mundo", "Copiando los archivos del mundo…");
+        let bytes = op.finish(instance::import_world(&app.state::<Manager>(), &id, std::path::Path::new(&path)), "Mundo cargado")?;
         Ok(bytes as f64 / 1_048_576.0)
     }).await
 }
@@ -232,6 +271,7 @@ pub fn open_folder(id: Option<String>, which: String) -> AppResult<()> {
         (Some(id), "backups") => paths::server_backups_dir(id),
         (Some(id), "logs") => paths::server_run_dir(id).join("logs"),
         (Some(id), "mods") => paths::server_run_dir(id).join("mods"),
+        (Some(id), "world") => host939_core::playerdata::world_dir(&instance::load(id)?),
         (None, "data") => paths::root().to_path_buf(),
         (None, "trash") => paths::trash(),
         (None, "applogs") => paths::root().join("logs"),
@@ -244,15 +284,42 @@ pub fn open_folder(id: Option<String>, which: String) -> AppResult<()> {
 
 #[tauri::command]
 pub fn open_link(url: String) -> AppResult<()> {
-    const ALLOWED: &[&str] = &["https://aka.ms/MinecraftEULA", "https://modrinth.com", "https://fabricmc.net"];
-    if !ALLOWED.iter().any(|a| url.starts_with(a)) { return Err(AppError::invalid("Enlace no permitido")); }
+    if !link_allowed(&url) { return Err(AppError::invalid("Enlace no permitido")); }
     open_path(&url)
 }
 
-fn open_path(target: &str) -> AppResult<()> {
+/// Solo https a dominios exactos conocidos (antes se comparaba el prefijo: `https://modrinth.com.ejemplo`
+/// pasaba). Sin usuario ni puerto en la dirección, sin espacios ni comillas.
+pub fn link_allowed(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    if url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\') { return false; }
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (host, path) = (&rest[..end], &rest[end..]);
+    if host.contains(['@', ':']) { return false; }
+    match host.to_ascii_lowercase().as_str() {
+        "aka.ms" => path == "/MinecraftEULA",
+        "modrinth.com" | "fabricmc.net" => true,
+        // Consulta de un mod en VirusTotal por su huella SHA-256: la abre la propietaria en su
+        // navegador; no se sube el archivo ni hace falta una clave.
+        "www.virustotal.com" => path.strip_prefix("/gui/file/").map(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or(false),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    #[test]
+    fn exact_domains_only() {
+        for ok in ["https://aka.ms/MinecraftEULA", "https://modrinth.com/mod/sodium", "https://fabricmc.net", "https://www.virustotal.com/gui/file/a3f1c0de5b2e4f7a9d8c6b5a4e3f2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e"] { assert!(super::link_allowed(ok), "{ok}"); }
+        for bad in ["https://www.virustotal.com/gui/home/upload", "https://www.virustotal.com/gui/file/abc", "https://www.virustotal.com/gui/file/a3f1c0de5b2e4f7a9d8c6b5a4e3f2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e/../x"] { assert!(!super::link_allowed(bad), "{bad}"); }
+        for bad in ["https://modrinth.com.ejemplo.com/x", "https://aka.ms/otra", "http://modrinth.com", "https://evil@modrinth.com", "https://modrinth.com:444/x", "https://fabricmc.net\"&calc", "file:///C:/Windows", "https://ejemplo.com/?https://modrinth.com"] { assert!(!super::link_allowed(bad), "{bad}"); }
+    }
+}
+
+pub fn open_path(target: &str) -> AppResult<()> {
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer").arg(target).spawn().map_err(|e| AppError::io("No se pudo abrir", e))?;
+        std::process::Command::new(host939_core::paths::windows_program("explorer.exe")).arg(target).spawn().map_err(|e| AppError::io("No se pudo abrir", e))?;
     }
     #[cfg(not(windows))]
     {
@@ -284,6 +351,19 @@ pub fn jvm_preview(config: ServerConfig) -> String { process::jvm_args(&config).
 
 #[tauri::command]
 pub fn quit_app(app: AppHandle) { crate::begin_quit(&app); }
+
+/// Prueba del sonido de inicio (desde Configuración).
+#[tauri::command]
+pub fn play_start_sound() { host939_core::sound::play_start_chime(); }
+
+/// Cierra la ventana dejando los servidores funcionando (después de explicarlo una vez).
+#[tauri::command]
+pub fn close_to_background(app: AppHandle) -> AppResult<()> {
+    let mut s = settings::load();
+    if !s.background_hint_shown { s.background_hint_shown = true; settings::save(&s)?; }
+    if let Some(w) = app.get_webview_window("main") { let _ = w.destroy(); }
+    Ok(())
+}
 
 #[tauri::command]
 pub fn notify_ui_ready(app: AppHandle) { let _ = app.emit("ui-ready", ()); }
@@ -330,9 +410,11 @@ pub async fn mods_plan(id: String, project_id: String, version_id: Option<String
 #[tauri::command]
 pub async fn mods_install(app: AppHandle, id: String, project_id: String, version_id: Option<String>) -> AppResult<Vec<mods::InstalledMod>> {
     let cfg = instance::load(&id)?;
+    mods_writable(&id)?;
     let plan = mods::plan_install(&Modrinth, &cfg, &project_id, version_id.as_deref()).await?;
     let ev = app.state::<Manager>().events.clone();
-    let res = mods::apply_plan(&cfg, &plan, |msg, f| ev.mods_progress(&id, msg, f)).await?;
+    let op = op(&app, &id, "Instalando mods", "Descargando y verificando…");
+    let res = op.finish(mods::apply_plan(&cfg, &plan, |msg, f| { ev.mods_progress(&id, msg, f); op.stage(msg, Some(f)); }).await, "Mods instalados")?;
     mark_restart(&app, &id);
     Ok(res)
 }
@@ -340,12 +422,108 @@ pub async fn mods_install(app: AppHandle, id: String, project_id: String, versio
 #[tauri::command]
 pub async fn mods_list(id: String, online: bool) -> AppResult<Vec<ModFileStatus>> {
     let cfg = instance::load(&id)?;
-    mods::scan(&Modrinth, &cfg, online).await
+    let list = mods::scan(&Modrinth, &cfg, online).await?;
+    // Un archivo agregado desde la PC que Modrinth reconoce se vincula solo (antes había que tocar
+    // «Vincular»): así recibe actualizaciones y se ve con su nombre. Los que no están en ningún
+    // catálogo quedan como mods locales; funcionan igual.
+    let to_link: Vec<String> = list.iter().filter(|x| !x.managed && x.project_id.is_some() && !x.issues.iter().any(|i| i == "duplicate" || i == "client_only")).map(|x| x.file_name.clone()).collect();
+    if online && !to_link.is_empty() {
+        let mut linked = false;
+        for f in &to_link { linked |= mods::link_file(&Modrinth, &cfg, f).await.is_ok(); }
+        if linked { return mods::scan(&Modrinth, &cfg, online).await; }
+    }
+    Ok(list)
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModsSettings { pub auto_updates: bool }
+
+#[tauri::command]
+pub fn mods_settings(id: String) -> AppResult<ModsSettings> {
+    instance::load(&id)?;
+    Ok(ModsSettings { auto_updates: mods::load_manifest(&id).auto_updates })
+}
+
+#[tauri::command]
+pub fn mods_set_auto_updates(id: String, on: bool) -> AppResult<()> {
+    instance::load(&id)?;
+    let mut m = mods::load_manifest(&id);
+    m.auto_updates = on;
+    mods::save_manifest(&id, &m)
+}
+
+/// Mods de un servidor compartido: solo los cambia la PC que lo aloja (en otra PC se pisarían con
+/// el estado del grupo y, al llegar a las demás, quedarían en cuarentena).
+fn mods_writable(id: &str) -> AppResult<()> {
+    if snapshots::writes_line(id) { Ok(()) } else { Err(AppError::invalid("Este servidor lo aloja otra PC del grupo: los mods se cambian desde la PC anfitriona.")) }
+}
+
+/// Quita todos los mods (con punto de recuperación previo).
+#[tauri::command]
+pub async fn mods_remove_all(app: AppHandle, id: String) -> AppResult<Vec<String>> {
+    blocking(move || {
+        let cfg = instance::load(&id)?;
+        let mgr = app.state::<Manager>();
+        if mgr.runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de quitar los mods.")); }
+        mods_writable(&id)?;
+        mgr.note(&id, "Creando un punto de recuperación antes de quitar todos los mods…");
+        let op = op(&app, &id, "Quitando todos los mods", "Creando un punto de recuperación…");
+        if paths::server_run_dir(&id).join("world").join("level.dat").exists() {
+            snapshots::take(&mgr, &id, "Antes de quitar todos los mods", "manual", &cfg.mc_version)?;
+        }
+        op.stage("Moviendo los mods a la Papelera…", None);
+        let moved = op.finish(mods::remove_all(&cfg), "Mods quitados")?;
+        mgr.note(&id, &format!("Se quitaron {} mods (están en la Papelera de 939 Host).", moved.len()));
+        mark_restart(&app, &id);
+        mgr.changed(&id);
+        Ok(moved)
+    }).await
+}
+
+/// Aplica las actualizaciones elegidas (ya revisadas en la interfaz) con un punto previo.
+#[tauri::command]
+pub async fn mods_update_apply(app: AppHandle, id: String, project_ids: Vec<String>) -> AppResult<Vec<String>> {
+    let cfg = instance::load(&id)?;
+    mods_writable(&id)?;
+    // Se puede cancelar entre un mod y el siguiente: cada uno se aplica completo o no se aplica.
+    let op = app.state::<crate::ops::Ops>().begin(&app, &id, "Actualizando mods", "Creando un punto de recuperación…", true);
+    {
+        let (app2, id2, mc) = (app.clone(), id.clone(), cfg.mc_version.clone());
+        blocking(move || {
+            if paths::server_run_dir(&id2).join("world").join("level.dat").exists() {
+                snapshots::take(&app2.state::<Manager>(), &id2, "Antes de actualizar mods", "manual", &mc)?;
+            }
+            Ok(())
+        }).await.inspect_err(|e| op.fail(&e.message))?;
+    }
+    let ev = app.state::<Manager>().events.clone();
+    let mut done = vec![];
+    let total = project_ids.len().clamp(1, 500);
+    for (i, pid) in project_ids.iter().take(500).enumerate() {
+        if op.cancelled() { break; }
+        op.stage(&format!("Actualizando {} de {total}", i + 1), Some(i as f64 / total as f64));
+        // Se recalcula todo: versión compatible con esta versión de Minecraft y este loader,
+        // dependencias y hash verificado (no se confía en lo que manda la interfaz).
+        let plan = mods::plan_install(&Modrinth, &cfg, pid, None).await.inspect_err(|e| op.fail(&e.message))?;
+        mods::apply_plan(&cfg, &plan, |msg, f| ev.mods_progress(&id, msg, f)).await.inspect_err(|e| op.fail(&e.message))?;
+        done.extend(plan.items.iter().filter(|i| i.project_id == *pid).map(|i| format!("{} {}", i.title, i.version.version_number)));
+    }
+    mark_restart(&app, &id);
+    op.done(&if op.cancelled() { format!("Cancelado: se actualizaron {} y el resto quedó como estaba", done.len()) } else { format!("{} mods actualizados", done.len()) });
+    Ok(done)
+}
+
+#[tauri::command]
+pub fn ops_running(ops: State<'_, crate::ops::Ops>) -> Vec<crate::ops::OpView> { ops.running() }
+
+#[tauri::command]
+pub fn op_cancel(id: u64, ops: State<'_, crate::ops::Ops>) -> bool { ops.cancel(id) }
 
 #[tauri::command]
 pub async fn mods_remove(app: AppHandle, id: String, project_id: String) -> AppResult<Vec<String>> {
     let cfg = instance::load(&id)?;
+    mods_writable(&id)?;
     let r = mods::remove(&cfg, &project_id)?;
     mark_restart(&app, &id);
     Ok(r)
@@ -354,6 +532,7 @@ pub async fn mods_remove(app: AppHandle, id: String, project_id: String) -> AppR
 #[tauri::command]
 pub async fn mods_set_aside(app: AppHandle, id: String, file_name: String) -> AppResult<()> {
     let cfg = instance::load(&id)?;
+    mods_writable(&id)?;
     mods::set_aside_file(&cfg, &file_name)?;
     mark_restart(&app, &id);
     Ok(())
@@ -365,14 +544,6 @@ pub async fn mods_updates(id: String) -> AppResult<std::collections::HashMap<Str
     Ok(mods::check_updates(&Modrinth, &cfg).await?.into_iter().map(|(k, v)| (k, v.version_number)).collect())
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PerfMod { pub slug: String, pub title: String, pub description: String, pub recommended: bool }
-
-#[tauri::command]
-pub fn mods_performance_list() -> Vec<PerfMod> {
-    mods::PERFORMANCE_FABRIC.iter().map(|(slug, title, desc, rec)| PerfMod { slug: slug.to_string(), title: title.to_string(), description: desc.to_string(), recommended: *rec }).collect()
-}
 
 /* ───────── Puntos de restauración incrementales ───────── */
 
@@ -392,7 +563,8 @@ pub async fn snapshot_take(app: AppHandle, id: String, label: String) -> AppResu
     blocking(move || {
         let cfg = instance::load(&id)?;
         let mgr = app.state::<Manager>();
-        let info = snapshots::take(&mgr, &id, &label, "manual", &cfg.mc_version)?;
+        let op = op(&app, &id, "Creando un punto de restauración", "Guardando el mundo…");
+        let info = op.finish(snapshots::take(&mgr, &id, &label, "manual", &cfg.mc_version), "Punto de restauración creado")?;
         mgr.note(&id, &format!("punto de restauración creado ({} nuevos, pausa {} ms)", human_bytes(info.new_bytes), info.pause_ms));
         Ok(info)
     }).await
@@ -402,8 +574,21 @@ pub async fn snapshot_take(app: AppHandle, id: String, label: String) -> AppResu
 pub async fn snapshot_restore(app: AppHandle, id: String, snap_id: String) -> AppResult<()> {
     blocking(move || {
         let cfg = instance::load(&id)?;
-        snapshots::restore(&app.state::<Manager>(), &id, &snap_id, &cfg.mc_version)?;
-        host939_core::properties::write_for(&cfg)
+        // En un servidor compartido solo restaura la PC anfitriona: en otra PC el resultado se
+        // pisaría al alojar con el estado del grupo (y parecería que no hizo nada).
+        if !snapshots::writes_line(&id) {
+            return Err(AppError::invalid("Este servidor lo aloja otra PC del grupo. Para volver a un punto, primero pedí el servidor (o pedile a quien lo aloja que restaure)."));
+        }
+        let mgr = app.state::<Manager>();
+        let op = op(&app, &id, "Restaurando un punto", "Verificando y colocando los archivos…");
+        op.finish(snapshots::restore(&mgr, &id, &snap_id, &cfg.mc_version), "Punto restaurado")?;
+        host939_core::properties::write_for(&cfg)?;
+        // Lo restaurado pasa a ser el estado más reciente del servidor (y lo copian las demás PCs).
+        if host939_core::network::load_share(&id).enabled {
+            let label = snapshots::list(&id).into_iter().find(|s| s.id == snap_id).map(|s| format!("Restaurado: {}", s.label)).unwrap_or_else(|| "Restaurado".into());
+            snapshots::take(&mgr, &id, &label, "auto", &cfg.mc_version)?;
+        }
+        Ok(())
     }).await
 }
 
@@ -434,6 +619,8 @@ pub fn start_snapshot_scheduler(app: AppHandle) {
             match snapshots::take(&mgr, &id, "", "auto", &cfg.mc_version) {
                 Ok(info) => {
                     let pruned = snapshots::prune(&id);
+                    let freed = host939_core::storage::enforce_cap(&id, host939_core::storage::cap_bytes());
+                    if !freed.is_empty() { mgr.note(&id, &format!("Tope de espacio para copias: se liberaron {} copias automáticas viejas.", freed.len())); }
                     mgr.note(&id, &format!("punto automático ({} nuevos, pausa {} ms{})", human_bytes(info.new_bytes), info.pause_ms,
                         if pruned > 0 { format!(", {pruned} viejos depurados") } else { String::new() }));
                 }
@@ -500,16 +687,29 @@ pub fn recheck_client_reconnect() {
 /* ───────── Jugadores, mundo y diagnóstico ───────── */
 
 #[tauri::command]
-pub fn players_list(id: String, mgr: State<'_, Manager>) -> AppResult<Vec<host939_core::players::PlayerView>> {
+pub async fn players_list(app: AppHandle, id: String) -> AppResult<serde_json::Value> {
+    // Si lo aloja otra PC del grupo, la lista real (quién está conectado) está allá.
+    if crate::v3::hosted_elsewhere(&app, &id).await {
+        let cl = app.state::<crate::network::Cluster>();
+        if let Ok(n) = cl.node().await {
+            if let Ok(v) = n.player_op(&id, serde_json::json!({ "kind": "list" })).await { if v.is_array() { return Ok(v); } }
+        }
+    }
     let cfg = instance::load(&id)?;
-    Ok(host939_core::players::list(&mgr, &cfg))
+    serde_json::to_value(host939_core::players::list(&app.state::<Manager>(), &cfg)).map_err(|e| AppError::invalid(e.to_string()))
 }
 
 #[tauri::command]
 pub async fn player_action(app: AppHandle, id: String, name: String, action: host939_core::players::PlayerAction, reason: Option<String>) -> AppResult<String> {
     let cfg = instance::load(&id)?;
     let mgr = app.state::<Manager>();
-    host939_core::players::apply(&mgr, &cfg, &name, action, reason.as_deref()).await
+    let r = host939_core::players::apply(&mgr, &cfg, &name, action, reason.as_deref()).await?;
+    match action {
+        host939_core::players::PlayerAction::Op => note_op_change(&app, &id, &name, true),
+        host939_core::players::PlayerAction::Deop => note_op_change(&app, &id, &name, false),
+        _ => {}
+    }
+    Ok(r)
 }
 
 #[tauri::command]
@@ -525,7 +725,10 @@ pub async fn world_new(app: AppHandle, id: String, seed: Option<String>, confirm
     if host939_core::network::load_share(&id).enabled {
         return Err(AppError::invalid("Este servidor está compartido con el grupo: dejá de compartirlo antes de cambiar de mundo, para que ninguna PC siga con el anterior."));
     }
-    blocking(move || host939_core::diagnostics::new_world(&app.state::<Manager>(), &mut cfg, seed)).await
+    blocking(move || {
+        let op = op(&app, &id, "Creando un mundo nuevo", "Guardando el actual y apartándolo a la Papelera…");
+        op.finish(host939_core::diagnostics::new_world(&app.state::<Manager>(), &mut cfg, seed), "Listo: el mundo nuevo se genera al encender")
+    }).await
 }
 
 #[tauri::command]
@@ -543,4 +746,63 @@ pub async fn mods_import_folder(app: AppHandle, id: String, path: String) -> App
     let cfg = instance::load(&id)?;
     if app.state::<Manager>().runtime(&id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de importar mods.")); }
     blocking(move || host939_core::mods::import_folder(&cfg, std::path::Path::new(&path))).await
+}
+
+/* ── Espacio y protección de las copias ── */
+
+/* ───────── Servidores encendidos fuera de 939 Host ───────── */
+
+#[tauri::command]
+pub async fn linked_list() -> Vec<host939_core::external::LinkedView> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let own: Vec<(String, String, u16)> = instance::list_configs().into_iter().map(|c| (c.id, c.name, c.port)).collect();
+        let links = host939_core::external::list();
+        let hs: Vec<_> = links.into_iter().map(|l| { let o = own.clone(); std::thread::spawn(move || host939_core::external::probe(&l, &o)) }).collect();
+        hs.into_iter().filter_map(|h| h.join().ok()).collect()
+    }).await.unwrap_or_default()
+}
+#[tauri::command]
+pub fn linked_add(name: String, host: String, port: u16) -> AppResult<host939_core::external::Linked> { host939_core::external::add(&name, &host, port) }
+#[tauri::command]
+pub fn linked_remove(id: String) -> AppResult<()> { host939_core::external::remove(&id) }
+
+#[tauri::command]
+pub async fn cache_usage() -> host939_core::storage::CacheUsage { tauri::async_runtime::spawn_blocking(host939_core::storage::cache_usage).await.unwrap_or(host939_core::storage::CacheUsage { bytes: 0, files: 0, removable_bytes: 0 }) }
+#[tauri::command]
+pub async fn cache_clean() -> (usize, u64) { tauri::async_runtime::spawn_blocking(host939_core::storage::clean_cache).await.unwrap_or((0, 0)) }
+
+#[tauri::command]
+pub fn storage_usage(id: String) -> AppResult<host939_core::storage::Usage> { instance::load(&id)?; Ok(host939_core::storage::usage(&id)) }
+
+#[tauri::command]
+pub fn storage_protect(id: String, key: String, on: bool) -> AppResult<()> { instance::load(&id)?; host939_core::storage::set_protected(&id, &key, on) }
+
+/// Verifica una copia (`snap:<id>` o `zip:<archivo>`): que se pueda restaurar íntegra.
+#[tauri::command]
+pub async fn storage_verify(app: AppHandle, id: String, key: String) -> AppResult<String> {
+    blocking(move || {
+        let op = op(&app, &id, "Verificando una copia", "Leyendo y comprobando cada bloque…");
+        let r = if let Some(s) = key.strip_prefix("snap:") { host939_core::storage::verify_snapshot(&id, s) }
+            else if let Some(z) = key.strip_prefix("zip:") { host939_core::storage::verify_zip(&id, z) }
+            else { Err(AppError::invalid("Copia inválida.")) };
+        op.finish(r, "Copia verificada").map(|(n, b)| format!("Íntegra: {n} archivos, {}", human_bytes(b)))
+    }).await
+}
+
+/// Aplica el tope ahora (después de cambiarlo en Configuración).
+#[tauri::command]
+pub fn storage_enforce(id: String) -> AppResult<Vec<String>> { instance::load(&id)?; Ok(host939_core::storage::enforce_cap(&id, host939_core::storage::cap_bytes())) }
+
+/// Aviso de una migración de datos que falló y se restauró (una vez).
+#[tauri::command]
+pub fn data_notice() -> Option<String> { crate::DATA_NOTICE.lock().unwrap().take() }
+
+/// Avisos de la última vez que 939 Host se cerró de forma no normal (cierre inesperado o apagado
+/// de Windows): qué pasó con cada servidor. Se muestran una vez.
+#[tauri::command]
+pub fn last_close_notes() -> Vec<serde_json::Value> {
+    host939_core::guardian::take_records().into_iter().map(|(id, r)| {
+        let name = instance::load(&id).map(|c| c.name).unwrap_or(id.clone());
+        serde_json::json!({ "id": id, "name": name, "cause": r.cause, "outcome": r.outcome, "seconds": r.seconds, "at": r.at })
+    }).collect()
 }

@@ -39,16 +39,30 @@ pub fn view(mgr: &Manager, probe: &Probe, cfg: ServerConfig, with_size: bool) ->
     let memory_used_mb = r.pid.and_then(|pid| crate::hardware::process_memory_mb(probe, pid));
     let world_size_mb = if with_size { paths::dir_size(&paths::server_run_dir(&cfg.id).join("world")) as f64 / 1_048_576.0 } else { 0.0 };
     ServerView {
+        logo_url: if cfg.logo.is_some() { crate::logo::data_url(&cfg.id) } else { None },
         status: r.status(),
         players: r.players.iter().cloned().collect(),
         started_at: r.started_at.map(|t| t.to_rfc3339()),
         memory_used_mb,
         mspt: r.mspt,
+        tps: r.tps,
         mspt_p95: r.mspt_p95,
         last_error: r.last_error.clone().or_else(|| cfg.install_error.clone()),
         needs_restart: r.needs_restart,
         installing: r.installing,
         world_size_mb,
+        paused: r.paused,
+        saving: r.saving || r.busy.is_some(),
+        restarting: r.restarting,
+        phase: r.phase.clone(),
+        countdown: r.countdown.clone(),
+        pause_supported: crate::process::supports_tick(&cfg.mc_version),
+        reach: r.reach.clone(),
+        reach_info: r.reach_info.clone(),
+        reach_error: r.reach_error.clone(),
+        join_issue: r.join_issue.clone(),
+        outside: if matches!(r.status(), RunStatus::Stopped | RunStatus::Crashed) && !r.installing && cfg.installed { crate::external::started_outside(&cfg) } else { None },
+        mods_count: std::fs::read_dir(paths::server_run_dir(&cfg.id).join("mods")).map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".jar")).count()).unwrap_or(0),
         config: cfg,
     }
 }
@@ -118,14 +132,15 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
     while paths::server_dir(&id).exists() { id = format!("{}-{}", slugify(&input.name), random_suffix()); }
 
     let now = chrono::Local::now().to_rfc3339();
-    let mut cfg = ServerConfig {
+    let mut cfg = ServerConfig { external_access: None,
         id: id.clone(),
         name: input.name.trim().to_string(),
+        logo: None,
         description: input.description.trim().to_string(),
         mc_version: input.mc_version.clone(),
         loader: input.loader,
         loader_version,
-        java_major: 0,
+        java_major: 0, java_required: 0, java_choice: None,
         memory_mb: input.memory_mb,
         jvm_profile: JvmProfile::Balanced,
         extra_jvm_args: String::new(),
@@ -142,7 +157,7 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
         level_type: "minecraft:normal".into(),
         view_distance: input.view_distance,
         simulation_distance: input.simulation_distance,
-        spawn_protection: 16,
+        spawn_protection: 0,
         allow_flight: false,
         enable_command_block: false,
         sync_interval_min: 15,
@@ -159,6 +174,9 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
     std::fs::create_dir_all(paths::server_backups_dir(&id)).map_err(|e| AppError::io("No se pudo crear la carpeta de backups", e))?;
     cfg.identity = identity::create_server_identity(&id, &cfg.name)?;
     save(&cfg)?;
+    // Logo de 939 Host por defecto; si algo falla el servidor queda igual, con el ícono genérico.
+    if crate::logo::set_default(&id).is_ok() { cfg.logo = Some(crate::logo::DEFAULT_KIND.into()); }
+    if cfg.loader != Loader::Vanilla { crate::optimize::set_pending(&id, &input.optimize)?; }
 
     if let Some(src) = import {
         let dst = paths::server_run_dir(&id).join("world");
@@ -187,11 +205,16 @@ pub async fn install(mgr: &Manager, id: String) {
         let mut cfg = load(&id)?;
         report("Consultando la versión en Mojang", 0.02);
         let dl = meta::server_download(&cfg.mc_version).await?;
-        cfg.java_major = dl.java_major;
+        cfg.java_required = dl.java_major;
+        let (jv, warn) = java::pick(dl.java_major, cfg.java_choice, &cfg.mc_version, cfg.loader);
+        if let Some(w) = warn { report(&w, 0.04); }
+        cfg.java_major = jv;
         save(&cfg)?;
-        java::ensure(dl.java_major, |msg, f| report(msg, 0.05 + f * 0.55)).await?;
+        java::ensure(jv, |msg, f| report(msg, 0.05 + f * 0.55)).await?;
 
         let run = paths::server_run_dir(&id);
+        // En un traspaso, la PC nueva instala antes de recibir el mundo: la carpeta puede no existir.
+        std::fs::create_dir_all(&run).map_err(|e| AppError::io("No se pudo crear la carpeta del servidor", e))?;
         if !cfg.loader.uses_installer() {
             let cached = paths::cache().join("jars").join(format!("{}.jar", dl.sha1));
             if !cached.exists() || net::sha1_file(&cached).map(|h| h != dl.sha1).unwrap_or(true) {
@@ -207,18 +230,25 @@ pub async fn install(mgr: &Manager, id: String) {
             let lv = cfg.loader_version.clone().ok_or_else(|| AppError::invalid(format!("Falta la versión de {name}")))?;
             let url = meta::installer_url(cfg.loader, &cfg.mc_version, &lv).ok_or_else(|| AppError::invalid("Loader sin instalador"))?;
             let installer = paths::cache().join("installers").join(format!("{}-{}-{}-installer.jar", name.to_lowercase(), cfg.mc_version, lv));
+            // Huella SHA-1 que publica el repositorio Maven oficial junto al instalador: se exige
+            // siempre (también para uno ya descargado antes, por si se alteró en la caché).
+            let sha = net::get_text(&format!("{url}.sha1"), &format!("la huella del instalador de {name}")).await?;
+            let sha = sha.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+            if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) { return Err(AppError::new("install", format!("El repositorio de {name} no publicó una huella válida del instalador."))); }
+            if installer.exists() && !net::sha1_file(&installer).map(|h| h.eq_ignore_ascii_case(&sha)).unwrap_or(false) { let _ = std::fs::remove_file(&installer); }
             if !installer.exists() {
                 report(&format!("Descargando el instalador de {name}"), 0.62);
-                net::download(&url, &installer, net::Hash::None, |_, _| {}).await?;
+                net::download(&url, &installer, net::Hash::Sha1(&sha), |_, _| {}).await?;
             }
             report(&format!("Instalando {name} (descarga sus librerías; puede tardar unos minutos)"), 0.7);
-            let java = java::installed_java(dl.java_major).ok_or_else(|| AppError::new("java", "Falta Java para el instalador."))?;
+            let java = java::installed_java(jv).ok_or_else(|| AppError::new("java", "Falta Java para el instalador."))?;
             let log_path = run.join("logs").join("instalador.log");
             std::fs::create_dir_all(log_path.parent().unwrap()).ok();
             let installer2 = installer.clone();
             let run2 = run.clone();
             let out = tokio::task::spawn_blocking(move || {
                 let mut c = std::process::Command::new(java);
+                crate::java::sanitize_env(&mut c);
                 c.current_dir(&run2).arg("-jar").arg(&installer2).arg("--installServer");
                 #[cfg(windows)]
                 { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
@@ -239,19 +269,23 @@ pub async fn install(mgr: &Manager, id: String) {
         if cfg.loader == Loader::Fabric {
             report("Instalando Fabric", 0.92);
             let lv = cfg.loader_version.clone().ok_or_else(|| AppError::invalid("Falta la versión de Fabric"))?;
-            let official = async {
-                let url = meta::fabric_server_launcher_url(&cfg.mc_version, &lv).await?;
-                net::download(&url, &run.join("fabric-server-launch.jar"), net::Hash::None, |_, _| {}).await?;
-                paths::write_atomic(&run.join("fabric-server-launcher.properties"), b"serverJar=server.jar\n")
-            }.await;
-            if let Err(e) = official {
-                // Plan B: si el servicio de Fabric no responde, se arma desde su repositorio Maven.
-                report("Instalando Fabric desde su repositorio", 0.93);
-                let _ = std::fs::remove_file(run.join("fabric-server-launch.jar"));
-                meta::fabric_install_maven(&run, &cfg.mc_version, &lv).await.map_err(|e2| AppError::new("install", "No se pudo instalar Fabric.").with_detail(format!("{} / {}", e.message, e2.message)))?;
+            // Desde el repositorio Maven oficial de Fabric, con cada librería verificada por la
+            // huella SHA-1 que publica. El lanzador generado por meta.fabricmc.net no tiene huella
+            // publicada: queda solo como respaldo si el repositorio no responde.
+            let _ = std::fs::remove_file(run.join("fabric-server-launch.jar"));
+            if let Err(e) = meta::fabric_install_maven(&run, &cfg.mc_version, &lv).await {
+                report("Instalando Fabric con su lanzador oficial", 0.93);
+                let official = async {
+                    let url = meta::fabric_server_launcher_url(&cfg.mc_version, &lv).await?;
+                    net::download(&url, &run.join("fabric-server-launch.jar"), net::Hash::None, |_, _| {}).await?;
+                    paths::write_atomic(&run.join("fabric-server-launcher.properties"), b"serverJar=server.jar\n")
+                }.await;
+                official.map_err(|e2| AppError::new("install", "No se pudo instalar Fabric.").with_detail(format!("{} / {}", e.message, e2.message)))?;
             }
         }
 
+        report("Protegiendo contra fallas conocidas de esta versión", 0.96);
+        crate::log4shell::ensure(&cfg.mc_version, &run).await?;
         report("Escribiendo la configuración", 0.97);
         properties::write_for(&cfg)?;
         let eula = format!("# Aceptado en 939 Host el {}\n# https://aka.ms/MinecraftEULA\neula=true\n", cfg.eula_accepted_at.clone().unwrap_or_default());
@@ -259,6 +293,24 @@ pub async fn install(mgr: &Manager, id: String) {
         cfg.installed = true;
         cfg.install_error = None;
         save(&cfg)?;
+        // Contenido del modpack elegido al crear el servidor.
+        if let Some(pack) = crate::modpack::take_pending(&id) {
+            report("Instalando el modpack", 0.98);
+            match crate::modpack::apply(&id, &pack, |m, _| report(m, 0.98)).await {
+                Ok(r) => { let _ = std::fs::remove_file(&pack); for w in r.warnings { ev.console_line(&id, &format!("[939 Host] {w}")); } }
+                Err(e) => { let _ = std::fs::remove_file(&pack); return Err(AppError::new("modpack", "El servidor quedó instalado, pero no se pudo agregar el modpack.").with_detail(e.message)); }
+            }
+        }
+        // Mods de rendimiento elegidos al crear el servidor.
+        let pending = crate::optimize::take_pending(&id);
+        if !pending.is_empty() && cfg.loader != Loader::Vanilla {
+            report("Instalando mods de rendimiento", 0.98);
+            match crate::optimize::install(&crate::modrinth::Modrinth, &cfg, &pending, |m, _| report(m, 0.98)).await {
+                Ok(r) if !r.skipped.is_empty() => ev.console_line(&id, &format!("[939 Host] Mods de rendimiento no instalados: {}", r.skipped.iter().map(|(a, b)| format!("{a} ({b})")).collect::<Vec<_>>().join(", "))),
+                Ok(_) => {}
+                Err(e) => ev.console_line(&id, &format!("[939 Host] No se pudieron instalar los mods de rendimiento: {}", e.message)),
+            }
+        }
         Ok::<_, AppError>(())
     }.await;
 
@@ -269,6 +321,11 @@ pub async fn install(mgr: &Manager, id: String) {
         }
         Err(e) => {
             if let Ok(mut cfg) = load(&id) { cfg.install_error = Some(e.message.clone()); let _ = save(&cfg); }
+            // El motivo técnico (qué descarga falló y por qué) queda en la consola local para poder
+            // diagnosticar; la consola no se comparte con otras PCs del grupo.
+            if let Some(d) = e.detail.as_deref().filter(|d| !d.is_empty()) {
+                ev.console_line(&id, &format!("[939 Host] La instalación falló: {} Motivo: {d}", e.message));
+            }
             ev.install_progress(&InstallProgress { id: id.clone(), message: "La instalación falló".into(), fraction: 0.0, done: true, error: Some(e.message.clone()) });
         }
     }
@@ -282,12 +339,18 @@ pub fn update(mgr: &Manager, mut patch: ServerConfig, total_ram_mb: u64) -> AppR
     patch.loader = current.loader;
     patch.loader_version = current.loader_version.clone();
     patch.java_major = current.java_major;
+    patch.java_required = current.java_required;
     patch.installed = current.installed;
     patch.install_error = current.install_error.clone();
     patch.created_at = current.created_at.clone();
     patch.identity = current.identity.clone();
     patch.eula_accepted_at = current.eula_accepted_at.clone();
     patch.name = patch.name.trim().to_string();
+    // El interruptor de conexiones sin 939 Host se cambia solo con su propio comando.
+    patch.external_access = current.external_access;
+    if !patch.online_mode && crate::access::external_allowed(&patch.id) == Some(true) {
+        return Err(AppError::invalid("Primero apagá «Permitir conexiones sin 939 Host»: sin «Verificar cuentas con Mojang», cualquiera podría entrar desde Internet con el nombre de un operador."));
+    }
     validate(&patch, total_ram_mb)?;
     save(&patch)?;
     if patch.installed { properties::write_for(&patch)?; }
@@ -307,7 +370,15 @@ pub fn delete(mgr: &Manager, id: &str, confirm_name: &str) -> AppResult<()> {
         return Err(AppError::busy("Detené el servidor antes de borrarlo."));
     }
     let dst = paths::trash_slot(id);
-    std::fs::rename(paths::server_dir(id), &dst).map_err(|e| AppError::io("No se pudo mover el servidor a la Papelera", e))?;
+    paths::rename_retry(paths::server_dir(id), &dst).map_err(|e| AppError::io("No se pudo mover el servidor a la Papelera", e))?;
+    // Fecha real de borrado: el plazo de 30 días se cuenta desde acá, también tras reiniciar.
+    let _ = crate::trash::stamp(&dst, &crate::trash::TrashMeta {
+        kind: "server".into(), original_id: cfg.id.clone(), name: cfg.name.clone(), deleted_at: chrono::Local::now().to_rfc3339(),
+        mc_version: cfg.mc_version.clone(), loader: cfg.loader.name().into(), logo: None,
+    });
+    // La dirección `.939host` queda libre para otro servidor (si se restaura, se elige de nuevo).
+    let _ = crate::alias::set(id, None);
+    let _ = crate::alias::public::set(id, None);
     Ok(())
 }
 
@@ -339,7 +410,7 @@ pub fn import_world(mgr: &Manager, id: &str, src: &Path) -> AppResult<u64> {
     let src = validate_world_source(src)?;
     let world = paths::server_run_dir(id).join("world");
     if world.exists() {
-        std::fs::rename(&world, paths::trash_slot(&format!("{id}-world"))).map_err(|e| AppError::io("No se pudo apartar el mundo actual", e))?;
+        paths::rename_retry(&world, paths::trash_slot(&format!("{id}-world"))).map_err(|e| AppError::io("No se pudo apartar el mundo actual", e))?;
     }
     paths::copy_dir(&src, &world)
 }

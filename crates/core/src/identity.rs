@@ -53,10 +53,10 @@ pub fn node_secret() -> AppResult<[u8; 32]> {
 }
 
 /// Crea la identidad permanente de un servidor lógico y su código de acceso.
-pub fn create_server_identity(server_id: &str, name: &str) -> AppResult<ServerIdentity> {
+/// La clave privada no se usa para firmar nada (la autoridad del grupo es la propietaria), así que
+/// no se guarda: solo queda la pública, que identifica al servidor.
+pub fn create_server_identity(_server_id: &str, name: &str) -> AppResult<ServerIdentity> {
     let key = random_key()?;
-    let path = paths::identity().join("servers").join(format!("{server_id}.key"));
-    paths::write_atomic(&path, &protect(key.as_bytes())?)?;
     let public = key.verifying_key().to_bytes();
     Ok(ServerIdentity { public_key: hex::encode(public), access_code: access_code(name, &public) })
 }
@@ -78,6 +78,17 @@ pub fn access_code(name: &str, public: &[u8]) -> String {
     format!("{} · {}-{}-{}", if slug.is_empty() { "939" } else { &slug }, &fp[0..4], &fp[4..8], &fp[8..10])
 }
 
+/// Guarda datos sensibles protegidos con DPAPI (solo este usuario de Windows puede leerlos).
+pub fn protect_to_file(path: &std::path::Path, data: &[u8]) -> AppResult<()> { paths::write_atomic(path, &protect(data)?) }
+/// Lee lo guardado con `protect_to_file`.
+pub fn unprotect_from_file(path: &std::path::Path) -> AppResult<Vec<u8>> {
+    let blob = std::fs::read(path).map_err(|e| AppError::io("No se pudo leer un dato protegido", e))?;
+    unprotect(&blob)
+}
+/// Protege bytes en memoria (para guardarlos dentro de otro archivo, por ejemplo en base64).
+pub fn protect_bytes(data: &[u8]) -> AppResult<Vec<u8>> { protect(data) }
+pub fn unprotect_bytes(data: &[u8]) -> AppResult<Vec<u8>> { unprotect(data) }
+
 #[cfg(windows)]
 fn protect(data: &[u8]) -> AppResult<Vec<u8>> {
     dpapi(data, true)
@@ -96,9 +107,9 @@ fn dpapi(data: &[u8], encrypt: bool) -> AppResult<Vec<u8>> {
     // SAFETY: los punteros son válidos durante la llamada y la salida se libera con LocalFree.
     let ok = unsafe {
         if encrypt {
-            CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output)
+            CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 1 /* CRYPTPROTECT_UI_FORBIDDEN */, &mut output)
         } else {
-            CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output)
+            CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 1 /* CRYPTPROTECT_UI_FORBIDDEN */, &mut output)
         }
     };
     if ok == 0 {
