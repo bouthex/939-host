@@ -14,6 +14,7 @@ routes.servers = async function renderServers() {
     <div class="head"><div><h1>Servidores</h1><p class="sub">${online ? `${online} funcionando · ${players} ${players === 1 ? 'jugador conectado' : 'jugadores conectados'}` : 'Ninguno está funcionando ahora.'}</p></div>
       <div class="btns"><button class="btn" data-a="nav" data-route="friends">${icon('link')}Unirme con un código</button><button class="btn" data-a="nav" data-route="modpack">${icon('layers')}Desde un modpack</button><button class="btn pri" data-a="new">${icon('plus')}Crear servidor</button></div></div>
     <div class="card list srv-list">${servers.map(serverRow).join('')}</div>
+    <div id="linked-box"></div>
     <div class="grid2">
       <div class="card pad stack"><div class="spread"><h2>Esta PC</h2><button class="btn s ghost" data-a="settings-section" data-sec="pc">Ver detalle${icon('chev', 14)}</button></div>
         ${hw ? `<div><div class="kv"><span class="k">Evaluación</span><span class="b">${esc(hw.assessment.rating)}</span></div>
@@ -22,8 +23,46 @@ routes.servers = async function renderServers() {
       <div class="card pad stack"><div class="spread"><h2>Jugar con amigos</h2><button class="btn s ghost" data-a="nav" data-route="friends">Servidores de amigos${icon('chev', 14)}</button></div>
         <p class="sm t2" style="margin:0">Abrí un servidor → <b>Grupo</b> → <b>Invitar</b>. Tus amigos pegan el código en 939 Host y entran siempre por la misma dirección, sin abrir puertos. Si lo invitás como coanfitrión, guarda una copia y puede hostearlo cuando tu PC no esté.</p></div>
     </div></div>`;
-  if (servers.some((s) => isActive(s) || s.installing)) every(10000, () => state.route === 'servers' && routes.servers());
+  paintLinked();
+  // Una sola actualización periódica (antes cada actualización agregaba otro temporizador).
+  if (servers.some((s) => isActive(s) || s.installing) && !state.timers.includes(serversTimer)) serversTimer = every(10000, () => state.route === 'servers' && routes.servers());
 };
+
+/* Servidores encendidos fuera de 939 Host (otra carpeta, otro programa u otra PC de la red),
+   vinculados por dirección y puerto. Se muestra lo que responde de verdad: un puerto abierto que
+   no contesta como Minecraft no cuenta como encendido. */
+const LINK_STATE = { minecraft: ['dot', 'Responde'], abierto: ['tri', 'No responde como Minecraft'], cerrado: ['off', 'No responde'], 'sin-resolver': ['tri', 'Dirección desconocida'] };
+const LINK_SCOPE = { 'esta-pc': 'En esta PC', 'red-local': 'En tu red local', internet: 'Dirección de Internet' };
+async function paintLinked() {
+  const box = document.getElementById('linked-box'); if (!box) return;
+  const list = await invoke('linked_list').catch(() => []);
+  if (!document.getElementById('linked-box')) return;
+  box.innerHTML = `<div class="section" style="margin-top:20px"><div class="spread"><div><h2>Iniciados fuera de 939 Host</h2><p class="sm t2" style="margin:2px 0 0">Servidores que encendés con otro programa o en otro puerto. 939 Host muestra si responden, su versión y jugadores; para administrarlos (consola, jugadores, copias) importalos como servidor de 939 Host.</p></div><button class="btn s" data-a="linked-add">${icon('plus', 14)}Vincular</button></div>
+    ${list.length ? `<div class="card list" style="margin-top:12px">${list.map((l) => {
+      const [shape, label] = LINK_STATE[l.state] || ['tri', l.state];
+      return `<div class="li"><div class="grow" style="min-width:0"><div class="row wrap" style="gap:6px 8px"><b>${esc(l.name)}</b><span class="chip s">${LINK_SCOPE[l.scope] || ''}</span>${l.sameAs ? `<span class="chip s" title="Usa el mismo puerto que tu servidor «${esc(l.sameAs)}»">Puerto de «${esc(l.sameAs)}»</span>` : ''}</div>
+        <div class="sm t3"><span class="mono">${esc(l.host)}:${l.port}</span> · ${esc(l.detail)}${l.program ? ` · ${esc(l.program)}` : ''}</div></div>
+        <div class="cols"><div class="c" style="min-width:150px"><span class="st">${SHAPES[shape]}${esc(label)}</span>${l.state === 'minecraft' ? `<span class="xs t3">${l.online}/${l.max} jugadores</span>` : ''}</div></div>
+        <button class="btn s icon ghost" data-a="copy" data-text="${esc(l.host)}:${l.port}" data-msg="Dirección copiada" aria-label="Copiar dirección">${icon('copy', 14)}</button>
+        <button class="btn s icon ghost" data-a="linked-remove" data-id="${esc(l.id)}" data-tone="halt" aria-label="Desvincular" title="Desvincular (no toca el servidor)">${icon('trash', 14)}</button></div>`;
+    }).join('')}</div>` : ''}</div>`;
+  // Un solo temporizador por pantalla (los temporizadores se limpian al cambiar de pantalla).
+  if (list.length && !state.timers.includes(linkedTimer)) linkedTimer = every(15000, () => state.route === 'servers' && paintLinked());
+}
+let linkedTimer = null, serversTimer = null;
+A['linked-add'] = async () => {
+  let name = '', host = '127.0.0.1', port = 25565;
+  const ok = await dialog({ title: 'Vincular un servidor iniciado fuera de 939 Host', confirm: 'Vincular',
+    body: `<label class="field">Nombre<input class="input" id="lk-n" maxlength="48" placeholder="Por ejemplo: Servidor de prueba"></label>
+      <div class="row" style="gap:10px"><label class="field grow">Dirección<input class="input mono" id="lk-h" value="127.0.0.1" spellcheck="false"><span class="hint">127.0.0.1 si está en esta PC; su IP si está en otra PC de tu red.</span></label>
+      <label class="field" style="width:120px">Puerto<input class="input mono" id="lk-p" type="number" min="1" max="65535" value="25565"></label></div>
+      <p class="xs t3">Solo se consulta su estado (como la lista de Multijugador): no se cambia nada en ese servidor.</p>`,
+    onMount: (d) => { d.querySelector('#lk-n').addEventListener('input', (e) => { name = e.target.value; }); d.querySelector('#lk-h').addEventListener('input', (e) => { host = e.target.value; }); d.querySelector('#lk-p').addEventListener('input', (e) => { port = +e.target.value; }); d.querySelector('#lk-n').focus(); } });
+  if (!ok) return;
+  try { await invoke('linked_add', { name, host, port }); toast('Servidor vinculado'); } catch (e) { fail(e); }
+  paintLinked();
+};
+A['linked-remove'] = async (el) => { try { await invoke('linked_remove', { id: el.dataset.id }); } catch (e) { fail(e); } paintLinked(); };
 /* Servidor compartido que ahora se juega en otra PC del grupo. */
 const elsewhere = (s) => { const h = state.hosting?.[s.config.id]; return h && h.hosting && !h.iAmHost && !isActive(s) ? h : null; };
 function serverRow(s) {
@@ -59,6 +98,7 @@ function quickAction(s) {
   const id = esc(s.config.id);
   if (!s.config.installed || s.installing) return '';
   if (s.restarting || s.status === 'stopping' || s.status === 'starting') return '<span class="xs t3">Esperá…</span>';
+  if (s.outside && s.status !== 'running') return '<span class="xs t3" title="Cerralo desde su ventana (stop) para administrarlo desde 939 Host">Fuera de 939 Host</span>';
   if (s.status === 'running') return `<button class="btn s" data-a="stop" data-tone="halt" data-id="${id}">${icon('stop', 14)}Detener</button>`;
   if (s.status === 'crashed') return `<button class="btn s" data-a="repair" data-id="${id}">${icon('wrench', 14)}Reparar</button>`;
   return `<button class="btn s" data-a="start" data-tone="go" data-id="${id}">${icon('play', 14)}Iniciar</button>`;

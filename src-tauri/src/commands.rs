@@ -750,6 +750,22 @@ pub async fn mods_import_folder(app: AppHandle, id: String, path: String) -> App
 
 /* ── Espacio y protección de las copias ── */
 
+/* ───────── Servidores encendidos fuera de 939 Host ───────── */
+
+#[tauri::command]
+pub async fn linked_list() -> Vec<host939_core::external::LinkedView> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let own: Vec<(String, String, u16)> = instance::list_configs().into_iter().map(|c| (c.id, c.name, c.port)).collect();
+        let links = host939_core::external::list();
+        let hs: Vec<_> = links.into_iter().map(|l| { let o = own.clone(); std::thread::spawn(move || host939_core::external::probe(&l, &o)) }).collect();
+        hs.into_iter().filter_map(|h| h.join().ok()).collect()
+    }).await.unwrap_or_default()
+}
+#[tauri::command]
+pub fn linked_add(name: String, host: String, port: u16) -> AppResult<host939_core::external::Linked> { host939_core::external::add(&name, &host, port) }
+#[tauri::command]
+pub fn linked_remove(id: String) -> AppResult<()> { host939_core::external::remove(&id) }
+
 #[tauri::command]
 pub async fn cache_usage() -> host939_core::storage::CacheUsage { tauri::async_runtime::spawn_blocking(host939_core::storage::cache_usage).await.unwrap_or(host939_core::storage::CacheUsage { bytes: 0, files: 0, removable_bytes: 0 }) }
 #[tauri::command]

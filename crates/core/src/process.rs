@@ -26,6 +26,12 @@ const LOG_LINES: usize = 2000;
 pub struct Runtime {
     pub status: Option<RunStatus>,
     pub players: BTreeSet<String>,
+    /// UUID real de cada conectado, según el propio servidor (`list uuids`).
+    pub player_uuids: std::collections::BTreeMap<String, String>,
+    /// Consulta `list` propia en curso: sus líneas no se muestran en la consola.
+    list_until: Option<Instant>,
+    /// Formato viejo de `list`: cuántos nombres trae la línea siguiente.
+    list_expect: Option<usize>,
     /// Sesiones en curso para el historial (nombre → hora de entrada).
     pub open_sessions: crate::sessions::Open,
     pub started_at: Option<chrono::DateTime<chrono::Local>>,
@@ -314,6 +320,12 @@ impl Manager {
             let _ = paths::write_atomic(&run_dir.join("fabric-server-launcher.properties"), b"serverJar=server.jar\n");
         }
         check_lock(probe, &run_dir)?;
+        // Encendido a mano en su carpeta: no se abre una segunda copia sobre el mismo mundo.
+        crate::external::forget(&cfg.id);
+        if let Some(o) = crate::external::started_outside(cfg) {
+            return Err(AppError::new("busy", format!("Este servidor ya está encendido fuera de 939 Host ({}{}, Minecraft {}, {} jugadores). Cerralo desde su ventana (escribí «stop») y encendelo desde acá para administrarlo.",
+                if o.program.is_empty() { "otro programa".to_string() } else { o.program.clone() }, o.pid.map(|p| format!(", proceso {p}")).unwrap_or_default(), o.version, o.online)));
+        }
         let resolved = self.resolve_port(cfg)?;
         let cfg = &resolved;
         // La configuración es la fuente de verdad: así el puerto y las opciones de esta PC valen
@@ -363,6 +375,9 @@ impl Manager {
             rt.stdin = child.stdin.take();
             rt.started_at = Some(chrono::Local::now());
             rt.players.clear();
+            rt.player_uuids.clear();
+            rt.list_until = None;
+            rt.list_expect = None;
             rt.last_error = None;
             rt.needs_restart = false;
             rt.stop_requested = false;
@@ -414,6 +429,7 @@ impl Manager {
                 r.stdin = None;
                 r.pid = None;
                 r.players.clear();
+                r.player_uuids.clear();
                 r.open_sessions.close_all(&id, chrono::Local::now());
                 r.reset_live();
                 r.exited_unsaved = true;
@@ -433,6 +449,28 @@ impl Manager {
                 }
                 drop(r);
                 ev.server_changed(&id);
+            });
+        }
+
+        // Conectados según el propio servidor: `list uuids` cada 15 s. Las líneas de entrada y salida
+        // del registro cambian de formato entre versiones y loaders (26.3 agregó «System chat: »);
+        // si una no se reconoce, esta consulta corrige la lista y da el UUID real. Desde 1.7.6
+        // existe «list uuids»; antes, «list».
+        {
+            let rt = rt_arc.clone();
+            let cmd = if crate::playeredit::release_at_least(&cfg.mc_version, 8, 0) { "list uuids" } else { "list" };
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(15));
+                let mut r = rt.lock().unwrap();
+                match r.status() {
+                    RunStatus::Running if r.countdown.is_none() => {
+                        if let Some(stdin) = r.stdin.as_mut() {
+                            if writeln!(stdin, "{cmd}").and_then(|_| stdin.flush()).is_ok() { r.list_until = Some(Instant::now() + Duration::from_secs(4)); }
+                        }
+                    }
+                    RunStatus::Starting | RunStatus::Running => {}
+                    _ => break,
+                }
             });
         }
 
@@ -699,6 +737,21 @@ fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: S
                 changed = true;
             }
         }
+        // Lista de conectados que da el servidor: es la fuente de verdad.
+        let ours = r.list_until.map(|t| Instant::now() < t).unwrap_or(false);
+        let listed = if let Some(n) = r.list_expect.take().filter(|_| ours) {
+            crate::sessions::parse_list_names(&line).filter(|v| v.len() == n)
+        } else {
+            match crate::sessions::parse_list(&line) {
+                Some((_, Some(v))) => Some(v),
+                Some((n, None)) => { r.list_expect = Some(n); if ours { hide = true; } None }
+                None => None,
+            }
+        };
+        if let Some(v) = listed {
+            if ours { hide = true; r.list_until = None; }
+            if reconcile_players(&mut r, id, &v) { changed = true; }
+        }
         // Entradas y salidas: solo líneas del propio servidor, nunca texto del chat.
         match crate::sessions::parse(&line) {
             Some(crate::sessions::Event::Join { name, previously }) => {
@@ -709,6 +762,7 @@ fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: S
             }
             Some(crate::sessions::Event::Leave { name }) => {
                 r.players.remove(&name);
+                r.player_uuids.remove(&name);
                 r.open_sessions.leave(id, &name, chrono::Local::now());
                 changed = true;
             }
@@ -734,6 +788,27 @@ fn handle_line(ev: &Arc<dyn Events>, rt: &Arc<Mutex<Runtime>>, id: &str, line: S
     }
     if changed { ev.server_changed(id); }
     if probe_after_start { spawn_reach_check(ev.clone(), rt.clone(), id.to_string(), port); }
+}
+
+/// Ajusta los conectados a la lista que dio el servidor: suma a quien falte (entrada que no se vio
+/// en el registro) y saca a quien ya no está (salida que no se vio). Guarda el UUID real.
+fn reconcile_players(r: &mut Runtime, id: &str, list: &[(String, Option<String>)]) -> bool {
+    let now = chrono::Local::now();
+    let names: BTreeSet<String> = list.iter().map(|(n, _)| n.clone()).collect();
+    let mut changed = false;
+    for n in names.difference(&r.players.clone()) {
+        r.players.insert(n.clone());
+        r.open_sessions.join(n, None, now);
+        changed = true;
+    }
+    for n in r.players.clone().difference(&names) {
+        r.players.remove(n);
+        r.player_uuids.remove(n);
+        r.open_sessions.leave(id, n, now);
+        changed = true;
+    }
+    for (n, u) in list { if let Some(u) = u { if r.player_uuids.get(n) != Some(u) { r.player_uuids.insert(n.clone(), u.clone()); changed = true; } } }
+    changed
 }
 
 /// Comprueba en segundo plano que el servidor responda como Minecraft en 127.0.0.1:puerto.

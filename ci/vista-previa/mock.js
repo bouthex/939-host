@@ -25,6 +25,9 @@
     world_info: { exists: true, levelName: 'world', seed: '-4172144997902289642', sizeBytes: 412e6, world: 'world', dimensions: [{ name: 'Mundo normal', sizeBytes: 300e6 }, { name: 'Nether', sizeBytes: 80e6 }, { name: 'End', sizeBytes: 32e6 }], playersData: 3 },
     files_list: { entries: [{ name: 'world', path: 'world', dir: true, size: 0, modified: now, kind: 'world', locked: true }, { name: 'mods', path: 'mods', dir: true, size: 0, modified: now, kind: 'mods', locked: false }, { name: 'server.properties', path: 'server.properties', dir: false, size: 1300, modified: now, kind: 'config', locked: false }], remote: false },
     public_address_get: '',
+    linked_list: [
+      { id: 'l1', name: 'Servidor de pruebas', host: '127.0.0.1', port: 25570, addedAt: now, state: 'minecraft', detail: 'Minecraft 1.21.4 responde en 3 ms.', version: '1.21.4', online: 1, max: 20, latencyMs: 3, scope: 'esta-pc', sameAs: null, program: 'java.exe (proceso 8120)' },
+      { id: 'l2', name: 'PC del living', host: '192.168.1.40', port: 25565, addedAt: now, state: 'cerrado', detail: 'No responde desde esta PC: está apagado, usa otro puerto o el firewall de esa PC lo bloquea.', version: null, online: null, max: null, latencyMs: null, scope: 'red-local', sameAs: null, program: null }],
     alias_status: { items: [], suggestion: { 'srv-demo': 'supervivencia' } }, list_backups: [], players_list: [
       { name: 'Lucía', uuid: 'dc93628e-4a27-409a-8ed7-fa8b31818b75', online: true, whitelisted: true, opLevel: 4, banned: false, lastSeen: null },
       { name: 'Tomi', uuid: '11111111-2222-4333-8444-555555555555', online: false, whitelisted: true, opLevel: null, banned: false, lastSeen: '2026-11-19T21:30:00-03:00' }],

@@ -124,11 +124,13 @@ pub fn list(mgr: &Manager, cfg: &ServerConfig) -> Vec<PlayerView> {
     for e in read_list(cfg, "whitelist.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); map.get_mut(&k).unwrap().whitelisted = true; } }
     for e in read_list(cfg, "ops.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); map.get_mut(&k).unwrap().op_level = Some(e["level"].as_u64().unwrap_or(4) as u8); } }
     for e in read_list(cfg, "banned-players.json") { if let (Some(n), Some(u)) = (e["name"].as_str(), e["uuid"].as_str()) { let k = touch(&mut map, n, u); let v = map.get_mut(&k).unwrap(); v.banned = true; v.ban_reason = e["reason"].as_str().map(String::from); } }
-    let (online, since): (Vec<String>, Vec<Option<String>>) = {
+    // Conectados: el UUID real lo dio el servidor (`list uuids`); así un jugador se identifica por
+    // UUID aunque cambie de nombre o no esté todavía en usercache.json.
+    let online: Vec<(String, String, Option<String>)> = {
         let r = mgr.runtime(&cfg.id); let r = r.lock().unwrap();
-        r.players.iter().map(|n| (n.clone(), r.open_sessions.since(n).map(|t| t.to_rfc3339()))).unzip()
+        r.players.iter().map(|n| (n.clone(), r.player_uuids.get(n).cloned().unwrap_or_default(), r.open_sessions.since(n).map(|t| t.to_rfc3339()))).collect()
     };
-    for (n, s) in online.iter().zip(since) { let k = touch(&mut map, n, ""); let v = map.get_mut(&k).unwrap(); v.online = true; v.name = n.clone(); v.online_since = s; }
+    for (n, u, s) in &online { let k = touch(&mut map, n, u); let v = map.get_mut(&k).unwrap(); v.online = true; v.name = n.clone(); v.online_since = s.clone(); if !u.is_empty() { v.uuid = u.clone(); } }
     // Última vez visto: la salida registrada por 939 Host; si no hay, la última entrada que
     // anotó Minecraft.
     let sessions = crate::sessions::last_seen_map(&cfg.id);

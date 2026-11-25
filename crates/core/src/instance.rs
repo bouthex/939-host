@@ -61,6 +61,7 @@ pub fn view(mgr: &Manager, probe: &Probe, cfg: ServerConfig, with_size: bool) ->
         reach_info: r.reach_info.clone(),
         reach_error: r.reach_error.clone(),
         join_issue: r.join_issue.clone(),
+        outside: if matches!(r.status(), RunStatus::Stopped | RunStatus::Crashed) && !r.installing && cfg.installed { crate::external::started_outside(&cfg) } else { None },
         mods_count: std::fs::read_dir(paths::server_run_dir(&cfg.id).join("mods")).map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".jar")).count()).unwrap_or(0),
         config: cfg,
     }

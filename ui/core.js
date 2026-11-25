@@ -433,6 +433,8 @@ function serverState(v) {
   // para siempre; se ofrece reintentar.
   if (!v.config.installed) return { key: 'error', label: v.lastError ? 'Instalación fallida' : 'Instalación incompleta', shape: 'tri', detail: v.lastError ? '' : 'Reintentá la instalación' };
   if (v.restarting) return { key: 'restarting', label: 'Reiniciando', shape: 'ring' };
+  // Encendido a mano en su carpeta (run.bat u otro programa): funciona, pero 939 Host no tiene su consola.
+  if (v.outside && (v.status === 'stopped' || v.status === 'crashed')) return { key: 'outside', label: 'Encendido fuera de 939 Host', shape: 'dot', detail: `Minecraft ${v.outside.version} · ${v.outside.online}/${v.outside.max} jugadores` };
   switch (v.status) {
     case 'running':
       if (v.paused) return { key: 'paused', label: 'Pausado', shape: 'pause' };

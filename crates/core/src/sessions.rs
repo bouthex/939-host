@@ -37,6 +37,34 @@ pub fn parse(line: &str) -> Option<Event> {
     RE_LEAVE.captures(line).map(|c| Event::Leave { name: c[1].to_string() })
 }
 
+// Respuesta de `list` / `list uuids`. Desde 1.13: «There are 2 of a max of 20 players online: Ana
+// (uuid), Beto (uuid)» en una línea. Antes: «There are 2/20 players online:» y los nombres en la
+// línea siguiente. En 26.3 la respuesta lleva «System chat: » delante.
+static RE_LIST: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\[[^\[\]]*\] ?)+: (?:System chat: )?There are (\d+) ?(?:of a max of \d+|/ ?\d+) players online:? ?(.*)$").unwrap());
+static RE_MSG: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:\[[^\[\]]*\] ?)+: (?:System chat: )?(.*)$").unwrap());
+static RE_ENTRY: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Za-z0-9_]{1,16})(?: \(([0-9a-fA-F-]{32,36})\))?$").unwrap());
+
+/// Lista de conectados según el propio servidor: (cantidad, nombres con UUID si vinieron).
+/// `None` en los nombres: vienen en la línea siguiente (versiones viejas).
+pub fn parse_list(line: &str) -> Option<(usize, Option<Vec<(String, Option<String>)>>)> {
+    let c = RE_LIST.captures(line.trim_end_matches(['\r', '\n']))?;
+    let n: usize = c[1].parse().ok()?;
+    let rest = c[2].trim();
+    if rest.is_empty() { return Some((n, if n == 0 { Some(vec![]) } else { None })); }
+    Some((n, Some(parse_names(rest)?)))
+}
+
+/// Línea de nombres de `list` (formato viejo, línea aparte): «Ana (uuid), Beto (uuid)».
+pub fn parse_list_names(line: &str) -> Option<Vec<(String, Option<String>)>> {
+    let c = RE_MSG.captures(line.trim_end_matches(['\r', '\n']))?;
+    parse_names(c[1].trim())
+}
+
+fn parse_names(s: &str) -> Option<Vec<(String, Option<String>)>> {
+    if s.is_empty() { return Some(vec![]); }
+    s.split(", ").map(|e| RE_ENTRY.captures(e.trim()).map(|c| (c[1].to_string(), c.get(2).map(|u| u.as_str().to_ascii_lowercase())))).collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Session {
     /// Nombre con el que jugó.
@@ -164,6 +192,21 @@ pub fn last_seen_map(id: &str) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lista_de_conectados_en_todos_los_formatos() {
+        let u = "6c8a1f7e-3c55-4c2e-9b39-3a7c2f1e0d11";
+        assert_eq!(parse_list(&format!("[22:36:50] [Server thread/INFO]: System chat: There are 1 of a max of 20 players online: Jugador939 ({u})")),
+            Some((1, Some(vec![("Jugador939".into(), Some(u.into()))]))));
+        assert_eq!(parse_list(&format!("[12:00:00] [Server thread/INFO]: There are 2 of a max of 10 players online: Ana ({u}), Beto ({u})")).unwrap().1.unwrap().len(), 2);
+        assert_eq!(parse_list("[12:00:00] [Server thread/INFO]: There are 0 of a max of 20 players online: "), Some((0, Some(vec![]))));
+        assert_eq!(parse_list("[12:00:00 INFO]: There are 0 of a max of 20 players online:"), Some((0, Some(vec![]))));
+        // 1.12 y anteriores: los nombres llegan en la línea siguiente.
+        assert_eq!(parse_list("[12:00:00] [Server thread/INFO]: There are 1/20 players online:"), Some((1, None)));
+        assert_eq!(parse_list_names(&format!("[12:00:00] [Server thread/INFO]: Ana ({u})")), Some(vec![("Ana".into(), Some(u.into()))]));
+        // El chat de un jugador no cuenta.
+        assert_eq!(parse_list("[12:00:00] [Server thread/INFO]: <Bob> There are 5 of a max of 20 players online: x"), None);
+    }
 
     #[test]
     fn detecta_entradas_reales_y_no_las_del_chat() {

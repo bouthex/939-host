@@ -200,4 +200,7 @@ pub struct ServerView {
     pub join_issue: Option<crate::reach::JoinIssue>,
     /// Cantidad de .jar en la carpeta de mods (el juego de cada jugador tiene que coincidir).
     pub mods_count: usize,
+    /// Encendido fuera de 939 Host (por ejemplo, con run.bat en su carpeta): 939 Host no lo
+    /// administra hasta que se cierre desde allá.
+    pub outside: Option<crate::external::OutsideRun>,
 }

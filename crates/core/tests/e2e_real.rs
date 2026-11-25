@@ -1151,15 +1151,27 @@ async fn e2e_jugador_en_vivo() {
         let dir = std::env::var("CLIENTE_CACHE").map(|c| std::path::PathBuf::from(c).join(mc)).unwrap_or_else(|_| paths::root().join(format!("cliente-vivo-{mc}")));
         let _ = std::fs::remove_dir_all(dir.join("game")); // perfil de juego nuevo en cada prueba
         // Si la prueba falla, el cliente y el servidor se cierran igual (no quedan procesos).
+        // El script abre el Minecraft (Java) como proceso hijo: se lanza en un grupo propio para
+        // cerrar el juego entero (cerrar solo Python dejaba al jugador conectado).
+        fn close_game(c: &mut std::process::Child) {
+            #[cfg(unix)]
+            { let _ = std::process::Command::new("kill").args(["-s", "KILL", "--", &format!("-{}", c.id())]).status(); }
+            let _ = c.kill();
+            let _ = c.wait();
+        }
         struct Cierre<'a>(&'a Manager, String, Option<std::process::Child>);
-        impl Drop for Cierre<'_> { fn drop(&mut self) { if let Some(c) = self.2.as_mut() { let _ = c.kill(); let _ = c.wait(); } let _ = self.0.kill(&self.1); } }
-        let child = std::process::Command::new("python3").env("JAVA_BIN", java)
+        impl Drop for Cierre<'_> { fn drop(&mut self) { if let Some(c) = self.2.as_mut() { close_game(c); } let _ = self.0.kill(&self.1); } }
+        let mut launch = std::process::Command::new("python3");
+        #[cfg(unix)]
+        { use std::os::unix::process::CommandExt; launch.process_group(0); }
+        let child = launch.env("JAVA_BIN", java)
             .args([&script, mc, &format!("127.0.0.1:{port}"), dir.to_str().unwrap(), name, "420"]).spawn().expect("cliente");
         let mut cierre = Cierre(&mgr, cfg.id.clone(), Some(child));
         let joined = wait_for(Duration::from_secs(420), || mgr.console(&cfg.id).iter().any(|l| l.contains(&format!("{name} joined the game"))));
         if !joined {
             let log = std::fs::read_to_string(dir.join("salida.txt")).unwrap_or_default();
-            panic!("{mc}: el cliente no entró\n{}", log.lines().rev().take(30).collect::<Vec<_>>().join("\n"));
+            let con = mgr.console(&cfg.id);
+            panic!("{mc}: el cliente no entró\n── cliente ──\n{}\n── servidor ──\n{}", log.lines().rev().take(30).collect::<Vec<_>>().join("\n"), con.iter().rev().take(40).rev().cloned().collect::<Vec<_>>().join("\n"));
         }
         // El cliente con OpenGL por software tarda en terminar de cargar el mundo (hasta entonces,
         // desde 1.21.4, el servidor no le aplica efectos).
@@ -1169,6 +1181,17 @@ async fn e2e_jugador_en_vivo() {
         assert!(rt.lock().unwrap().players.contains(name), "[{mc}] 939 Host no detectó al jugador conectado");
         let lst = host939_core::players::list(&mgr, &cfg);
         assert!(lst.iter().any(|p| p.name == name && p.online), "[{mc}] la lista de jugadores no lo muestra conectado");
+        // UUID real del servidor (modo offline: el que calcula Minecraft para ese nombre).
+        let want = host939_core::players::offline_uuid(name);
+        assert!(wait_for(Duration::from_secs(20), || rt.lock().unwrap().player_uuids.get(name).map(|u| *u == want).unwrap_or(false)), "[{mc}] sin UUID real del servidor");
+        // Una entrada que no se vio en el registro (formato desconocido) se corrige sola con la
+        // lista que da el servidor: se borra a mano y tiene que volver.
+        rt.lock().unwrap().players.remove(name);
+        assert!(wait_for(Duration::from_secs(20), || rt.lock().unwrap().players.contains(name)), "[{mc}] la lista del servidor no corrigió la entrada perdida");
+        assert!(!mgr.console(&cfg.id).iter().any(|l| l.contains("players online")), "[{mc}] la consulta interna no tiene que verse en la consola");
+        let p = host939_core::players::list(&mgr, &cfg).into_iter().find(|p| p.name == name).unwrap();
+        assert_eq!(p.uuid, want, "[{mc}] la lista usa el UUID real");
+        println!("✔ [{mc}] conectado con su UUID real ({want}); una entrada perdida se corrige con la lista del servidor");
         let d = || detail(&mgr, &cfg, name, "", true).unwrap();
         let tag = format!("[{mc}]");
         // ── Hambre y saturación de a un paso ──
@@ -1257,9 +1280,41 @@ async fn e2e_jugador_en_vivo() {
         let leftovers = std::fs::read_dir(paths::server_run_dir(&cfg.id).join("debug")).map(|r| r.count()).unwrap_or(0);
         assert_eq!(leftovers, 0, "{tag} quedaron perfiles de debug");
         println!("✔ {tag} TPS medidos");
-        if let Some(mut c) = cierre.2.take() { let _ = c.kill(); let _ = c.wait(); }
+        // ── Salida: el cliente se cierra de golpe y 939 Host lo ve desconectado ──
+        if let Some(mut c) = cierre.2.take() { close_game(&mut c); }
+        let gone = wait_for(Duration::from_secs(45), || !rt.lock().unwrap().players.contains(name));
+        if !gone {
+            let con = mgr.console(&cfg.id);
+            let alive = std::process::Command::new("pgrep").args(["-f", "net.minecraft.client"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+            panic!("{tag} sigue figurando conectado después de salir (cliente vivo: «{alive}»)\n{}", con.iter().rev().take(25).rev().cloned().collect::<Vec<_>>().join("\n"));
+        }
+        assert!(!host939_core::players::list(&mgr, &cfg).iter().any(|p| p.name == name && p.online), "{tag} la lista lo sigue mostrando conectado");
+        println!("✔ {tag} al cerrar el juego queda desconectado");
         mgr.stop(&cfg.id).unwrap();
         assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
+        // ── Encendido fuera de 939 Host (a mano, en su carpeta): se detecta y no se abre otra copia ──
+        if loader == Loader::Vanilla {
+            let run = paths::server_run_dir(&cfg.id);
+            let javab = std::env::var(format!("HOST939_TEST_JAVA{}", cfg.java_major)).map(|j| format!("{j}/bin/java")).unwrap_or_else(|_| "java".into());
+            let mut manual = std::process::Command::new(&javab).args(["-Xmx1G", "-jar", "server.jar", "nogui"]).current_dir(&run)
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().expect("java a mano");
+            let up = wait_for(Duration::from_secs(240), || host939_core::reach::status("127.0.0.1", cfg.port, Duration::from_secs(2)).is_ok());
+            assert!(up, "{tag} el servidor a mano no arrancó");
+            host939_core::external::forget(&cfg.id);
+            let v = instance::view(&mgr, &probe, instance::load(&cfg.id).unwrap(), false);
+            let o = v.outside.clone();
+            let refused = mgr.start(&probe, &instance::load(&cfg.id).unwrap());
+            { use std::io::Write; if let Some(i) = manual.stdin.as_mut() { let _ = writeln!(i, "stop"); } }
+            let _ = wait_for(Duration::from_secs(60), || matches!(manual.try_wait(), Ok(Some(_))));
+            let _ = manual.kill(); let _ = manual.wait();
+            assert!(o.is_some(), "{tag} no detectó el servidor encendido fuera de 939 Host");
+            assert_eq!(v.status, RunStatus::Stopped);
+            let e = refused.expect_err("no tiene que abrir una segunda copia sobre el mismo mundo");
+            assert!(e.message.contains("fuera de 939 Host"), "{tag} {}", e.message);
+            host939_core::external::forget(&cfg.id);
+            assert!(host939_core::external::started_outside(&instance::load(&cfg.id).unwrap()).is_none(), "{tag} al cerrarlo deja de figurar encendido");
+            println!("✔ {tag} encendido a mano: se detecta ({:?}) y 939 Host no abre otra copia", o.unwrap());
+        }
     }
 }
 

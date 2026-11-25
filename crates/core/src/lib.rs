@@ -14,6 +14,7 @@ pub mod gameassets;
 pub mod guardian;
 pub mod curseforge;
 pub mod datos;
+pub mod external;
 pub mod files;
 pub mod modguard;
 pub mod modscan;
