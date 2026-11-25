@@ -148,10 +148,14 @@ pub async fn server_properties_extra(id: String) -> AppResult<std::collections::
 
 #[tauri::command]
 pub async fn delete_server(app: AppHandle, id: String, confirm_name: String) -> AppResult<()> {
+    let a = app.clone();
     blocking(move || {
-        let op = op(&app, &id, "Eliminando el servidor", "Deteniendo y moviendo a la Papelera de 939 Host…");
-        op.finish(instance::delete(&app.state::<Manager>(), &id, &confirm_name), "Servidor movido a la Papelera")
-    }).await
+        let op = op(&a, &id, "Eliminando el servidor", "Deteniendo y moviendo a la Papelera de 939 Host…");
+        op.finish(instance::delete(&a.state::<Manager>(), &id, &confirm_name), "Servidor movido a la Papelera")
+    }).await?;
+    // Deja de atender su dirección `.939host` (queda libre para otro servidor).
+    crate::aliases::sync(&app).await;
+    Ok(())
 }
 
 /// Operación larga visible en la interfaz (ver `ops`).

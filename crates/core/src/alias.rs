@@ -115,6 +115,10 @@ fn store() -> std::path::PathBuf { crate::paths::root().join("direcciones.json")
 pub fn load() -> std::collections::BTreeMap<String, String> { crate::paths::read_json(&store()).unwrap_or_default() }
 pub fn set(id: &str, label: Option<&str>) -> AppResult<Option<String>> {
     let mut m = load();
+    // Registros viejos de servidores que ya no existen (borrados antes de que se liberaran)
+    // no reservan nombres: se descartan.
+    let alive: std::collections::HashSet<String> = crate::instance::list_configs().into_iter().map(|c| c.id).collect();
+    m.retain(|k, _| k == id || alive.contains(k));
     let label = match label { Some(l) => Some(validate(l)?), None => None };
     if let Some(l) = &label {
         if m.iter().any(|(k, v)| k != id && v == l) { return Err(AppError::invalid(format!("{l}{SUFFIX} ya la usa otro servidor en esta PC."))); }

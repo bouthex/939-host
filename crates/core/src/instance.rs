@@ -156,7 +156,7 @@ pub async fn create(input: CreateServerInput, total_ram_mb: u64) -> AppResult<Se
         level_type: "minecraft:normal".into(),
         view_distance: input.view_distance,
         simulation_distance: input.simulation_distance,
-        spawn_protection: 16,
+        spawn_protection: 0,
         allow_flight: false,
         enable_command_block: false,
         sync_interval_min: 15,
@@ -375,6 +375,9 @@ pub fn delete(mgr: &Manager, id: &str, confirm_name: &str) -> AppResult<()> {
         kind: "server".into(), original_id: cfg.id.clone(), name: cfg.name.clone(), deleted_at: chrono::Local::now().to_rfc3339(),
         mc_version: cfg.mc_version.clone(), loader: cfg.loader.name().into(), logo: None,
     });
+    // La dirección `.939host` queda libre para otro servidor (si se restaura, se elige de nuevo).
+    let _ = crate::alias::set(id, None);
+    let _ = crate::alias::public::set(id, None);
     Ok(())
 }
 

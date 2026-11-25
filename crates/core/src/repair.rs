@@ -801,7 +801,7 @@ mod tests {
             // Puerto libre: otras pruebas en paralelo pueden usar el 25565 (y el reparador lo diría).
             memory_mb: 2048, jvm_profile: JvmProfile::Balanced, extra_jvm_args: String::new(), port: crate::ports::free_near(47000, &[]).unwrap_or(47001), max_players: 8, motd: String::new(),
             online_mode: true, whitelist: true, difficulty: "hard".into(), gamemode: "survival".into(), hardcore: false, pvp: true, level_seed: String::new(),
-            level_type: "minecraft:normal".into(), view_distance: 10, simulation_distance: 8, spawn_protection: 16, allow_flight: false, enable_command_block: false,
+            level_type: "minecraft:normal".into(), view_distance: 10, simulation_distance: 8, spawn_protection: 0, allow_flight: false, enable_command_block: false,
             sync_interval_min: 15, restore_interval_min: 15, installed: true, install_error: None, eula_accepted_at: Some("hoy".into()), created_at: String::new(),
             identity: Default::default(), extra_properties: Default::default(),
         }

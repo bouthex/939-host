@@ -598,7 +598,7 @@ tabDraw.settings = async (el) => {
         <label class="field">Modo de juego<select class="input" data-bind="gamemode">${opt(MODE, e.gamemode)}</select></label>
         <label class="field">Tipo de mundo<select class="input" data-bind="levelType">${opt({ 'minecraft:normal': 'Normal', 'minecraft:flat': 'Plano', 'minecraft:large_biomes': 'Biomas grandes', 'minecraft:amplified': 'Amplificado' }, e.levelType)}</select><span class="hint">Solo afecta a mundos nuevos.</span></label>
         <label class="field">Semilla<input class="input mono" data-bind="levelSeed" value="${esc(e.levelSeed)}"><span class="hint">Solo afecta a mundos nuevos.</span></label>
-        <label class="field">Protección del spawn (bloques)<input class="input mono" type="number" min="0" max="1000" data-bind="spawnProtection" data-type="int" value="${e.spawnProtection}"></label>
+        <label class="field">Protección del spawn (bloques)<input class="input mono" type="number" min="0" max="1000" data-bind="spawnProtection" data-type="int" value="${e.spawnProtection}"><span class="hint">${+e.spawnProtection ? `Activa: solo los operadores construyen a ${e.spawnProtection} bloques del spawn. 0 la apaga.` : 'Desactivada: todos pueden construir en el spawn. Poné un número para activarla.'}</span></label>
         <div></div>
         <label class="check"><input type="checkbox" data-bind="pvp" ${e.pvp ? 'checked' : ''}><span>Combate entre jugadores (PvP)</span></label>
         <label class="check"><input type="checkbox" data-bind="hardcore" ${e.hardcore ? 'checked' : ''}><span>Hardcore<span class="hint">Una sola vida.</span></span></label>
