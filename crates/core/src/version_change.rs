@@ -41,7 +41,10 @@ pub struct ModCheck {
 pub struct Analysis {
     pub from_mc: String,
     pub to_mc: String,
+    /// Loader de destino (puede ser distinto del actual).
     pub loader: String,
+    pub from_loader: String,
+    pub loader_changes: bool,
     pub loader_version: Option<String>,
     pub loader_supported: bool,
     /// upgrade | downgrade | same
@@ -63,12 +66,15 @@ pub struct Analysis {
 fn loader_id(l: Loader) -> &'static str { mods::loader_id(l).unwrap_or("") }
 
 /// Analiza qué implica pasar `cfg` a `to_mc` (sin tocar nada).
-pub async fn analyze<S: Source>(src: &S, cfg: &ServerConfig, to_mc: &str) -> AppResult<Analysis> {
+pub async fn analyze<S: Source>(src: &S, cfg: &ServerConfig, to_mc: &str, to_loader: Option<Loader>) -> AppResult<Analysis> {
+    let tl = to_loader.unwrap_or(cfg.loader);
+    let loader_changes = tl != cfg.loader;
     let mut blockers = vec![];
     let mut warnings = vec![];
     let from = meta::version_info(&cfg.mc_version).await?;
     let to = meta::version_info(to_mc).await?.ok_or_else(|| AppError::not_found(&format!("Minecraft {to_mc}")))?;
     let direction = match &from {
+        _ if cfg.mc_version == to_mc && loader_changes => "loader",
         _ if cfg.mc_version == to_mc => "same",
         Some((ft, _)) if to.0 > *ft => "upgrade",
         Some(_) => "downgrade",
@@ -79,16 +85,22 @@ pub async fn analyze<S: Source>(src: &S, cfg: &ServerConfig, to_mc: &str) -> App
         Ok(d) => java::install_major(d.java_major),
         Err(_) => { blockers.push(format!("Minecraft {to_mc} no tiene servidor oficial de Mojang.")); 0 }
     };
-    let (loader_supported, loader_version) = if cfg.loader == Loader::Vanilla { (true, None) } else {
-        match meta::loader_support(cfg.loader, to_mc).await {
+    let (loader_supported, loader_version) = if tl == Loader::Vanilla { (true, None) } else {
+        match meta::loader_support(tl, to_mc).await {
             Ok(s) if s.supported => (true, s.loader_version),
-            Ok(_) => { blockers.push(format!("{} todavía no tiene versión para Minecraft {to_mc}.", cfg.loader.name())); (false, None) }
-            Err(e) => { blockers.push(format!("No se pudo consultar {}: {}", cfg.loader.name(), e.message)); (false, None) }
+            Ok(_) => { blockers.push(format!("{} todavía no tiene versión para Minecraft {to_mc}.", tl.name())); (false, None) }
+            Err(e) => { blockers.push(format!("No se pudo consultar {}: {}", tl.name(), e.message)); (false, None) }
         }
     };
     let world = paths::server_run_dir(&cfg.id).join("world");
     let has_world = world.join("level.dat").exists();
-    if direction == "same" { blockers.push(format!("El servidor ya usa Minecraft {to_mc}.")); }
+    if direction == "same" { blockers.push(format!("El servidor ya usa {} {to_mc}.", cfg.loader.name())); }
+    if loader_changes {
+        warnings.push(format!("Cambia el loader: {} → {}. Los mods de un loader no funcionan en otro: se busca la versión de cada uno para {}; los que no tienen se apartan (no se borran).", cfg.loader.name(), tl.name(), tl.name()));
+        if has_world && cfg.loader != Loader::Vanilla {
+            warnings.push("Si un mod que se aparta agregó bloques, objetos o criaturas, esas cosas desaparecen del mundo al abrirlo. La copia previa permite volver atrás.".into());
+        }
+    }
     if direction == "downgrade" && has_world {
         blockers.push(format!("Minecraft no convierte mundos hacia atrás: abrir este mundo con {to_mc} puede borrar bloques, ítems o zonas. Hacé una copia sin el mundo o un servidor nuevo."));
     }
@@ -108,8 +120,8 @@ pub async fn analyze<S: Source>(src: &S, cfg: &ServerConfig, to_mc: &str) -> App
         for m in &manifest.mods {
             if !dir.join(&m.file_name).exists() { continue; }
             known.insert(m.file_name.clone());
-            let best = src.project_versions(&m.project_id, to_mc, loader_id(cfg.loader)).await.ok()
-                .and_then(|v| crate::modrinth::best_version(v, to_mc, loader_id(cfg.loader)));
+            let best = if tl == Loader::Vanilla { None } else { src.project_versions(&m.project_id, to_mc, loader_id(tl)).await.ok()
+                .and_then(|v| crate::modrinth::best_version(v, to_mc, loader_id(tl))) };
             let (status, target, tid) = match best {
                 Some(v) if v.id == m.version_id => ("ok", Some(v.version_number.clone()), Some(v.id.clone())),
                 Some(v) => ("update", Some(v.version_number.clone()), Some(v.id.clone())),
@@ -121,7 +133,9 @@ pub async fn analyze<S: Source>(src: &S, cfg: &ServerConfig, to_mc: &str) -> App
             let name = e.file_name().to_string_lossy().to_string();
             if !name.ends_with(".jar") || known.contains(&name) { continue; }
             let jm = mods::jar_meta(&e.path());
-            checks.push(ModCheck { title: jm.as_ref().map(|j| j.name.clone()).unwrap_or_else(|| name.clone()), current: jm.map(|j| j.version).unwrap_or_default(), file: name, project_id: None, status: "unknown".into(), target: None, target_version_id: None });
+            // Con otro loader, un mod agregado a mano no sirve: se aparta (vuelve con «volver atrás»).
+            let st = if loader_changes { "missing" } else { "unknown" };
+            checks.push(ModCheck { title: jm.as_ref().map(|j| j.name.clone()).unwrap_or_else(|| name.clone()), current: jm.map(|j| j.version).unwrap_or_default(), file: name, project_id: None, status: st.into(), target: None, target_version_id: None });
         }
         let missing: Vec<&str> = checks.iter().filter(|c| c.status == "missing").map(|c| c.title.as_str()).collect();
         if !missing.is_empty() {
@@ -138,9 +152,9 @@ pub async fn analyze<S: Source>(src: &S, cfg: &ServerConfig, to_mc: &str) -> App
     if java_to != 0 && java_to != cfg.java_major { warnings.push(format!("Usa Java {java_to} (ahora Java {}). 939 Host lo descarga y lo verifica.", cfg.java_major)); }
     let mut keeps = vec!["La configuración del servidor, jugadores, lista blanca y operadores".to_string(), "Las copias y puntos de restauración anteriores".to_string(), "La identidad del servidor y su grupo".to_string()];
     if has_world { keeps.insert(0, "El mundo (convertido a la versión nueva)".into()); }
-    let can = blockers.is_empty() && direction == "upgrade";
+    let can = blockers.is_empty() && (direction == "upgrade" || direction == "loader");
     Ok(Analysis {
-        from_mc: cfg.mc_version.clone(), to_mc: to_mc.into(), loader: cfg.loader.name().into(), loader_version, loader_supported, direction, snapshot_involved,
+        from_mc: cfg.mc_version.clone(), to_mc: to_mc.into(), loader: tl.name().into(), from_loader: cfg.loader.name().into(), loader_changes, loader_version, loader_supported, direction, snapshot_involved,
         java_from: cfg.java_major, java_to, has_world, can_update_in_place: can, rollback_by_backup: can, mods: checks, blockers, warnings, keeps,
     })
 }
@@ -150,6 +164,8 @@ pub async fn analyze<S: Source>(src: &S, cfg: &ServerConfig, to_mc: &str) -> App
 #[serde(rename_all = "camelCase")]
 pub struct ChangeRecord {
     pub from_mc: String,
+    #[serde(default)]
+    pub from_loader: Option<Loader>,
     pub from_loader_version: Option<String>,
     pub from_java_choice: Option<u32>,
     pub to_mc: String,
@@ -176,18 +192,19 @@ pub struct ChangeReport {
 /// Archivos del servidor que dependen de la versión (se reemplazan). El mundo, `config/`,
 /// `mods/`, propiedades y listas de jugadores no se tocan.
 fn clear_version_files(run: &std::path::Path) {
-    for f in ["server.jar", "fabric-server-launch.jar", "fabric-server-launcher.properties", "run.bat", "run.sh"] { let _ = std::fs::remove_file(run.join(f)); }
+    for f in ["server.jar", "fabric-server-launch.jar", "fabric-server-launcher.properties", "run.bat", "run.sh", "user_jvm_args.txt"] { let _ = std::fs::remove_file(run.join(f)); }
     for d in ["libraries", "versions", ".fabric"] { let _ = std::fs::remove_dir_all(run.join(d)); }
 }
 
 /// Actualiza el servidor en el mismo lugar. Pasos: copia verificada → mods → componentes →
 /// arranque de prueba con verificación real de conexión → apagado. Si algo falla después de la
 /// copia, el informe ofrece volver atrás (`rollback`).
-pub async fn update_in_place<S: Source>(mgr: &Manager, src: &S, id: &str, to_mc: &str, mut step: impl FnMut(&str, f64)) -> AppResult<ChangeReport> {
+pub async fn update_in_place<S: Source>(mgr: &Manager, src: &S, id: &str, to_mc: &str, to_loader: Option<Loader>, mut step: impl FnMut(&str, f64)) -> AppResult<ChangeReport> {
     let cfg = instance::load(id)?;
     if mgr.runtime(id).lock().unwrap().is_active() { return Err(AppError::busy("Detené el servidor antes de cambiar la versión.")); }
     step("Analizando el servidor", 0.02);
-    let a = analyze(src, &cfg, to_mc).await?;
+    let a = analyze(src, &cfg, to_mc, to_loader).await?;
+    let tl = to_loader.unwrap_or(cfg.loader);
     if !a.can_update_in_place { return Err(AppError::invalid(a.blockers.first().cloned().unwrap_or_else(|| "Este cambio no se puede hacer sobre el mismo servidor.".into()))); }
     let mut steps = vec![];
 
@@ -202,12 +219,13 @@ pub async fn update_in_place<S: Source>(mgr: &Manager, src: &S, id: &str, to_mc:
         for i in 0..z.len() { z.by_index(i).map_err(|e| AppError::new("backup", "La copia recién creada está dañada").with_detail(e))?; }
     }
     steps.push(format!("Copia completa verificada: {} ({:.1} MB)", b.file, b.size_mb));
-    let mut record = ChangeRecord { from_mc: cfg.mc_version.clone(), from_loader_version: cfg.loader_version.clone(), from_java_choice: cfg.java_choice, to_mc: to_mc.into(), backup_file: b.file.clone(), mods_aside: None, at: chrono::Local::now().to_rfc3339(), verified: false };
+    let mut record = ChangeRecord { from_mc: cfg.mc_version.clone(), from_loader: Some(cfg.loader), from_loader_version: cfg.loader_version.clone(), from_java_choice: cfg.java_choice, to_mc: to_mc.into(), backup_file: b.file.clone(), mods_aside: None, at: chrono::Local::now().to_rfc3339(), verified: false };
     paths::write_json(&record_path(id), &record)?;
 
     // 2. Mods: se apartan las versiones viejas (a la Papelera, para poder volver) y se bajan las nuevas.
     let mut target = cfg.clone();
     target.mc_version = to_mc.into();
+    target.loader = tl;
     target.loader_version = a.loader_version.clone();
     let to_change: Vec<&ModCheck> = a.mods.iter().filter(|m| m.status == "update" || m.status == "missing").collect();
     if !to_change.is_empty() {
@@ -238,6 +256,7 @@ pub async fn update_in_place<S: Source>(mgr: &Manager, src: &S, id: &str, to_mc:
     clear_version_files(&run);
     let mut c2 = instance::load(id)?;
     c2.mc_version = to_mc.into();
+    c2.loader = tl;
     c2.loader_version = a.loader_version.clone();
     if c2.java_choice.map(|j| j < a.java_to).unwrap_or(false) { c2.java_choice = None; }
     c2.installed = false;
@@ -248,7 +267,7 @@ pub async fn update_in_place<S: Source>(mgr: &Manager, src: &S, id: &str, to_mc:
         let err = c3.install_error.unwrap_or_else(|| "La instalación no terminó.".into());
         return Ok(ChangeReport { ok: false, backup_file: b.file, steps, error: Some(err), can_rollback: true });
     }
-    steps.push(format!("Instalado Minecraft {to_mc}{} con Java {}", a.loader_version.as_ref().map(|v| format!(" · {} {v}", cfg.loader.name())).unwrap_or_default(), c3.java_major));
+    steps.push(format!("Instalado Minecraft {to_mc}{} con Java {}", a.loader_version.as_ref().map(|v| format!(" · {} {v}", tl.name())).unwrap_or_default(), c3.java_major));
 
     // 4. Arranque controlado: convierte el mundo y se verifica que reciba jugadores.
     step("Arrancando para convertir el mundo y comprobar que funcione", 0.75);
@@ -301,6 +320,7 @@ pub async fn rollback(mgr: &Manager, id: &str) -> AppResult<()> {
     clear_version_files(&run);
     let mut c = instance::load(id)?;
     c.mc_version = rec.from_mc.clone();
+    if let Some(l) = rec.from_loader { c.loader = l; }
     c.loader_version = rec.from_loader_version.clone();
     c.java_choice = rec.from_java_choice;
     c.installed = false;

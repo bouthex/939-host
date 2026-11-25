@@ -368,18 +368,18 @@ async fn e2e_cambio_version() {
     assert!(mgr.wait_inactive(&cfg.id, Duration::from_secs(120)));
 
     // Análisis.
-    let a = vc::analyze(&src, &cfg, &new).await.unwrap();
+    let a = vc::analyze(&src, &cfg, &new, None).await.unwrap();
     println!("  análisis: {} · bloqueos {:?} · avisos {:?}", a.direction, a.blockers, a.warnings);
     assert_eq!(a.direction, "upgrade");
     assert!(a.can_update_in_place);
     assert!(a.mods.iter().any(|m| m.title.to_lowercase().contains("lithium") && (m.status == "update" || m.status == "ok")));
-    let back = vc::analyze(&src, &instance::load(&cfg.id).unwrap(), &cands.iter().rev().find(|v| **v != old && **v != new).cloned().unwrap()).await.unwrap();
+    let back = vc::analyze(&src, &instance::load(&cfg.id).unwrap(), &cands.iter().rev().find(|v| **v != old && **v != new).cloned().unwrap(), None).await.unwrap();
     assert_eq!(back.direction, "downgrade");
     assert!(!back.can_update_in_place && !back.blockers.is_empty(), "volver atrás con mundo tiene que estar bloqueado");
     println!("✔ análisis: actualizar permitido; volver a una versión anterior con el mundo, bloqueado con explicación");
 
     // Actualización en el mismo servidor.
-    let r = vc::update_in_place(&mgr, &src, &cfg.id, &new, |m, _| println!("    · {m}")).await.unwrap();
+    let r = vc::update_in_place(&mgr, &src, &cfg.id, &new, None, |m, _| println!("    · {m}")).await.unwrap();
     for s in &r.steps { println!("    ✓ {s}"); }
     assert!(r.ok, "falló: {:?}", r.error);
     let c2 = instance::load(&cfg.id).unwrap();

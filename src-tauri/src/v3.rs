@@ -463,9 +463,9 @@ pub async fn trash_empty() -> AppResult<EmptyResult> {
 use host939_core::version_change as vc;
 
 #[tauri::command]
-pub async fn version_analyze(id: String, to: String) -> AppResult<vc::Analysis> {
+pub async fn version_analyze(id: String, to: String, loader: Option<host939_core::model::Loader>) -> AppResult<vc::Analysis> {
     let cfg = instance::load(&id)?;
-    vc::analyze(&Modrinth, &cfg, &to).await
+    vc::analyze(&Modrinth, &cfg, &to, loader).await
 }
 
 #[tauri::command]
@@ -473,10 +473,10 @@ pub async fn version_last_change(id: String) -> AppResult<Option<vc::ChangeRecor
 
 /// Actualiza en el mismo servidor. Informa el avance con el evento `version-progress`.
 #[tauri::command]
-pub async fn version_update(app: AppHandle, id: String, to: String) -> AppResult<vc::ChangeReport> {
+pub async fn version_update(app: AppHandle, id: String, to: String, loader: Option<host939_core::model::Loader>) -> AppResult<vc::ChangeReport> {
     let app2 = app.clone();
     let id2 = id.clone();
-    let r = vc::update_in_place(&app.state::<Manager>(), &Modrinth, &id, &to, move |msg, f| {
+    let r = vc::update_in_place(&app.state::<Manager>(), &Modrinth, &id, &to, loader, move |msg, f| {
         let _ = app2.emit("version-progress", serde_json::json!({ "id": id2, "message": msg, "fraction": f }));
     }).await;
     app.state::<Manager>().changed(&id);
@@ -503,12 +503,12 @@ pub async fn server_duplicate(app: AppHandle, id: String, name: String, parts: v
             instance::install(&app.state::<Manager>(), new_id.clone()).await;
             let app2 = app.clone();
             let nid = new_id.clone();
-            let r = vc::update_in_place(&app.state::<Manager>(), &Modrinth, &new_id, &to, move |msg, f| {
+            let r = vc::update_in_place(&app.state::<Manager>(), &Modrinth, &new_id, &to, None, move |msg, f| {
                 let _ = app2.emit("version-progress", serde_json::json!({ "id": nid, "message": msg, "fraction": f }));
             }).await?;
             if !r.ok { return Err(AppError::new("version", "La copia se creó, pero no se pudo pasar a la versión nueva.").with_detail(r.error.unwrap_or_default())); }
         } else {
-            let a = vc::analyze(&Modrinth, &c, &to).await?;
+            let a = vc::analyze(&Modrinth, &c, &to, None).await?;
             c.mc_version = to;
             c.loader_version = a.loader_version;
             c.installed = false;
