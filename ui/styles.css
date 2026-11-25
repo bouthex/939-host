@@ -887,3 +887,9 @@ details.tech[open] > summary::before { content: '▾ '; }
 .rp-warn { display: flex; align-items: flex-start; gap: 5px; color: var(--text); }
 .rp-warn svg { flex: none; margin-top: 2px; }
 .rp-li.off .mod-ic, .rp-li.off .mod-main .t { opacity: .55; }
+
+/* Integrantes del grupo: el nombre nunca se achica a cero; las etiquetas pasan a otra línea y las
+   acciones van debajo, sin pisar el texto. */
+.li.member { align-items: flex-start; }
+.li.member .member-name { overflow-wrap: anywhere; min-width: 3ch; }
+.li.member .member-acts { gap: 6px; margin-top: 8px; margin-left: -10px; }

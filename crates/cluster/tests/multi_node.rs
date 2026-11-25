@@ -80,6 +80,25 @@ impl Drop for Node {
     }
 }
 
+/// Puertos para una prueba: libres de verdad (TCP y UDP en 127.0.0.1) y distintos de los de las
+/// demás pruebas, que corren en paralelo en este mismo binario. Antes cada prueba tenía puertos
+/// fijos y varias repetían los mismos (25821, 25831, 41931…): la que arrancaba segunda encontraba
+/// el puerto ocupado. Se eligen fuera del rango efímero de Linux (32768–60999) y de Windows
+/// (49152–65535), donde el sistema puede dárselos a cualquier conexión saliente.
+fn ports<const N: usize>() -> [u16; N] {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    // Punto de partida distinto en cada ejecución (por si otra ejecución quedó viva).
+    let _ = NEXT.compare_exchange(0, 20000 + (std::process::id() % 400) as u16 * 20, Ordering::SeqCst, Ordering::SeqCst);
+    std::array::from_fn(|_| loop {
+        let p = NEXT.fetch_add(1, Ordering::SeqCst);
+        assert!(p < 32000, "sin puertos libres para las pruebas");
+        let tcp = std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() && std::net::TcpListener::bind(("0.0.0.0", p)).is_ok();
+        let udp = std::net::UdpSocket::bind(("127.0.0.1", p)).is_ok();
+        if tcp && udp { break p; }
+    })
+}
+
 fn wait(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
     let end = Instant::now() + timeout;
     while Instant::now() < end {
@@ -121,20 +140,21 @@ fn fresh(v: &Value) -> (u64, u64) { (v["epoch"].as_u64().unwrap_or(0), v["seq"].
 
 #[test]
 fn group_protocol_fake_servers() {
+    let [p25801, p25802, p25803, p41901, p41902] = ports::<5>();
     let tmp = tempfile::tempdir().unwrap();
     println!("▶ tres PCs simuladas: A (propietaria), B y C (coanfitrionas)");
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_SCORE", "100")]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_SCORE", "150")]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[("H939_SCORE", "200")]);
 
-    let sid = a.ok("create Zombies 25801").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Zombies {p25801}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t1 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     let t2 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     assert_eq!(b.ok(&format!("join {t1}")).as_str().unwrap(), sid);
     assert_eq!(c.ok(&format!("join {t2}")).as_str().unwrap(), sid);
-    b.ok(&format!("setport {sid} 25802"));
-    c.ok(&format!("setport {sid} 25803"));
+    b.ok(&format!("setport {sid} {p25802}"));
+    c.ok(&format!("setport {sid} {p25803}"));
     // Una invitación usada no sirve dos veces.
     let mut d = Node::spawn("D", &tmp.path().join("d"), true, &[]);
     assert!(d.err(&format!("join {t1}")).contains("no es válida"));
@@ -160,8 +180,8 @@ fn group_protocol_fake_servers() {
     println!("✔ sincronización incremental verificada: B y C tienen el último punto");
 
     // Misma dirección para jugar desde C: 127.0.0.1:41901 → A.
-    let port_c = c.ok(&format!("route {sid} 41901")).as_u64().unwrap() as u16;
-    let port_b = b.ok(&format!("route {sid} 41902")).as_u64().unwrap() as u16;
+    let port_c = c.ok(&format!("route {sid} {p41901}")).as_u64().unwrap() as u16;
+    let port_b = b.ok(&format!("route {sid} {p41902}")).as_u64().unwrap() as u16;
     assert!(slp(port_c).contains("hosteado por A"), "{}", slp(port_c));
     println!("✔ C entra por 127.0.0.1:{port_c} y llega al servidor de A");
 
@@ -234,15 +254,16 @@ fn group_protocol_fake_servers() {
 /// "se cortó la red"); "Recuperar aquí" es manual. Y nadie puede encender con un estado viejo.
 #[test]
 fn two_pcs_manual_recovery_and_no_stale_start() {
+    let [p25821, p25822] = ports::<2>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     // B sin internet (como una PC que se quedó sin conexión): no tiene que levantar el servidor sola.
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_PRUEBA_SIN_INTERNET", "1")]);
-    let sid = a.ok("create Duo 25821").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Duo {p25821}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25822"));
+    b.ok(&format!("setport {sid} {p25822}"));
     a.ok(&format!("start {sid}"));
     a.ok(&format!("write {sid} marca.txt d1"));
     let s1 = a.ok(&format!("snapshot {sid}"));
@@ -292,14 +313,15 @@ fn two_pcs_manual_recovery_and_no_stale_start() {
 /// servidor sola con el último estado; cuando la anfitriona vuelve, se detiene y aparta su copia.
 #[test]
 fn two_pcs_automatic_recovery() {
+    let [p25831, p25832] = ports::<2>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
-    let sid = a.ok("create Duo2 25831").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Duo2 {p25831}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25832"));
+    b.ok(&format!("setport {sid} {p25832}"));
     a.ok(&format!("start {sid}"));
     a.ok(&format!("write {sid} marca.txt e1"));
     let s1 = a.ok(&format!("snapshot {sid}"));
@@ -322,15 +344,16 @@ fn two_pcs_automatic_recovery() {
 /// el último punto que dejó quien lo soltó. (C solo juega: retransmite el permiso pero no tiene datos.)
 #[test]
 fn stale_copy_cannot_start_after_release() {
+    let [p25831, p25832, p41931] = ports::<3>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
-    let sid = a.ok("create Viejo 25831").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Viejo {p25831}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25832"));
+    b.ok(&format!("setport {sid} {p25832}"));
     let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
     c.ok(&format!("join {t}"));
     a.ok(&format!("start {sid}"));
@@ -349,7 +372,7 @@ fn stale_copy_cannot_start_after_release() {
     assert!(e.contains("última versión"), "{e}");
     println!("✔ B con copia vieja no puede encender: «{e}»");
     // C, que solo juega, ve un aviso claro en su dirección fija.
-    let port = c.ok(&format!("route {sid} 41931")).as_u64().unwrap() as u16;
+    let port = c.ok(&format!("route {sid} {p41931}")).as_u64().unwrap() as u16;
     assert!(slp(port).contains("Nadie lo está hosteando"));
     println!("✔ el jugador ve «Nadie lo está hosteando» en la lista de servidores");
     // Si igual se quiere seguir con lo que hay, es explícito.
@@ -363,6 +386,7 @@ fn stale_copy_cannot_start_after_release() {
 #[test]
 #[ignore]
 fn real_minecraft_handover() {
+    let [p25811, p25812, p41911] = ports::<3>();
     let tmp = tempfile::tempdir().unwrap();
     // Sin internet (entorno de desarrollo): se precarga el jar oficial en la caché de cada "PC"
     // (se verifica por SHA-1 igual). Con internet (CI en Windows) cada PC lo descarga de Mojang.
@@ -377,12 +401,12 @@ fn real_minecraft_handover() {
     }
     let mut a = Node::spawn("A", &tmp.path().join("a"), false, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), false, &[]);
-    let sid = a.ok("create Real939 25811").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Real939 {p25811}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25812"));
-    let route = b.ok(&format!("route {sid} 41911")).as_u64().unwrap() as u16;
+    b.ok(&format!("setport {sid} {p25812}"));
+    let route = b.ok(&format!("route {sid} {p41911}")).as_u64().unwrap() as u16;
     a.ok(&format!("start {sid}"));
     println!("✔ A encendió un servidor 26.2 real");
     a.ok(&format!("cmd {sid} scoreboard objectives add traspaso dummy"));
@@ -416,14 +440,15 @@ fn real_minecraft_handover() {
 /// mundo intacto; un traspaso que falla deja todo en la anfitriona; jugadoras no pueden pedir.
 #[test]
 fn host_requests_and_pc_names() {
+    let [p25811, p25812, p25813] = ports::<3>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_SCORE", "200")]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_SCORE", "150"), ("H939_TEST_FAIL_PREFETCH", "1")]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[("H939_SCORE", "60"), ("H939_RAM", "3000")]);
     let mut d = Node::spawn("D", &tmp.path().join("d"), true, &[]);
-    let sid = a.ok("create Zombies 25811").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Zombies {p25811}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
-    for (n, port) in [(&mut b, 25812), (&mut c, 25813)] {
+    for (n, port) in [(&mut b, p25812), (&mut c, p25813)] {
         let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
         n.ok(&format!("join {t}"));
         n.ok(&format!("setport {sid} {port}"));
@@ -512,13 +537,14 @@ fn host_requests_and_pc_names() {
 /// encendido en la anfitriona y los jugadores siguen entrando; nunca hay dos encendidos.
 #[test]
 fn slow_two_phase_handover_keeps_playing() {
+    let [p25821, p25822, p25823, p41931] = ports::<4>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[("H939_TEST_SLOW_PREFETCH", "4")]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
-    let sid = a.ok("create Lento 25821").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Lento {p25821}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
-    for (n, port) in [(&mut b, 25822), (&mut c, 25823)] {
+    for (n, port) in [(&mut b, p25822), (&mut c, p25823)] {
         let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
         n.ok(&format!("join {t}"));
         n.ok(&format!("setport {sid} {port}"));
@@ -526,7 +552,7 @@ fn slow_two_phase_handover_keeps_playing() {
     wait("que se vean", Duration::from_secs(20), || a.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 3);
     a.ok(&format!("start {sid}"));
     a.ok(&format!("write {sid} marca.txt lento"));
-    let port_c = c.ok(&format!("route {sid} 41931")).as_u64().unwrap() as u16;
+    let port_c = c.ok(&format!("route {sid} {p41931}")).as_u64().unwrap() as u16;
     wait("C llega a A", Duration::from_secs(15), || slp(port_c).contains("hosteado por A"));
     b.ok(&format!("request {sid}"));
     wait("A ve la solicitud", Duration::from_secs(5), || a.status(&sid)["incomingRequest"]["name"] == "B");
@@ -552,11 +578,12 @@ fn slow_two_phase_handover_keeps_playing() {
 /// responde siempre con 3,5 s de demora: B tiene que poder pedir a C una y otra vez.
 #[test]
 fn request_reaches_new_host_while_old_host_is_slow() {
+    let [p25881] = ports::<1>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[("H939_TEST_SLOW_INFO_MS", "3500")]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
-    let sid = a.ok("create Lento 25881").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Lento {p25881}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t1 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     let t2 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
@@ -588,15 +615,16 @@ fn request_reaches_new_host_while_old_host_is_slow() {
 /// encendido, cancelación sin archivos a medias, permisos por rol y que siga a la anfitriona.
 #[test]
 fn remote_files_follow_host_and_protect_world() {
+    let [p25841, p25842] = ports::<2>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
-    let sid = a.ok("create Archivos 25841").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Archivos {p25841}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25842"));
+    b.ok(&format!("setport {sid} {p25842}"));
     let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
     c.ok(&format!("join {t}"));
     a.ok(&format!("start {sid}"));
@@ -675,15 +703,16 @@ fn remote_files_follow_host_and_protect_world() {
 /// mantiene cuando cambia la anfitriona.
 #[test]
 fn server_logo_reaches_players_and_survives_handover() {
+    let [p25851, p25852] = ports::<2>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
-    let sid = a.ok("create Logos 25851").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Logos {p25851}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25852"));
+    b.ok(&format!("setport {sid} {p25852}"));
     let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
     c.ok(&format!("join {t}"));
     // Los servidores nuevos traen el logo de 939 Host: también llega a la PC que solo juega.
@@ -716,14 +745,15 @@ fn server_logo_reaches_players_and_survives_handover() {
 /// 3. Encender en otra PC con la anfitriona conectada y apagada exigía un traspaso manual.
 #[test]
 fn tierra_e_inventario_no_retroceden() {
+    let [p25841, p25842] = ports::<2>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
-    let sid = a.ok("create Tierra 25841").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Tierra {p25841}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25842"));
+    b.ok(&format!("setport {sid} {p25842}"));
     a.ok(&format!("start {sid}"));
     a.ok(&format!("write {sid} bloque.txt pasto"));
     a.ok(&format!("write {sid} inventario.txt 1-tierra"));
@@ -786,15 +816,16 @@ fn tierra_e_inventario_no_retroceden() {
 /// del último punto se pierde ni queda solo en esta PC. Acá se reproduce el efecto del guardián.
 #[test]
 fn tras_un_cierre_inesperado_se_publica_lo_que_guardo_el_guardian() {
+    let [p25861, p25862] = ports::<2>();
     let tmp = tempfile::tempdir().unwrap();
     let root_a = tmp.path().join("a");
     let mut a = Node::spawn("A", &root_a, true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
-    let sid = a.ok("create Guardian 25861").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Guardian {p25861}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25862"));
+    b.ok(&format!("setport {sid} {p25862}"));
     a.ok(&format!("start {sid}"));
     a.ok(&format!("write {sid} bloque.txt pasto"));
     let s1 = a.ok(&format!("snapshot {sid}"));
@@ -831,15 +862,16 @@ fn tras_un_cierre_inesperado_se_publica_lo_que_guardo_el_guardian() {
 /// desde el último punto, y lo de la PC cortada no se borra: queda como punto apartado.
 #[test]
 fn tras_un_corte_sin_guardian_no_se_publica_lo_no_confirmado() {
+    let [p25871, p25872] = ports::<2>();
     let tmp = tempfile::tempdir().unwrap();
     let root_a = tmp.path().join("a");
     let mut a = Node::spawn("A", &root_a, true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
-    let sid = a.ok("create Corte 25871").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Corte {p25871}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25872"));
+    b.ok(&format!("setport {sid} {p25872}"));
     a.ok(&format!("start {sid}"));
     a.ok(&format!("write {sid} bloque.txt pasto"));
     let s1 = a.ok(&format!("snapshot {sid}"));
@@ -879,22 +911,23 @@ fn id_of(n: &mut Node) -> String { n.ok("id").as_str().unwrap().to_string() }
 /// cifrada del grupo y vuelve, sin abrir puertos. Una PC fuera del grupo no puede usarlo.
 #[test]
 fn voz_por_udp_llega_a_la_anfitriona() {
+    let [p25851, p41854, p41855] = ports::<3>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
-    let sid = a.ok("create Voz 25851").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Voz {p25851}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
     a.ok(&format!("start {sid}"));
     a.ok(&format!("fakevoice {sid} 24854"));
-    b.ok(&format!("voiceroute {sid} 41854"));
+    b.ok(&format!("voiceroute {sid} {p41854}"));
     let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     let mut got = String::new();
     let end = Instant::now() + Duration::from_secs(30);
     while Instant::now() < end && got.is_empty() {
-        sock.send_to(b"hola-voz", "127.0.0.1:41854").unwrap();
+        sock.send_to(b"hola-voz", &format!("127.0.0.1:{p41854}")).unwrap();
         let mut buf = [0u8; 256];
         if let Ok((n, _)) = sock.recv_from(&mut buf) { got = String::from_utf8_lossy(&buf[..n]).to_string(); }
     }
@@ -906,11 +939,11 @@ fn voz_por_udp_llega_a_la_anfitriona() {
     let addr_a = a.ok("myaddr");
     x.ok(&format!("knowaddr {addr_a}"));
     // Para X el servidor no existe: no tiene permiso ni sabe quién aloja; no puede abrir la ruta.
-    let r = x.cmd(&format!("voiceroute {sid} 41855"));
+    let r = x.cmd(&format!("voiceroute {sid} {p41855}"));
     if r["ok"].as_bool().unwrap() {
         let s2 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         s2.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-        s2.send_to(b"intruso", "127.0.0.1:41855").unwrap();
+        s2.send_to(b"intruso", &format!("127.0.0.1:{p41855}")).unwrap();
         let mut buf = [0u8; 64];
         assert!(s2.recv_from(&mut buf).is_err(), "una PC ajena no recibe respuesta");
     }
@@ -926,6 +959,7 @@ fn voz_por_udp_llega_a_la_anfitriona() {
 #[test]
 #[ignore]
 fn consumo_en_reposo() {
+    let [p25971] = ports::<1>();
     fn cpu_ticks(pid: u32) -> u64 {
         let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
         let f: Vec<&str> = s.rsplit(')').next().unwrap().split_whitespace().collect();
@@ -956,7 +990,7 @@ fn consumo_en_reposo() {
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &env);
     let ps = [("A", a.pid()), ("B", b.pid()), ("C", c.pid())];
     medir("solo", &ps, 60);
-    let sid = a.ok("create Consumo 25971").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Consumo {p25971}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t1 = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     let t2 = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
@@ -987,26 +1021,27 @@ fn ping_externo(port: u16) -> Option<String> {
 /// de administración desde afuera. (Simulado en una PC: «Internet» es 127.0.0.1.)
 #[test]
 fn conexion_por_ip_sin_939_host() {
+    let [p25861, p25862, p25871, p41931] = ports::<4>();
     let tmp = tempfile::tempdir().unwrap();
     let env = [("H939_ENTRANCE_BIND", "127.0.0.1")];
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &env);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &env);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &env);
-    let sid = a.ok("create Abierto 25861").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Abierto {p25861}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     let t = a.ok(&format!("invite {sid} coanfitrion")).as_str().unwrap().to_string();
     b.ok(&format!("join {t}"));
-    b.ok(&format!("setport {sid} 25862"));
+    b.ok(&format!("setport {sid} {p25862}"));
     let t = a.ok(&format!("invite {sid} jugador")).as_str().unwrap().to_string();
     c.ok(&format!("join {t}"));
     wait("que los tres se vean", Duration::from_secs(20), || [&mut a, &mut b, &mut c].iter_mut().all(|n| n.status(&sid)["members"].as_array().unwrap().iter().filter(|m| m["online"].as_bool().unwrap()).count() == 3));
     a.ok(&format!("start {sid}"));
-    // C (una PC que solo juega) acepta ser entrada pública en el puerto 25871.
-    c.ok(&format!("entport {sid} 25871"));
+    // C (una PC que solo juega) acepta ser entrada pública en su puerto.
+    c.ok(&format!("entport {sid} {p25871}"));
     c.ok("consent 1");
     // 3) Interruptor sin encender: nadie sin 939 Host entra.
     assert!(c.ok(&format!("entrance {sid}")).is_null(), "sin permiso de la propietaria no se abre la entrada");
-    assert!(ping_externo(25871).is_none());
+    assert!(ping_externo(p25871).is_none());
     println!("✔ sin el permiso de la propietaria no hay entrada para jugadores sin 939 Host");
     // 10) Una PC que no es la propietaria no puede encenderlo (ni siendo coanfitriona).
     assert!(b.err(&format!("external {sid} 1")).contains("propietaria"));
@@ -1018,52 +1053,52 @@ fn conexion_por_ip_sin_939_host() {
     println!("✔ solo la propietaria lo enciende, y nunca con el modo sin conexión");
     // 2) Encendido: un Minecraft sin 939 Host entra por la entrada de C y llega a A.
     wait("C abre la entrada", Duration::from_secs(20), || !c.ok(&format!("entrance {sid}")).is_null());
-    wait("entrada de C lleva a A", Duration::from_secs(20), || ping_externo(25871).map(|s| s.contains("hosteado por A")).unwrap_or(false));
+    wait("entrada de C lleva a A", Duration::from_secs(20), || ping_externo(p25871).map(|s| s.contains("hosteado por A")).unwrap_or(false));
     wait("otra PC comprueba la entrada", Duration::from_secs(30), || c.ok(&format!("entrance {sid}"))["state"] == "comprobada");
     let e = c.ok(&format!("entrance {sid}"));
-    assert_eq!(e["addr"], "127.0.0.1:25871");
+    assert_eq!(e["addr"].as_str(), Some(format!("127.0.0.1:{p25871}").as_str()));
     println!("✔ entrada pública en C comprobada desde otra PC: {}", e["detail"]);
     // La propietaria ve la entrada de C (para mostrar la dirección).
-    wait("A ve la entrada de C", Duration::from_secs(20), || a.ok(&format!("entrances {sid}")).as_array().map(|v| v.iter().any(|x| x[3]["addr"] == "127.0.0.1:25871")).unwrap_or(false));
+    wait("A ve la entrada de C", Duration::from_secs(20), || a.ok(&format!("entrances {sid}")).as_array().map(|v| v.iter().any(|x| x[3]["addr"].as_str() == Some(format!("127.0.0.1:{p25871}").as_str()))).unwrap_or(false));
     // 10) Lo que llega por la entrada es solo Minecraft: basura o un pedido «de administración»
     // termina en el servidor de juego y nada cambia en el grupo.
     {
         use std::io::{Read, Write};
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", 25871)).unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", p25871)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let _ = s.write_all(b"{\"t\":\"external\",\"server\":\"x\",\"allow\":false}\n939host/ctrl/1\r\nGET / HTTP/1.1\r\n\r\n");
         let mut buf = [0u8; 256];
         let _ = s.read(&mut buf);
     }
     assert_eq!(a.ok(&format!("running {sid}")).as_bool(), Some(true));
-    assert!(ping_externo(25871).unwrap_or_default().contains("hosteado por A"), "la entrada sigue igual");
+    assert!(ping_externo(p25871).unwrap_or_default().contains("hosteado por A"), "la entrada sigue igual");
     println!("✔ basura y pedidos de administración por la entrada no hacen nada: solo llega Minecraft");
     // 4) Cambio de anfitriona: la misma dirección ahora lleva a B.
     let s1 = a.ok(&format!("snapshot {sid}"));
     wait("B copia", Duration::from_secs(30), || fresh(&b.status(&sid)["myLatest"]) == fresh(&s1));
     a.ok(&format!("handover {sid} {}", b.ok("id").as_str().unwrap()));
     wait("B aloja", Duration::from_secs(40), || b.ok(&format!("running {sid}")).as_bool().unwrap());
-    wait("la misma dirección lleva a B", Duration::from_secs(20), || ping_externo(25871).map(|s| s.contains("hosteado por B")).unwrap_or(false));
+    wait("la misma dirección lleva a B", Duration::from_secs(20), || ping_externo(p25871).map(|s| s.contains("hosteado por B")).unwrap_or(false));
     println!("✔ cambio de anfitriona A→B: la dirección pública no cambió");
     // 5) Reinicio de la anfitriona: mientras está apagado, el juego muestra el motivo; al volver,
     // la misma dirección funciona sola.
     b.ok(&format!("stop {sid}"));
-    wait("aviso con el servidor apagado", Duration::from_secs(20), || ping_externo(25871).map(|s| !s.contains("hosteado por")).unwrap_or(false));
+    wait("aviso con el servidor apagado", Duration::from_secs(20), || ping_externo(p25871).map(|s| !s.contains("hosteado por")).unwrap_or(false));
     b.ok(&format!("start {sid}"));
-    wait("vuelve tras el reinicio", Duration::from_secs(20), || ping_externo(25871).map(|s| s.contains("hosteado por B")).unwrap_or(false));
+    wait("vuelve tras el reinicio", Duration::from_secs(20), || ping_externo(p25871).map(|s| s.contains("hosteado por B")).unwrap_or(false));
     println!("✔ reinicio de la anfitriona: aviso mientras está apagado y la misma dirección al volver");
     // 3) La propietaria lo apaga: la entrada se cierra en todas las PCs.
     a.ok(&format!("external {sid} 0"));
-    wait("C cierra la entrada", Duration::from_secs(30), || c.ok(&format!("entrance {sid}")).is_null() && ping_externo(25871).is_none());
+    wait("C cierra la entrada", Duration::from_secs(30), || c.ok(&format!("entrance {sid}")).is_null() && ping_externo(p25871).is_none());
     println!("✔ apagado: sin entrada para jugadores sin 939 Host");
     // 1) Los jugadores con 939 Host siguen entrando como siempre (por el túnel del grupo).
-    let port_c = c.ok(&format!("route {sid} 41931")).as_u64().unwrap() as u16;
+    let port_c = c.ok(&format!("route {sid} {p41931}")).as_u64().unwrap() as u16;
     assert!(slp(port_c).contains("hosteado por B"));
     // Y la PC que dejó de consentir no reabre aunque se vuelva a permitir.
     c.ok("consent 0");
     a.ok(&format!("external {sid} 1"));
     std::thread::sleep(Duration::from_secs(3));
-    assert!(c.ok(&format!("entrance {sid}")).is_null() && ping_externo(25871).is_none());
+    assert!(c.ok(&format!("entrance {sid}")).is_null() && ping_externo(p25871).is_none());
     println!("✔ con 939 Host se sigue entrando; una PC que no acepta ser entrada no la abre");
 }
 
@@ -1073,12 +1108,13 @@ fn conexion_por_ip_sin_939_host() {
 /// una sola propietaria verificada en todas las PCs, también con código de recuperación creado.
 #[test]
 fn transferencia_de_propiedad_confirmada() {
+    let [p25861] = ports::<1>();
     let tmp = tempfile::tempdir().unwrap();
     let mut a = Node::spawn("A", &tmp.path().join("a"), true, &[]);
     let mut b = Node::spawn("B", &tmp.path().join("b"), true, &[]);
     let mut c = Node::spawn("C", &tmp.path().join("c"), true, &[]);
     let (ia, ib) = (id(&mut a), id(&mut b));
-    let sid = a.ok("create Prop 25861").as_str().unwrap().to_string();
+    let sid = a.ok(&format!("create Prop {p25861}")).as_str().unwrap().to_string();
     a.ok(&format!("share {sid}"));
     for (n, role) in [(&mut b, "coanfitrion"), (&mut c, "jugador")] {
         let t = a.ok(&format!("invite {sid} {role}")).as_str().unwrap().to_string();
