@@ -1787,7 +1787,7 @@ impl GroupNode {
                 info.map(|i| (i.running && online, i.can_host, i.score, i.latest.clone())).unwrap_or((false, false, 0, None))
             };
             members.push(MemberStatus {
-                node_id: m.node_id.clone(), name: if is_me { inner.name() } else { info.map(|i| i.name.clone()).unwrap_or_else(|| m.name.clone()) },
+                node_id: m.node_id.clone(), name: if is_me { inner.name() } else { info.map(|i| i.name.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| m.name.clone()) },
                 symbol: if is_me { inner.symbol() } else { info.map(|i| i.symbol.clone()).unwrap_or_default() },
                 role: m.role.clone(), is_me, online, running, is_host: l.as_ref().map(|l| l.held_by(&m.node_id)).unwrap_or(false),
                 can_host, score, latest_at: latest.as_ref().map(|s| s.created_at.clone()), fresh: fresh(&latest), path: if is_me { String::new() } else { path }, rtt_ms,
@@ -2841,6 +2841,19 @@ impl Inner {
         }
         // Se espera un momento a las respuestas rápidas; las lentas siguen y se procesan después.
         let _ = tokio::time::timeout(self.timing.poll * 2, futures_util::future::join_all(handles)).await;
+        // Nombres al día: si una PC entró sin nombre («Amigo») o lo cambió después, la propietaria
+        // actualiza el grupo firmado; así todas las PCs (también las jugadoras, que no consultan a
+        // las demás) ven el nombre real.
+        if signed::owner_of(&share).as_deref() == Some(self.me.as_str()) {
+            let names: Vec<(String, String)> = self.with_state(server, |s| s.infos.iter().map(|(n, i)| (n.clone(), i.name.trim().chars().take(32).collect::<String>())).collect());
+            let mut s2 = network::load_share(server);
+            let mut changed = false;
+            for (n, name) in names {
+                if name.is_empty() { continue; }
+                if let Some(m) = s2.members.iter_mut().find(|m| m.node_id == n && m.name != name) { m.name = name; changed = true; }
+            }
+            if changed && self.commit(server, &mut s2).is_ok() { self.local.changed(server); }
+        }
         // Si cambió lo que se ve de otra PC (estado del servidor, jugadores, quién aloja), la
         // interfaz se actualiza ahora, sin esperar a que la persona cambie de pantalla.
         let now_seen = self.with_state(server, |s| s.infos.iter().map(|(n, i)| (n.clone(), seen_key(i))).collect::<HashMap<_, _>>());

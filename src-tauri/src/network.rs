@@ -711,6 +711,8 @@ pub async fn friend_set_available(on: bool, cluster: State<'_, Cluster>) -> AppR
 #[tauri::command]
 pub async fn group_chat_create(name: String, members: Vec<String>, cluster: State<'_, Cluster>) -> AppResult<String> { cluster.node().await?.group_create(&name, &members).await.map_err(ferr) }
 #[tauri::command]
+pub async fn group_chat_add(id: String, members: Vec<String>, cluster: State<'_, Cluster>) -> AppResult<usize> { cluster.node().await?.group_add_members(&id, &members).await.map_err(ferr) }
+#[tauri::command]
 pub async fn group_chat_rename(id: String, name: String, cluster: State<'_, Cluster>) -> AppResult<()> { cluster.node().await?.group_rename(&id, &name).await.map_err(ferr) }
 #[tauri::command]
 pub async fn group_chat_leave(id: String, cluster: State<'_, Cluster>) -> AppResult<()> { cluster.node().await?.group_leave(&id).await.map_err(ferr) }

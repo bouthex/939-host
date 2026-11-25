@@ -483,6 +483,7 @@ fn main() {
             network::friend_set_available,
             network::group_chat_create,
             network::group_chat_rename,
+            network::group_chat_add,
             network::group_chat_leave,
             network::group_chat_send,
             network::group_chat_messages,

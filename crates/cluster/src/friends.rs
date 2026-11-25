@@ -338,6 +338,29 @@ impl crate::GroupNode {
         Ok(())
     }
 
+    /// Suma amigos de esta PC a un grupo que ya existe (cualquier integrante puede). Las demás
+    /// PCs lo aceptan porque viene de un integrante; la persona nueva, porque es amiga de quien
+    /// la agregó.
+    pub async fn group_add_members(&self, id: &str, members: &[String]) -> Result<usize> {
+        let mut s = load();
+        let mut g = group_of(&s, id).ok_or_else(|| anyhow!("Ese grupo ya no existe."))?;
+        let mut added = 0;
+        for m in members {
+            if is_member(&g, m) { continue; }
+            let f = s.friends.iter().find(|f| f.node == *m).ok_or_else(|| anyhow!("Solo podés agregar a tus amigos."))?;
+            g.members.push((f.node.clone(), f.name.clone()));
+            added += 1;
+        }
+        if added == 0 { bail!("Esas personas ya están en el grupo."); }
+        if g.members.len() > MAX_GROUP { bail!("Un grupo puede tener hasta {MAX_GROUP} personas."); }
+        g.rev += 1;
+        g.addrs = self.group_addrs(&s, &g.members, &g.addrs);
+        if let Some(x) = s.groups.iter_mut().find(|x| x.id == id) { *x = g.clone(); }
+        save(&s)?;
+        self.group_broadcast(&g, &FReq::GroupSync { id: g.id.clone(), name: g.name.clone(), members: g.members.clone(), rev: g.rev, addrs: g.addrs.clone() }).await;
+        Ok(added)
+    }
+
     /// Salir del grupo: se avisa a los demás y se borra de esta PC (el historial queda guardado).
     pub async fn group_leave(&self, id: &str) -> Result<()> {
         let mut s = load();

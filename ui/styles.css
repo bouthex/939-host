@@ -748,6 +748,12 @@ details.tech[open] > summary::before { content: '▾ '; }
 .msg.me { align-self: flex-end; align-items: flex-end; }
 .msg .bubble { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; overflow-wrap: anywhere; }
 .msg.me .bubble { background: var(--inv); color: var(--invtext); border-color: var(--inv); }
+.msg .bubble { user-select: text; cursor: text; }
+.msg .msg-copy { border: 0; background: none; padding: 0 2px; color: var(--text3); cursor: pointer; opacity: 0; transition: opacity .12s; }
+.msg:hover .msg-copy, .msg .msg-copy:focus-visible { opacity: 1; }
+.code-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid currentColor; border-color: color-mix(in srgb, currentColor 35%, transparent); background: color-mix(in srgb, currentColor 8%, transparent); color: inherit; border-radius: 6px; padding: 0 5px; margin: 0 1px; font: inherit; font-size: .95em; cursor: pointer; user-select: text; }
+.code-chip .lnk, .code-chip .cc { border: 0; background: none; color: inherit; font: inherit; padding: 0; cursor: pointer; text-decoration: underline; }
+.code-chip .cc { text-decoration: none; }
 .chat-form { padding: 12px 16px; border-top: 1px solid var(--line); }
 .chat-form textarea { resize: none; flex: 1; }
 .li.click.on { background: var(--hover); }

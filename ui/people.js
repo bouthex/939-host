@@ -62,16 +62,39 @@ function groupRow(g) {
     ${g.unread ? `<span class="count">${g.unread}</span>` : ''}</button>`;
 }
 
+/* Códigos dentro de un mensaje (direcciones, puertos, comandos, ids de mods, enlaces): se
+   marcan y se copian con un toque. Nunca se ejecuta nada: un comando solo se copia y un enlace
+   se abre en el navegador solo si es http(s). */
+const CODE_RE = /(https?:\/\/[^\s<>"]+)|([a-z0-9-]{1,63}\.939host(?::\d{1,5})?)|((?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?)|(\[[0-9a-f:]+\](?::\d{1,5})?)|((?:[a-z0-9-]+\.)+[a-z]{2,}:\d{1,5})|((?:^|(?<=\s))\/[a-z][a-z0-9_:.-]*(?: [^\n]*)?)|(\b[a-z0-9_.-]{2,}:[a-z0-9_./-]{2,}\b)|(\b(?:puerto|port)\s+\d{2,5}\b)/gi;
+const CODE_KIND = ['Enlace', 'Dirección .939host', 'IP', 'IP', 'Dirección', 'Comando', 'Id', 'Puerto'];
+function linkify(text) {
+  let out = '', last = 0;
+  for (const m of text.matchAll(CODE_RE)) {
+    const t = m[0], k = m.slice(1).findIndex((x) => x != null);
+    out += esc(text.slice(last, m.index)).replace(/\n/g, '<br>');
+    const val = k === 7 ? t.replace(/\D+/g, '') : t;
+    out += k === 0
+      ? `<span class="code-chip"><button class="lnk" data-a="chat-link" data-url="${esc(t)}" title="Abrir en el navegador">${esc(t)}</button><button class="cc" data-a="copy" data-text="${esc(t)}" data-msg="Enlace copiado" aria-label="Copiar enlace">${icon('copy', 12)}</button></span>`
+      : `<button class="code-chip mono" data-a="copy" data-text="${esc(val)}" data-msg="${CODE_KIND[k]} copiado" title="${CODE_KIND[k]}: tocá para copiar${k === 5 ? ' (no se ejecuta)' : ''}">${esc(t)}${icon('copy', 12)}</button>`;
+    last = m.index + t.length;
+  }
+  return out + esc(text.slice(last)).replace(/\n/g, '<br>');
+}
+// Enlaces de sitios conocidos se abren; el resto se copia (939 Host no abre direcciones desconocidas).
+A['chat-link'] = async (el) => {
+  try { await invoke('open_link', { url: el.dataset.url }); }
+  catch { try { await navigator.clipboard.writeText(el.dataset.url); toast('Enlace copiado: pegalo en tu navegador si confiás en él.'); } catch { toast('No se pudo copiar', 'error'); } }
+};
 function msgHTML(m, group) {
   const who = group && !m.fromMe ? `<span class="xs b">${esc(m.fromName || 'Alguien')}</span>` : '';
   const pend = m.fromMe && !m.delivered ? (group && m.pending?.length ? ` · falta entregar a ${m.pending.length}` : ' · pendiente') : '';
-  return `<div class="msg ${m.fromMe ? 'me' : ''}">${who}<div class="bubble">${esc(m.text).replace(/\n/g, '<br>')}</div><span class="xs t3">${esc(new Date(m.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' }))}${pend}</span></div>`;
+  return `<div class="msg ${m.fromMe ? 'me' : ''}">${who}<div class="bubble">${linkify(m.text)}</div><span class="xs t3 row" style="gap:6px">${esc(new Date(m.at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' }))}${pend}<button class="msg-copy" data-a="copy" data-text="${esc(m.text)}" data-msg="Mensaje copiado" aria-label="Copiar mensaje" title="Copiar mensaje">${icon('copy', 12)}</button></span></div>`;
 }
 
 function groupChatHTML(g) {
   const msgs = ppl.chat.map((m) => msgHTML(m, true)).join('');
   return `<div class="card-head"><div class="row" style="gap:10px"><span class="avatar" style="width:32px;height:32px">${icon('friends', 16)}</span><div style="min-width:0"><b>${esc(g.name)}</b><div class="xs t3 ellipsis">${esc(g.members.map((m) => (m.me ? 'Vos' : m.name)).join(', '))}</div></div></div>
-      <div class="btns"><button class="btn s ghost" data-a="grp-rename" data-id="${esc(g.id)}">Cambiar nombre</button><button class="btn s ghost" data-a="grp-leave" data-id="${esc(g.id)}" data-tone="halt">Salir</button></div></div>
+      <div class="btns"><button class="btn s ghost" data-a="grp-add" data-id="${esc(g.id)}">${icon('plus', 14)}Sumar amigos</button><button class="btn s ghost" data-a="grp-rename" data-id="${esc(g.id)}">Cambiar nombre</button><button class="btn s ghost" data-a="grp-leave" data-id="${esc(g.id)}" data-tone="halt">Salir</button></div></div>
     <div class="chat-log" id="chat-log">${msgs || '<div class="sm t3" style="text-align:center;padding:24px">Todavía no hay mensajes.</div>'}</div>
     <div class="xs t3" id="chat-typing" style="min-height:16px;padding:0 16px" aria-live="polite"></div>
     <form class="row chat-form" id="chat-form" style="gap:8px"><textarea class="input" id="chat-in" rows="1" maxlength="500" placeholder="Escribí al grupo (hasta 500 caracteres)" aria-label="Mensaje"></textarea><button class="btn pri" type="submit">Enviar</button></form>`;
@@ -157,6 +180,19 @@ A['grp-rename'] = async (el) => {
   const ok = await dialog({ title: 'Cambiar el nombre del grupo', confirm: 'Guardar', body: `<label class="field">Nombre<input class="input" id="gr-name" maxlength="40" value="${esc(g.name)}"></label><p class="xs t3">Lo ven todas las personas del grupo.</p>`, onMount: (d) => { const i = d.querySelector('#gr-name'); i.addEventListener('input', () => { name = i.value; }); i.select(); } });
   if (!ok || !name.trim() || name.trim() === g.name) return;
   try { await invoke('group_chat_rename', { id: g.id, name }); toast('Nombre cambiado'); } catch (e) { fail(e); }
+  await loadPeople(); paintPeople();
+};
+A['grp-add'] = async (el) => {
+  const g = (ppl.view?.groups || []).find((x) => x.id === el.dataset.id); if (!g) return;
+  const inside = new Set(g.members.map((m) => m.node));
+  const fr = (ppl.view?.friends || []).filter((f) => !inside.has(f.node));
+  if (!fr.length) { toast('Todos tus amigos ya están en este grupo. Agregá amigos nuevos desde «Invitar».'); return; }
+  const pick = new Set();
+  const ok = await dialog({ title: `Sumar amigos a «${esc(g.name)}»`, confirm: 'Sumar',
+    body: `<div class="stack" style="gap:6px;max-height:260px;overflow:auto">${fr.map((f) => `<label class="row" style="gap:10px"><input type="checkbox" data-ga="${esc(f.node)}">${pcAvatar('', 28, '', f.avatar)}<span>${esc(f.name)}</span></label>`).join('')}</div><p class="xs t3">Ven los mensajes nuevos desde ahora. El grupo no da acceso a ningún servidor.</p>`,
+    onMount: (d) => d.querySelectorAll('[data-ga]').forEach((c) => c.addEventListener('change', () => { if (c.checked) pick.add(c.dataset.ga); else pick.delete(c.dataset.ga); })) });
+  if (!ok || !pick.size) return;
+  try { const n = await invoke('group_chat_add', { id: g.id, members: [...pick] }); toast(n === 1 ? 'Se sumó 1 persona' : `Se sumaron ${n} personas`); } catch (e) { fail(e); }
   await loadPeople(); paintPeople();
 };
 A['grp-leave'] = async (el) => {
